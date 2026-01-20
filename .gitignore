@@ -1,0 +1,24 @@
+# Project-level ignore rules (youtube/ 配下を Git 管理する前提)
+
+# Environment & secrets
+.env
+client_secrets.json
+token.json
+
+# Logs
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Generated artifacts
+generated_scripts/
+generated_audio/
+generated_video/
+dist/
+build/
+
+# OS / editor specific
+.DS_Store
+

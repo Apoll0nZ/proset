@@ -1,0 +1,26 @@
+{
+  "lambda": {
+    "AWS_REGION": "ap-northeast-1",
+    "DDB_TABLE_NAME": "VideoHistory",
+    "SCRIPT_S3_BUCKET": "your-script-bucket-name",
+    "SCRIPT_S3_PREFIX": "scripts/",
+    "GITHUB_REPO": "your-github-username/your-repo",
+    "GITHUB_EVENT_TYPE": "generate_video",
+    "GEMINI_MODEL_NAME": "gemini-1.5-pro"
+  },
+  "github_actions": {
+    "AWS_REGION": "ap-northeast-1",
+    "SCRIPT_S3_BUCKET": "your-script-bucket-name",
+    "SCRIPT_S3_PREFIX": "scripts/",
+    "DDB_TABLE_NAME": "VideoHistory"
+  },
+  "secrets_example": {
+    "AWS_ACCESS_KEY_ID": "AKIA...",
+    "AWS_SECRET_ACCESS_KEY": "xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "GEMINI_API_KEY": "your-gemini-api-key",
+    "GITHUB_TOKEN": "github-personal-access-token-for-dispatch",
+    "YOUTUBE_AUTH_JSON": "{...OAuth2 credential json...}",
+    "GOOGLE_APPLICATION_CREDENTIALS": "/path/to/google-service-account.json"
+  }
+}
+
