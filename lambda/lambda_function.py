@@ -3,6 +3,7 @@ import os
 import re
 import hashlib
 import time
+import random
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -219,8 +220,8 @@ def load_rss_sources() -> Dict[str, List[str]]:
         return json.load(f)
 
 
-def fetch_latest_entry(feed_url: str) -> Optional[feedparser.FeedParserDict]:
-    """指定 RSS フィードから最新のエントリを取得（軽量化版・最大3件）。"""
+def fetch_multiple_entries(feed_url: str, max_entries: int = 15) -> List[feedparser.FeedParserDict]:
+    """指定 RSS フィードから複数のエントリを取得（User-Agent付き）。"""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
@@ -232,16 +233,20 @@ def fetch_latest_entry(feed_url: str) -> Optional[feedparser.FeedParserDict]:
         
         # 取得した内容をfeedparserで解析
         feed = feedparser.parse(response.content)
-    except Exception:
-        return None
+    except Exception as e:
+        print(f"Error fetching feed {feed_url}: {str(e)}")
+        return []
         
     if not feed.entries:
-        return None
-    # 最新3件まで取得し、最初の有効なエントリを返す
-    for i, entry in enumerate(feed.entries[:3]):
+        return []
+    
+    # 有効なエントリのみを返す（最大max_entries件）
+    valid_entries = []
+    for entry in feed.entries[:max_entries]:
         if entry.get("title"):
-            return entry
-    return feed.entries[0] if feed.entries else None
+            valid_entries.append(entry)
+    
+    return valid_entries
 
 
 def build_topic_summary(entry: feedparser.FeedParserDict) -> str:
@@ -301,6 +306,30 @@ def create_processing_record(content_hash: str, source_url: str, topic_summary: 
         return False
 
 
+def update_rejected_record(content_hash: str, source_url: str, topic_summary: str, score: float) -> bool:
+    """status='rejected'でレコードを更新（75点未満の記事用）"""
+    if not ddb_table:
+        return True
+    
+    try:
+        ddb_table.put_item(
+            Item={
+                'content_hash': content_hash,
+                'status': 'rejected',
+                'source_url': source_url,
+                'topic_summary': topic_summary,
+                'score': score,
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'ttl': int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp())
+            }
+        )
+        print(f"Saved rejected record for {content_hash} with score {score}")
+        return True
+    except Exception as e:
+        print(f"Error saving rejected record: {str(e)}")
+        return False
+
+
 def update_completed_record(content_hash: str, video_title: str, topic_summary: str) -> bool:
     """status='completed'でレコードを更新"""
     if not ddb_table:
@@ -322,8 +351,6 @@ def update_completed_record(content_hash: str, video_title: str, topic_summary: 
     except Exception as e:
         print(f"Error updating completed record: {str(e)}")
         return False
-
-
 def fetch_reaction_summary(group_b_sources: List[str]) -> Tuple[str, str]:
     """
     グループB（コミュニティ反応ソース）から簡易な反応概要を取得（User-Agent付き）。
@@ -557,8 +584,11 @@ def trigger_github_dispatch(s3_key: str, content_hash: str) -> None:
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Lambda メインハンドラー。
-    - グループAから最新ニュースを 1 件取得し、適合度スコアが 7 以上であれば台本生成〜S3保存〜GitHub Dispatch を実行。
-    - DynamoDB に content_hash が既に存在する場合はスキップ。
+    - RSSソースから全記事を一括収集し、ランダムにシャッフル
+    - 未評価の記事をランダムに5件選んでGeminiで採点
+    - 75点以上の記事は台本生成〜S3保存〜GitHub Dispatch を実行
+    - 75点未満の記事はstatus: rejectedとしてDynamoDBに保存
+    - DynamoDB に content_hash が既に存在する場合はスキップ
     """
     sources = load_rss_sources()
     group_a = sources.get("group_a", [])
@@ -572,35 +602,68 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "reason": "no_items",
     }
 
-    for idx, primary_url in enumerate(group_a):
-        if idx >= 5:
-            print(f"Checked {idx} articles without finding score >= 75. Breaking loop.")
-            break
-
-        primary_entry = fetch_latest_entry(primary_url)
-        if primary_entry is None:
-            print(f"Failed to fetch article from {primary_url}. Trying next...")
-            continue
-
-        topic_summary = build_topic_summary(primary_entry)
-        content_hash = calc_content_hash(topic_summary)
-
-        # 事前チェック：DynamoDBで重複確認
-        if exists_in_dynamodb(content_hash):
-            print(f"Article already exists in DB: {content_hash}. Trying next...")
-            continue
-
-        reaction_site_name, reaction_summary = fetch_reaction_summary(group_b)
-        script_prompt = load_script_prompt()
-
-        site_name_a = primary_entry.get("source", {}).get("title") if primary_entry.get("source") else ""
-        site_name_a = site_name_a or primary_entry.get("feedburner_origlink", primary_url)
-        title_a = primary_entry.get("title", "")
+    # ステップ1: RSSソースから全記事を一括収集
+    print("Step 1: Collecting all articles from RSS sources...")
+    all_articles = []
+    
+    for feed_url in group_a:
+        print(f"Fetching from {feed_url}...")
+        entries = fetch_multiple_entries(feed_url, max_entries=15)
+        for entry in entries:
+            topic_summary = build_topic_summary(entry)
+            content_hash = calc_content_hash(topic_summary)
+            
+            article_data = {
+                'entry': entry,
+                'topic_summary': topic_summary,
+                'content_hash': content_hash,
+                'source_url': entry.get("link", feed_url)
+            }
+            all_articles.append(article_data)
+    
+    print(f"Total articles collected: {len(all_articles)}")
+    
+    # ステップ2: 記事リストをランダムにシャッフル
+    print("Step 2: Shuffling articles randomly...")
+    random.shuffle(all_articles)
+    
+    # ステップ3: DBで既存記事をフィルタリング
+    print("Step 3: Filtering out existing articles from DB...")
+    new_articles = []
+    for article_data in all_articles:
+        if not exists_in_dynamodb(article_data['content_hash']):
+            new_articles.append(article_data)
+    
+    print(f"New articles after DB filtering: {len(new_articles)}")
+    
+    if not new_articles:
+        print("No new articles found.")
+        return result
+    
+    # ステップ4: 未評価の記事からランダムに5件を選択
+    print("Step 4: Selecting 5 random articles for evaluation...")
+    articles_to_evaluate = new_articles[:min(5, len(new_articles))]
+    
+    # ステップ5: 選択した記事をGeminiで採点
+    print("Step 5: Evaluating articles with Gemini...")
+    reaction_site_name, reaction_summary = fetch_reaction_summary(group_b)
+    script_prompt = load_script_prompt()
+    
+    for idx, article_data in enumerate(articles_to_evaluate):
+        entry = article_data['entry']
+        topic_summary = article_data['topic_summary']
+        content_hash = article_data['content_hash']
+        source_url = article_data['source_url']
+        
+        print(f"Evaluating article {idx + 1}/{len(articles_to_evaluate)}: {entry.get('title', 'Untitled')}")
+        
+        site_name_a = entry.get("source", {}).get("title") if entry.get("source") else ""
+        site_name_a = site_name_a or entry.get("feedburner_origlink", source_url)
+        title_a = entry.get("title", "")
         published_at = ""
-        if "published_parsed" in primary_entry and primary_entry.published_parsed:
-            dt = datetime(*primary_entry.published_parsed[:6], tzinfo=timezone.utc)
+        if "published_parsed" in entry and entry.published_parsed:
+            dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
             published_at = dt.isoformat()
-        source_url = primary_entry.get("link", primary_url)
 
         combined_prompt = (
             "まずステップバイステップで論理的に考え、その後に結果をJSONで出力してください。"
@@ -700,7 +763,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             score_value = 0.0
 
         if score_value < 75.0:
-            print(f"Article {idx + 1} score too low: {score_value}. Trying next...")
+            print(f"Article {idx + 1} score too low: {score_value}. Saving as rejected...")
+            # 75点未満の記事はstatus: rejectedとしてDBに保存
+            update_rejected_record(content_hash, source_url, topic_summary, score_value)
             continue  # 次の記事をチェック
 
         # 75点以上の記事が見つかった場合
