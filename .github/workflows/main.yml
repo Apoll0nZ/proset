@@ -25,31 +25,36 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system dependencies (ffmpeg, Docker)
+      - name: Install system dependencies (ffmpeg only)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg docker.io
-          sudo systemctl start docker
-          sudo systemctl enable docker
+          sudo apt-get install -y ffmpeg
 
       - name: Start VOICEVOX Docker engine
         run: |
-          sudo docker pull voicevox/voicevox_engine:cpu-ubuntu20.04-latest
-          sudo docker run -d \
+          docker pull voicevox/voicevox_engine:cpu-ubuntu20.04-latest
+          docker run -d \
             --name voicevox \
             -p 50021:50021 \
             voicevox/voicevox_engine:cpu-ubuntu20.04-latest
           
-          # VOICEVOX API が起動するまで待機
+          # VOICEVOX API が起動するまで待機（ヘルスチェック付き）
           echo "Waiting for VOICEVOX API to be ready..."
           for i in {1..60}; do
-            if curl -s http://localhost:50021/speakers > /dev/null; then
+            if curl -s -f http://localhost:50021/speakers > /dev/null 2>&1; then
               echo "VOICEVOX API is ready!"
               break
             fi
             echo "Waiting... ($i/60)"
             sleep 2
           done
+          
+          # 最終チェック
+          if ! curl -s -f http://localhost:50021/speakers > /dev/null 2>&1; then
+            echo "ERROR: VOICEVOX API failed to start after 120 seconds"
+            docker logs voicevox
+            exit 1
+          fi
 
       - name: Install Python dependencies
         working-directory: ./video_engine
@@ -81,5 +86,5 @@ jobs:
       - name: Cleanup VOICEVOX container
         if: always()
         run: |
-          sudo docker stop voicevox || true
-          sudo docker rm voicevox || true
+          docker stop voicevox || true
+          docker rm voicevox || true
