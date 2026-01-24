@@ -78,48 +78,136 @@ def get_latest_script_object() -> Dict[str, Any]:
     return {"key": key, "data": data}
 
 
+def split_text_for_voicevox(text: str) -> List[str]:
+    """
+    長いテキストを句読点で適切に分割してVOICEVOXのAPI制限を回避
+    
+    Args:
+        text: 分割するテキスト
+        
+    Returns:
+        分割されたテキストのリスト
+    """
+    if not text:
+        return []
+    
+    # 句読点で分割（。！？、。）
+    import re
+    sentences = re.split(r'([。！？、。])', text)
+    
+    # 分割記号を元に戻す
+    result = []
+    current = ""
+    
+    for i in range(0, len(sentences), 2):
+        if i + 1 < len(sentences):
+            sentence = sentences[i] + sentences[i + 1]
+        else:
+            sentence = sentences[i]
+        
+        # 200文字を超える場合はさらに分割
+        if len(sentence) > 200:
+            # 半角スペースや全角スペースで分割
+            words = re.split(r'([\s　])', sentence)
+            temp = ""
+            for j in range(0, len(words), 2):
+                if j + 1 < len(words):
+                    word = words[j] + words[j + 1]
+                else:
+                    word = words[j]
+                
+                if len(temp + word) > 200 and temp:
+                    result.append(temp.strip())
+                    temp = word
+                else:
+                    temp += word
+            
+            if temp.strip():
+                result.append(temp.strip())
+        else:
+            result.append(sentence.strip())
+    
+    return [s for s in result if s.strip()]
 def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> None:
     """
     VOICEVOX API を用いて日本語音声を生成し、音声ファイルとして保存。
+    長いテキストは自動的に分割して合成し、結合する。
     
     Args:
         text: 音声化するテキスト
         speaker_id: VOICEVOX のスピーカーID（例: 3=ずんだもん）
         out_path: 出力音声ファイルパス（.wav形式）
     """
-    # 音声クエリを生成
-    query_url = f"{VOICEVOX_API_URL}/audio_query"
-    query_params = {
-        "text": text,
-        "speaker": speaker_id
-    }
-    query_resp = requests.post(query_url, params=query_params, timeout=30)
-    if query_resp.status_code != 200:
-        raise RuntimeError(f"VOICEVOX クエリ生成失敗: {query_resp.status_code} {query_resp.text}")
+    # テキストを分割
+    text_parts = split_text_for_voicevox(text)
     
-    query_data = query_resp.json()
+    if not text_parts:
+        raise RuntimeError(f"音声化するテキストが空です: {text[:50]}")
     
-    # 音声合成
-    synthesis_url = f"{VOICEVOX_API_URL}/synthesis"
-    synthesis_params = {"speaker": speaker_id}
-    synthesis_resp = requests.post(
-        synthesis_url,
-        params=synthesis_params,
-        json=query_data,
-        timeout=60,
-        headers={"Content-Type": "application/json"}
-    )
-    if synthesis_resp.status_code != 200:
-        raise RuntimeError(f"VOICEVOX 音声合成失敗: {synthesis_resp.status_code} {synthesis_resp.text}")
+    audio_clips = []
+    temp_dir = tempfile.mkdtemp()
     
-    # WAVファイルとして保存
-    with open(out_path, "wb") as out_f:
-        out_f.write(synthesis_resp.content)
+    try:
+        # 各パートを音声合成
+        for i, part_text in enumerate(text_parts):
+            if not part_text.strip():
+                continue
+                
+            # 音声クエリを生成
+            query_url = f"{VOICEVOX_API_URL}/audio_query"
+            query_params = {
+                "text": part_text,
+                "speaker": speaker_id
+            }
+            query_resp = requests.post(query_url, params=query_params, timeout=30)
+            if query_resp.status_code != 200:
+                raise RuntimeError(f"VOICEVOX クエリ生成失敗: {query_resp.status_code} {query_resp.text}")
+            
+            query_data = query_resp.json()
+            
+            # 音声合成
+            synthesis_url = f"{VOICEVOX_API_URL}/synthesis"
+            synthesis_params = {"speaker": speaker_id}
+            synthesis_resp = requests.post(
+                synthesis_url,
+                params=synthesis_params,
+                json=query_data,
+                timeout=60,
+                headers={"Content-Type": "application/json"}
+            )
+            if synthesis_resp.status_code != 200:
+                raise RuntimeError(f"VOICEVOX 音声合成失敗: {synthesis_resp.status_code} {synthesis_resp.text}")
+            
+            # 一時音声ファイルとして保存
+            temp_audio_path = os.path.join(temp_dir, f"temp_audio_{i}.wav")
+            with open(temp_audio_path, "wb") as out_f:
+                out_f.write(synthesis_resp.content)
+            
+            clip = AudioFileClip(temp_audio_path)
+            audio_clips.append(clip)
+        
+        if not audio_clips:
+            raise RuntimeError("音声クリップが生成されませんでした。")
+        
+        # すべての音声クリップを結合
+        final_audio = concatenate_audioclips(audio_clips)
+        final_audio.write_audiofile(out_path, codec="pcm_s16le", fps=44100)
+        
+        # クリップを解放
+        for clip in audio_clips:
+            clip.close()
+        final_audio.close()
+        
+    finally:
+        # 一時ファイルを削除
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str) -> str:
     """
     複数のセリフを順番に音声合成し、結合した音声ファイルを生成。
+    新しいJSONフォーマットに対応し、part名に応じてspeaker_idを決定。
     
     Returns:
         結合された音声ファイルのパス
@@ -127,19 +215,39 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     audio_clips = []
     
     for i, part in enumerate(script_parts):
-        speaker_id = part.get("speaker_id", 3)  # デフォルトはずんだもん
-        text = part.get("text", "")
-        if not text:
+        try:
+            part_name = part.get("part", "")
+            text = part.get("text", "")
+            
+            if not text:
+                print(f"Warning: Empty text for part {i}, skipping...")
+                continue
+            
+            # part名に応じてspeaker_idを決定
+            if part_name.startswith("article_"):
+                # 解説パートはすべてspeaker_id: 3（ずんだもん）
+                speaker_id = 3
+            elif part_name == "reaction":
+                # 反応パートはJSON内のspeaker_idを使用
+                speaker_id = part.get("speaker_id", 3)
+            else:
+                # その他の場合はデフォルトでずんだもん
+                speaker_id = part.get("speaker_id", 3)
+            
+            audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
+            synthesize_speech_voicevox(text, speaker_id, audio_path)
+            
+            clip = AudioFileClip(audio_path)
+            audio_clips.append(clip)
+            
+        except Exception as e:
+            print(f"Error processing part {i}: {str(e)}")
+            print(f"Part data: {part}")
+            # エラーがあっても処理を継続
             continue
-        
-        audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
-        synthesize_speech_voicevox(text, speaker_id, audio_path)
-        
-        clip = AudioFileClip(audio_path)
-        audio_clips.append(clip)
     
     if not audio_clips:
-        raise RuntimeError("音声クリップが生成されませんでした。")
+        raise RuntimeError("音声クリップが生成されませんでした。script_partsの内容を確認してください。")
     
     # すべての音声クリップを結合
     final_audio = concatenate_audioclips(audio_clips)
@@ -163,64 +271,89 @@ def build_video_with_subtitles(
 ) -> None:
     """
     MoviePy を用いて背景 + 字幕 + 音声を合成し mp4 を生成。
-    各セリフごとに字幕を表示する。
+    各セリフごとに字幕を表示する。長尺動画対応のためリソース管理を強化。
     """
-    audio_clip = AudioFileClip(audio_path)
-    total_duration = audio_clip.duration
-
-    bg_clip = ImageClip(background_path).set_duration(total_duration)
-    bg_clip = bg_clip.resize(newsize=(VIDEO_WIDTH, VIDEO_HEIGHT))
-
-    # 各セリフの開始時間を計算
-    current_time = 0
+    audio_clip = None
+    bg_clip = None
     text_clips = []
+    video = None
     
-    for part in script_parts:
-        text = part.get("text", "")
-        if not text:
-            continue
-        
-        # このセリフの音声長を推定（簡易的に文字数から計算）
-        estimated_duration = min(len(text) * 0.1, 5.0)  # 最大5秒
-        
-        if current_time + estimated_duration > total_duration:
-            estimated_duration = total_duration - current_time
-        
-        if estimated_duration <= 0:
-            break
-        
-        txt_clip = TextClip(
-            text,
-            fontsize=48,
-            color="white",
-            font=font_path,
-            method="caption",
-            size=(VIDEO_WIDTH - 200, VIDEO_HEIGHT - 200),
-        ).set_position("center").set_start(current_time).set_duration(estimated_duration)
-        
-        text_clips.append(txt_clip)
-        current_time += estimated_duration
-    
-    # 背景と字幕を合成
-    video = CompositeVideoClip([bg_clip] + text_clips)
-    video = video.set_audio(audio_clip)
+    try:
+        audio_clip = AudioFileClip(audio_path)
+        total_duration = audio_clip.duration
 
-    # ffmpeg が PATH にある前提
-    video.write_videofile(
-        out_video_path,
-        fps=FPS,
-        codec="libx264",
-        audio_codec="aac",
-        temp_audiofile=os.path.join(tempfile.gettempdir(), "temp-audio.m4a"),
-        remove_temp=True,
-    )
-    
-    # クリップを解放
-    audio_clip.close()
-    bg_clip.close()
-    for clip in text_clips:
-        clip.close()
-    video.close()
+        bg_clip = ImageClip(background_path).set_duration(total_duration)
+        bg_clip = bg_clip.resize(newsize=(VIDEO_WIDTH, VIDEO_HEIGHT))
+
+        # 各セリフの開始時間を計算
+        current_time = 0
+        
+        for i, part in enumerate(script_parts):
+            try:
+                text = part.get("text", "")
+                if not text:
+                    continue
+                
+                # このセリフの音声長を推定（簡易的に文字数から計算）
+                estimated_duration = min(len(text) * 0.08, 8.0)  # 最大8秒に調整
+                
+                if current_time + estimated_duration > total_duration:
+                    estimated_duration = total_duration - current_time
+                
+                if estimated_duration <= 0:
+                    break
+                
+                # 字幕クリップを作成（フォントサイズを調整）
+                txt_clip = TextClip(
+                    text,
+                    fontsize=42,  # 少し小さくして長文対応
+                    color="white",
+                    font=font_path,
+                    method="caption",
+                    size=(VIDEO_WIDTH - 200, VIDEO_HEIGHT - 200),
+                    stroke_color="black",  # 輪郭を追加して見やすく
+                    stroke_width=2,
+                ).set_position("center").set_start(current_time).set_duration(estimated_duration)
+                
+                text_clips.append(txt_clip)
+                current_time += estimated_duration
+                
+            except Exception as e:
+                print(f"Error creating subtitle for part {i}: {str(e)}")
+                continue
+        
+        if not text_clips:
+            print("Warning: No text clips created, creating video without subtitles")
+            video = bg_clip.set_audio(audio_clip)
+        else:
+            # 背景と字幕を合成
+            video = CompositeVideoClip([bg_clip] + text_clips)
+            video = video.set_audio(audio_clip)
+
+        # ffmpeg が PATH にある前提
+        video.write_videofile(
+            out_video_path,
+            fps=FPS,
+            codec="libx264",
+            audio_codec="aac",
+            temp_audiofile=os.path.join(tempfile.gettempdir(), "temp-audio.m4a"),
+            remove_temp=True,
+            threads=4,  # スレッド数を制限してメモリ使用量を抑制
+        )
+        
+    finally:
+        # クリップを解放（メモリリーク防止）
+        if audio_clip:
+            audio_clip.close()
+        if bg_clip:
+            bg_clip.close()
+        for clip in text_clips:
+            try:
+                clip.close()
+            except:
+                pass
+        if video:
+            video.close()
 
 
 def build_youtube_client():
@@ -292,79 +425,109 @@ def put_video_history_item(item: Dict[str, Any]) -> None:
 def main() -> None:
     """ローカル/Actions 実行用エントリポイント。"""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # 1. 最新スクリプト JSON を S3 から取得
-        script_obj = get_latest_script_object()
-        s3_key = script_obj["key"]
-        data = script_obj["data"]
-
-        title = data.get("title", "PCニュース解説")
-        description = data.get("description", "")
-        content = data.get("content", {})
-        topic_summary = content.get("topic_summary", "")
-        script_parts = content.get("script_parts", [])
-        thumbnail_data = data.get("thumbnail", {})
-        meta = data.get("meta", {})
-
-        if not script_parts:
-            raise RuntimeError("script_parts が空です。Gemini の出力を確認してください。")
-
-        # 2. VOICEVOX で音声生成（複数セリフ対応）
-        audio_path = synthesize_multiple_speeches(script_parts, tmpdir)
-
-        # 3. Video 合成
-        video_path = os.path.join(tmpdir, "video.mp4")
-        build_video_with_subtitles(
-            background_path=BACKGROUND_IMAGE_PATH,
-            font_path=FONT_PATH,
-            script_parts=script_parts,
-            audio_path=audio_path,
-            out_video_path=video_path,
-        )
-
-        # 4. サムネイル生成
-        thumbnail_path = os.path.join(tmpdir, "thumbnail.png")
+        script_obj = None
+        audio_path = None
+        video_path = None
+        thumbnail_path = None
+        
         try:
-            create_thumbnail(
-                title=title,
-                topic_summary=topic_summary,
-                thumbnail_data=thumbnail_data,
-                output_path=thumbnail_path,
-                meta=meta,
+            # 1. 最新スクリプト JSON を S3 から取得
+            script_obj = get_latest_script_object()
+            s3_key = script_obj["key"]
+            data = script_obj["data"]
+
+            # JSONデータのバリデーションとデフォルト値設定
+            title = data.get("title", "PCニュース解説")
+            description = data.get("description", "")
+            content = data.get("content", {})
+            topic_summary = content.get("topic_summary", "")
+            script_parts = content.get("script_parts", [])
+            thumbnail_data = data.get("thumbnail", {})
+            meta = data.get("meta", {})
+
+            if not script_parts:
+                raise RuntimeError("script_parts が空です。Gemini の出力を確認してください。")
+            
+            print(f"Processing {len(script_parts)} script parts...")
+
+            # 2. VOICEVOX で音声生成（複数セリフ対応）
+            print("Generating audio...")
+            audio_path = synthesize_multiple_speeches(script_parts, tmpdir)
+
+            # 3. Video 合成
+            print("Generating video...")
+            video_path = os.path.join(tmpdir, "video.mp4")
+            build_video_with_subtitles(
+                background_path=BACKGROUND_IMAGE_PATH,
+                font_path=FONT_PATH,
+                script_parts=script_parts,
+                audio_path=audio_path,
+                out_video_path=video_path,
             )
+
+            # 4. サムネイル生成
+            print("Generating thumbnail...")
+            thumbnail_path = os.path.join(tmpdir, "thumbnail.png")
+            try:
+                create_thumbnail(
+                    title=title,
+                    topic_summary=topic_summary,
+                    thumbnail_data=thumbnail_data,
+                    output_path=thumbnail_path,
+                    meta=meta,
+                )
+            except Exception as e:
+                print(f"サムネイル生成に失敗しましたが、処理を続行します: {e}")
+                thumbnail_path = None
+
+            # 5. YouTube へアップロード
+            print("Uploading to YouTube...")
+            youtube_client = build_youtube_client()
+            video_id = upload_to_youtube(
+                youtube=youtube_client,
+                title=title,
+                description=description,
+                video_path=video_path,
+                thumbnail_path=thumbnail_path,
+            )
+
+            # 6. DynamoDB に履歴登録
+            print("Saving to DynamoDB...")
+            now = datetime.now(timezone.utc).isoformat()
+            content_hash = meta.get("content_hash") or ""
+            if not content_hash:
+                raise RuntimeError("meta.content_hash が存在しません。Lambda 側の保存処理を確認してください。")
+
+            item = {
+                "content_hash": content_hash,
+                "title": title,
+                "source_url": meta.get("source_url", ""),
+                "published_at": meta.get("published_at", ""),
+                "topic_summary": topic_summary,
+                "youtube_video_id": video_id,
+                "registered_at": now,
+                "script_s3_bucket": SCRIPT_S3_BUCKET,
+                "script_s3_key": s3_key,
+            }
+            put_video_history_item(item)
+            
+            print(f"Successfully completed! Video ID: {video_id}")
+
         except Exception as e:
-            print(f"サムネイル生成に失敗しましたが、処理を続行します: {e}")
-            thumbnail_path = None
-
-        # 5. YouTube へアップロード
-        youtube_client = build_youtube_client()
-        video_id = upload_to_youtube(
-            youtube=youtube_client,
-            title=title,
-            description=description,
-            video_path=video_path,
-            thumbnail_path=thumbnail_path,
-        )
-
-        # 6. DynamoDB に履歴登録
-        now = datetime.now(timezone.utc).isoformat()
-        content_hash = meta.get("content_hash") or ""
-        if not content_hash:
-            raise RuntimeError("meta.content_hash が存在しません。Lambda 側の保存処理を確認してください。")
-
-        item = {
-            "content_hash": content_hash,
-            "title": title,
-            "source_url": meta.get("source_url", ""),
-            "published_at": meta.get("published_at", ""),
-            "topic_summary": topic_summary,
-            "youtube_video_id": video_id,
-            "registered_at": now,
-            "script_s3_bucket": SCRIPT_S3_BUCKET,
-            "script_s3_key": s3_key,
-        }
-        put_video_history_item(item)
-
-        # 7. 一時ファイルは TemporaryDirectory コンテキストを抜けると自動削除
+            print(f"Error in main process: {str(e)}")
+            raise
+        
+        finally:
+            # 7. 一時ファイルのクリーンアップ（明示的な削除）
+            try:
+                if audio_path and os.path.exists(audio_path):
+                    os.remove(audio_path)
+                if video_path and os.path.exists(video_path):
+                    os.remove(video_path)
+                if thumbnail_path and os.path.exists(thumbnail_path):
+                    os.remove(thumbnail_path)
+            except Exception as e:
+                print(f"Error cleaning up temporary files: {str(e)}")
 
 
 if __name__ == "__main__":
