@@ -65,8 +65,9 @@ jobs:
       - name: Debug AWS secrets
         run: |
           echo "Checking AWS secrets..."
+          echo "MY_AWS_REGION raw: '${{ secrets.MY_AWS_REGION }}'"
           echo "MY_AWS_REGION length: ${{ secrets.MY_AWS_REGION }}"
-          echo "MY_AWS_REGION is set: ${{ secrets.MY_AWS_REGION != '' }}"
+          echo "MY_AWS_REGION trimmed: '${{ secrets.MY_AWS_REGION }}'"
           echo "AWS_ACCESS_KEY_ID is set: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}"
           echo "AWS_SECRET_ACCESS_KEY is set: ${{ secrets.AWS_SECRET_ACCESS_KEY != '' }}"
 
@@ -75,7 +76,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.MY_AWS_REGION }}
+          aws-region: ap-northeast-1
 
       - name: Run video renderer
         working-directory: ./video_engine
