@@ -67,9 +67,10 @@ jobs:
           echo "Checking AWS secrets..."
           echo "MY_AWS_REGION raw: '${{ secrets.MY_AWS_REGION }}'"
           echo "MY_AWS_REGION length: ${{ secrets.MY_AWS_REGION }}"
-          echo "MY_AWS_REGION trimmed: '${{ secrets.MY_AWS_REGION }}'"
-          echo "AWS_ACCESS_KEY_ID is set: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}"
-          echo "AWS_SECRET_ACCESS_KEY is set: ${{ secrets.AWS_SECRET_ACCESS_KEY != '' }}"
+          echo "AWS_ACCESS_KEY_ID length: ${{ secrets.AWS_ACCESS_KEY_ID }}"
+          echo "AWS_SECRET_ACCESS_KEY length: ${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          echo "AWS_ACCESS_KEY_ID starts with AKIA: ${{ startsWith(secrets.AWS_ACCESS_KEY_ID, 'AKIA') }}"
+          echo "All secrets are non-empty: ${{ secrets.MY_AWS_REGION != '' && secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
