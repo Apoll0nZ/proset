@@ -9,12 +9,12 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
+      MY_AWS_REGION: ${{ secrets.MY_AWS_REGION }}
       SCRIPT_S3_BUCKET: ${{ secrets.SCRIPT_S3_BUCKET }}
       SCRIPT_S3_PREFIX: ${{ secrets.SCRIPT_S3_PREFIX }}
-      DDB_TABLE_NAME: VideoHistory
+      MY_DDB_TABLE_NAME: ${{ secrets.MY_DDB_TABLE_NAME }}
       YOUTUBE_AUTH_JSON: ${{ secrets.YOUTUBE_AUTH_JSON }}
-      GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+      VOICEVOX_API_URL: http://localhost:50021
 
     steps:
       - name: Checkout repository
@@ -25,10 +25,31 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system dependencies (ffmpeg)
+      - name: Install system dependencies (ffmpeg, Docker)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg docker.io
+          sudo systemctl start docker
+          sudo systemctl enable docker
+
+      - name: Start VOICEVOX Docker engine
+        run: |
+          sudo docker pull voicevox/voicevox_engine:cpu-ubuntu20.04-latest
+          sudo docker run -d \
+            --name voicevox \
+            -p 50021:50021 \
+            voicevox/voicevox_engine:cpu-ubuntu20.04-latest
+          
+          # VOICEVOX API が起動するまで待機
+          echo "Waiting for VOICEVOX API to be ready..."
+          for i in {1..60}; do
+            if curl -s http://localhost:50021/speakers > /dev/null; then
+              echo "VOICEVOX API is ready!"
+              break
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 2
+          done
 
       - name: Install Python dependencies
         working-directory: ./video_engine
@@ -41,10 +62,24 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ secrets.MY_AWS_REGION }}
 
       - name: Run video renderer
         working-directory: ./video_engine
+        env:
+          MY_AWS_REGION: ${{ secrets.MY_AWS_REGION }}
+          MY_DDB_TABLE_NAME: ${{ secrets.MY_DDB_TABLE_NAME }}
+          SCRIPT_S3_BUCKET: ${{ secrets.SCRIPT_S3_BUCKET }}
+          SCRIPT_S3_PREFIX: ${{ secrets.SCRIPT_S3_PREFIX }}
+          YOUTUBE_AUTH_JSON: ${{ secrets.YOUTUBE_AUTH_JSON }}
         run: |
-          python render_video.py
+          python render_video.py \
+            --s3-key "${{ github.event.client_payload.s3_key }}" \
+            --s3-bucket "${{ github.event.client_payload.s3_bucket }}" \
+            --content-hash "${{ github.event.client_payload.content_hash }}"
 
+      - name: Cleanup VOICEVOX container
+        if: always()
+        run: |
+          sudo docker stop voicevox || true
+          sudo docker rm voicevox || true

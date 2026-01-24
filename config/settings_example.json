@@ -1,7 +1,7 @@
 {
   "lambda": {
-    "AWS_REGION": "ap-northeast-1",
-    "DDB_TABLE_NAME": "VideoHistory",
+    "MY_AWS_REGION": "ap-northeast-1",
+    "MY_DDB_TABLE_NAME": "VideoHistory",
     "SCRIPT_S3_BUCKET": "your-script-bucket-name",
     "SCRIPT_S3_PREFIX": "scripts/",
     "GITHUB_REPO": "your-github-username/your-repo",
@@ -9,10 +9,10 @@
     "GEMINI_MODEL_NAME": "gemini-1.5-pro"
   },
   "github_actions": {
-    "AWS_REGION": "ap-northeast-1",
+    "MY_AWS_REGION": "ap-northeast-1",
     "SCRIPT_S3_BUCKET": "your-script-bucket-name",
     "SCRIPT_S3_PREFIX": "scripts/",
-    "DDB_TABLE_NAME": "VideoHistory"
+    "MY_DDB_TABLE_NAME": "VideoHistory"
   },
   "secrets_example": {
     "AWS_ACCESS_KEY_ID": "AKIA...",
