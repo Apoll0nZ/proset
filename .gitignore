@@ -18,6 +18,7 @@ generated_audio/
 generated_video/
 dist/
 build/
+lambda/
 
 # OS / editor specific
 .DS_Store
