@@ -284,9 +284,33 @@ def build_video_with_subtitles(
         audio_clip = AudioFileClip(audio_path)
         total_duration = audio_clip.duration
 
-        # PILで直接開き、RGBに変換してからnumpy配列化
-        with Image.open(background_path) as img:
-            bg_image_array = np.array(img.convert("RGB"))
+        # PILで直接開き、RGBに変換してからnumpy配列化（デバッグ情報付き）
+        print(f"Background image path: {background_path}")
+        
+        # ファイルの存在確認とサイズチェック
+        if not os.path.exists(background_path):
+            print(f"ERROR: Background image does not exist: {background_path}")
+            raise FileNotFoundError(f"Background image not found: {background_path}")
+        
+        file_size = os.path.getsize(background_path)
+        print(f"Background image file size: {file_size} bytes")
+        
+        if file_size == 0:
+            print("ERROR: Background image file is empty")
+            raise ValueError("Background image file is empty")
+        
+        try:
+            with Image.open(background_path) as img:
+                print(f"Image format: {img.format}, size: {img.size}, mode: {img.mode}")
+                bg_image_array = np.array(img.convert("RGB"))
+                print(f"Successfully converted to numpy array: {bg_image_array.shape}")
+        except Exception as e:
+            print(f"ERROR: Failed to load background image: {e}")
+            print("Creating fallback black background...")
+            # フォールバック：黒い背景をnumpyで生成
+            bg_image_array = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            print("Generated fallback black background")
+        
         bg_clip = ImageClip(bg_image_array).set_duration(total_duration)
         bg_clip = bg_clip.resize(newsize=(VIDEO_WIDTH, VIDEO_HEIGHT))
 
