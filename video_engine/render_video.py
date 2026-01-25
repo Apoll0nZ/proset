@@ -31,8 +31,8 @@ from create_thumbnail import create_thumbnail
 
 
 AWS_REGION = os.environ.get("MY_AWS_REGION", "ap-northeast-1")
-SCRIPT_S3_BUCKET = os.environ.get("SCRIPT_S3_BUCKET", "")
-SCRIPT_S3_PREFIX = os.environ.get("SCRIPT_S3_PREFIX", "scripts/")
+S3_BUCKET = os.environ.get("S3_BUCKET", "")
+SCRIPTS_PREFIX = os.environ.get("SCRIPTS_PATH", "scripts/")
 DDB_TABLE_NAME = os.environ.get("MY_DDB_TABLE_NAME", "VideoHistory")
 
 YOUTUBE_AUTH_JSON = os.environ.get("YOUTUBE_AUTH_JSON", "")
@@ -58,21 +58,21 @@ dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 
 def get_latest_script_object() -> Dict[str, Any]:
     """S3 から最新(LastModified が最大)のスクリプト JSON オブジェクトを取得。"""
-    if not SCRIPT_S3_BUCKET:
-        raise RuntimeError("SCRIPT_S3_BUCKET が設定されていません。")
+    if not S3_BUCKET:
+        raise RuntimeError("S3_BUCKET が設定されていません。")
 
     resp = s3_client.list_objects_v2(
-        Bucket=SCRIPT_S3_BUCKET,
-        Prefix=SCRIPT_S3_PREFIX.rstrip("/") + "/",
+        Bucket=S3_BUCKET,
+        Prefix=SCRIPTS_PREFIX.rstrip("/") + "/",
     )
     contents = resp.get("Contents", [])
     if not contents:
-        raise RuntimeError("スクリプト JSON が S3 に存在しません。")
+        raise RuntimeError("scripts/ に台本ファイルがありません")
 
     latest = max(contents, key=lambda x: x["LastModified"])
     key = latest["Key"]
 
-    obj = s3_client.get_object(Bucket=SCRIPT_S3_BUCKET, Key=key)
+    obj = s3_client.get_object(Bucket=S3_BUCKET, Key=key)
     body = obj["Body"].read().decode("utf-8")
     data = json.loads(body)
     return {"key": key, "data": data}
@@ -506,7 +506,7 @@ def main() -> None:
                 "topic_summary": topic_summary,
                 "youtube_video_id": video_id,
                 "registered_at": now,
-                "script_s3_bucket": SCRIPT_S3_BUCKET,
+                "script_s3_bucket": S3_BUCKET,
                 "script_s3_key": s3_key,
             }
             put_video_history_item(item)
