@@ -6,7 +6,8 @@ from typing import Any, Dict, List
 import random
 
 import boto3
-import imageio
+import numpy as np
+from PIL import Image
 from botocore.client import Config
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -283,8 +284,9 @@ def build_video_with_subtitles(
         audio_clip = AudioFileClip(audio_path)
         total_duration = audio_clip.duration
 
-        # Pillowバックエンドを使用して背景画像を読み込み
-        bg_image_array = imageio.imread(background_path, format="PNG-PIL")
+        # PILで直接開き、RGBに変換してからnumpy配列化
+        with Image.open(background_path) as img:
+            bg_image_array = np.array(img.convert("RGB"))
         bg_clip = ImageClip(bg_image_array).set_duration(total_duration)
         bg_clip = bg_clip.resize(newsize=(VIDEO_WIDTH, VIDEO_HEIGHT))
 
