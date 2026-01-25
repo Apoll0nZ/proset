@@ -537,13 +537,28 @@ def main() -> None:
             # 6. DynamoDB に履歴登録
             print("Saving to DynamoDB...")
             now = datetime.now(timezone.utc).isoformat()
-            content_hash = meta.get("content_hash") or ""
-            if not content_hash:
-                raise RuntimeError("meta.content_hash が存在しません。Lambda 側の保存処理を確認してください。")
+            
+            # urlを主キーとして使用、content_hashは必須ではない
+            url = meta.get("url") or ""
+            if not url:
+                print("WARNING: meta.url が存在しません。content_hashをフォールバックとして使用します。")
+                url = meta.get("content_hash") or ""
+            
+            if not url:
+                raise RuntimeError("meta.url と meta.content_hash の両方が存在しません。Lambda 側の保存処理を確認してください。")
+
+            # TTL（3年後）
+            from datetime import timedelta
+            ttl_timestamp = int((datetime.now(timezone.utc) + timedelta(days=1095)).timestamp())
 
             item = {
-                "content_hash": content_hash,
+                "url": url,  # 主キーをurlに変更
                 "title": title,
+                "processed_at": now,
+                "status": "completed",  # 動画生成完了
+                "score": meta.get("score", 0.0),  # スコアがあれば保存
+                "ttl": ttl_timestamp,
+                # 追加情報（既存項目を維持）
                 "source_url": meta.get("source_url", ""),
                 "published_at": meta.get("published_at", ""),
                 "topic_summary": topic_summary,
