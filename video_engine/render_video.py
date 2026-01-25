@@ -8,6 +8,9 @@ import random
 import boto3
 import numpy as np
 from PIL import Image
+# Pillow互換性パッチ：ANTIALIASをLANCZOSにリンク
+if not hasattr(Image, 'ANTIALIAS'):
+    Image.ANTIALIAS = Image.LANCZOS
 from botocore.client import Config
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -317,7 +320,13 @@ def build_video_with_subtitles(
             print("Generated fallback black background")
         
         bg_clip = ImageClip(bg_image_array).set_duration(total_duration)
-        bg_clip = bg_clip.resize(newsize=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        # MoviePyのリサイズをより安定した方法に変更
+        try:
+            bg_clip = bg_clip.resize(newsize=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        except Exception as e:
+            print(f"WARNING: Resize failed, trying alternative method: {e}")
+            # フォールバック：リサイズせずに中央配置
+            bg_clip = bg_clip.set_position('center')
 
         # 各セリフの開始時間を計算
         current_time = 0
