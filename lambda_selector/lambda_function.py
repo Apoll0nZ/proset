@@ -11,6 +11,7 @@ import os
 import random
 import re
 import time
+from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -194,17 +195,28 @@ def hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def is_processed_url(url: str) -> bool:
+def get_article_info(url: str) -> Optional[Dict[str, Any]]:
+    """URLに対応する記事情報を取得（scoreとstatusを含む）"""
     try:
         response = ddb_table.get_item(
             Key={"url": url},
-            ProjectionExpression="#u",
-            ExpressionAttributeNames={"#u": "url"}
+            ProjectionExpression="#u, #s, #sc, #pa, #ttl",
+            ExpressionAttributeNames={
+                "#u": "url",
+                "#s": "status", 
+                "#sc": "score",
+                "#pa": "processed_at",
+                "#ttl": "ttl"
+            }
         )
+        item = response.get("Item")
+        if item and "score" in item:
+            # Decimalをfloatに変換して比較処理で扱いやすくする
+            item["score"] = float(item["score"])
+        return item
     except Exception as exc:
         print(f"DynamoDB get_item error: {exc}")
-        return False
-    return "Item" in response
+        return None
 
 
 def mark_urls_processed_batch(articles: List[Dict[str, Any]]) -> None:
@@ -222,7 +234,8 @@ def mark_urls_processed_batch(articles: List[Dict[str, Any]]) -> None:
                         "processed_at": _iso_now(),
                         "ttl": _ttl(1095),  # 3年間保持
                         "status": "evaluated",
-                        "content_hash": article.get("content_hash", "")
+                        "content_hash": article.get("content_hash", ""),
+                        "score": Decimal(str(article.get("score", 0.0)))
                     }
                 )
         print(f"Batch wrote {len(articles)} URLs to DynamoDB (3-year retention)")
@@ -231,10 +244,28 @@ def mark_urls_processed_batch(articles: List[Dict[str, Any]]) -> None:
         # batch_writeに失敗した場合は個別に保存
         for article in articles:
             try:
-                mark_url_processed(article["url"], article["title"], "evaluated")
+                score = article.get("score", 0.0)
+                save_article_with_score(article["url"], article["title"], score, "evaluated")
             except Exception as e:
                 print(f"Fallback write failed for {article['url']}: {e}")
 
+
+def save_article_with_score(url: str, title: str, score: float, status: str = "evaluated") -> None:
+    """記事をスコア付きで保存"""
+    try:
+        ddb_table.put_item(
+            Item={
+                "url": url,
+                "title": title,
+                "processed_at": _iso_now(),
+                "ttl": _ttl(1095),  # 3年間保持
+                "status": status,
+                "score": Decimal(str(score))
+            }
+        )
+    except Exception as exc:
+        print(f"DynamoDB put_item error: {exc}")
+        raise
 
 def mark_url_processed(url: str, title: str, status: str = "selected") -> None:
     try:
@@ -281,177 +312,157 @@ def fetch_reaction_summary(group_b_sources: List[str]) -> Dict[str, str]:
 
 
 # -----------------------------------------------------------------------------
-# Gemini 評価ロジック（10件ずつ × 最大3回）
+# Gemini 評価ロジック（スコアリング方式）
 # -----------------------------------------------------------------------------
-def evaluate_articles_batch(
-    articles: List[Dict[str, Any]],
-    context: Any,
-) -> Optional[Dict[str, Any]]:
+BASE_SCORE_THRESHOLD = 70.0  # 基準点
+STOCK_DAYS = 7  # 過去何日間のストック記事を対象にするか
+
+def evaluate_article_with_gemini(article: Dict[str, Any]) -> Optional[float]:
+    """Geminiを使って記事を評価し、スコアを返す（0-100点）"""
+    summary = article["topic_summary"].replace("\n", " ")[:500]
+    
+    prompt = (
+        f"以下の記事をYouTube動画としての価値を0-100点で評価してください。"
+        f"新製品発表、OSアップデート、技術リーク、企業買収など具体的で速報性のある話題を高く評価してください。"
+        f"評価基準：速報性(30点)、具体性(25点)、視聴者への影響度(25点)、新規性(20点)。"
+        f"必ず {{\"score\": 85}} のようなJSON形式で返してください。"
+        f"\n\n記事タイトル: {article['title']}\n要約: {summary}"
+    )
+
+    response = call_gemini_generate_content(prompt)
+    if response is None:
+        print(f"Gemini evaluation failed for: {article['title']}")
+        return None
+
+    response = response.strip()
+    print(f"Gemini evaluation response: {response}")
+
+    try:
+        parsed = json.loads(response)
+        if isinstance(parsed, dict) and "score" in parsed:
+            score = float(parsed["score"])
+            # 0-100の範囲にクリップ
+            score = max(0.0, min(100.0, score))
+            print(f"Article scored: {article['title']} -> {score}点")
+            return score
+    except (json.JSONDecodeError, ValueError, KeyError):
+        print(f"JSON parsing failed for score, trying regex fallback")
+        
+        # フォールバック: 正規表現で数値を抽出
+        pattern = re.compile(r"(\d+(?:\.\d+)?)")
+        matches = pattern.findall(response)
+        if matches:
+            try:
+                score = float(matches[0])
+                score = max(0.0, min(100.0, score))
+                print(f"Regex fallback score: {article['title']} -> {score}点")
+                return score
+            except ValueError:
+                pass
+
+    print(f"Could not extract valid score from response: {response}")
+    return None
+def filter_and_collect_candidates(all_articles: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """重複フィルタリングと候補収集"""
+    new_articles = []  # 初めて取得したURL
+    stock_candidates = []  # 過去のストック記事（基準点以上）
+    
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=STOCK_DAYS)
+    
+    for article in all_articles:
+        url = article["url"]
+        existing_info = get_article_info(url)
+        
+        if not existing_info:
+            # 初めて取得したURL -> 新着記事リストに追加
+            new_articles.append(article)
+        else:
+            status = existing_info.get("status", "")
+            score = existing_info.get("score", 0.0)
+            processed_at = existing_info.get("processed_at", "")
+            
+            # 既に動画化済みの場合は除外
+            if status == "selected":
+                print(f"Skipping already selected article: {article['title']}")
+                continue
+            
+            # 過去にボツ判定済みの場合は除外
+            if score < BASE_SCORE_THRESHOLD:
+                print(f"Skipping low score article: {article['title']} ({score}点)")
+                continue
+            
+            # 7日以内の記事かチェック
+            try:
+                if processed_at:
+                    processed_dt = datetime.fromisoformat(processed_at.replace('Z', '+00:00'))
+                    if processed_dt >= cutoff_date:
+                        # 過去7日間の基準点以上の記事 -> ストック候補に追加
+                        article["score"] = score  # DBのスコアを設定
+                        article["processed_at"] = processed_at
+                        stock_candidates.append(article)
+                        print(f"Added stock candidate: {article['title']} ({score}点)")
+                    else:
+                        print(f"Skipping old article: {article['title']} ({processed_at})")
+                else:
+                    print(f"Skipping article without processed_at: {article['title']}")
+            except Exception as e:
+                print(f"Date parsing error for {article['title']}: {e}")
+                continue
+    
+    print(f"新着記事: {len(new_articles)}件, ストック候補: {len(stock_candidates)}件")
+    return new_articles, stock_candidates
+
+def evaluate_new_articles(new_articles: List[Dict[str, Any]], context: Any) -> List[Dict[str, Any]]:
+    """新着記事をGeminiで評価"""
+    if not new_articles:
+        return []
+    
     remaining_ms = context.get_remaining_time_in_millis()
     if remaining_ms < 120_000:
-        print(f"Insufficient time for evaluation: {remaining_ms}ms")
-        return None
-
-    # 最新の最大30件を対象にする
-    articles_to_eval = articles[:30]
-    if len(articles_to_eval) < 1:
-        print("No articles available for evaluation")
-        return None
-
-    print(f"Evaluating {len(articles_to_eval)} articles in batches of 10...")
+        print(f"Insufficient time for new article evaluation: {remaining_ms}ms")
+        return []
     
-    batch_results = []
     evaluated_articles = []
     
-    # 10件ずつ×最大3回の評価
-    for i in range(0, len(articles_to_eval), 10):
-        batch_num = i // 10 + 1
-        batch = articles_to_eval[i:i+10]
+    # 新着記事を1件ずつ評価（APIコスト削減のため）
+    for i, article in enumerate(new_articles[:20]):  # 最大20件に制限
+        print(f"Evaluating new article {i+1}/{len(new_articles)}: {article['title']}")
         
-        print(f"Step {batch_num}: Evaluating batch {batch_num} (articles {i+1}-{min(i+10, len(articles_to_eval))})...")
-        
-        if batch_num > 1:
-            print("Waiting 1 second between batches...")
-            time.sleep(1)
-        
-        result = _evaluate_single_batch(batch, f"batch_{batch_num}")
-        if result:
-            batch_results.append(result)
-            evaluated_articles.extend(batch)  # 評価対象記事を記録
+        score = evaluate_article_with_gemini(article)
+        if score is not None:
+            article["score"] = score
+            evaluated_articles.append(article)
+            
+            # 基準点以上の場合のみ保存
+            if score >= BASE_SCORE_THRESHOLD:
+                save_article_with_score(article["url"], article["title"], score, "evaluated")
         else:
-            print(f"Batch {batch_num} evaluation failed")
+            print(f"Failed to evaluate: {article['title']}")
+        
+        # APIレート制限対策
+        if i < len(new_articles) - 1:
+            time.sleep(1)
     
-    # 評価対象になったすべての記事を保存
-    if evaluated_articles:
-        mark_urls_processed_batch(evaluated_articles)
-    
-    if not batch_results:
-        print("All batches failed")
+    print(f"Evaluated {len(evaluated_articles)} new articles")
+    return evaluated_articles
+
+def select_best_article(candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """候補の中から最高スコアの記事を選出"""
+    if not candidates:
         return None
     
-    if len(batch_results) == 1:
-        print("Only one successful batch. Returning winner directly.")
-        return batch_results[0]
+    # スコアでソートして最高点の記事を選択
+    best_article = max(candidates, key=lambda x: x.get("score", 0.0))
+    best_score = best_article.get("score", 0.0)
     
-    # 複数バッチの勝者から最終選択
-    print("Final selection from batch winners...")
-    time.sleep(1)
-    final_result = _select_final_winner(batch_results)
-    return final_result or batch_results[0]
+    print(f"Selected best article: {best_article['title']} ({best_score}点)")
+    
+    # 選出された記事をstatus="selected"に更新
+    mark_url_processed(best_article["url"], best_article["title"], "selected")
+    
+    return best_article
 
 
-def _evaluate_single_batch(articles: List[Dict[str, Any]], batch_name: str) -> Optional[Dict[str, Any]]:
-    if not articles:
-        return None
-
-    items_lines = []
-    for idx, article in enumerate(articles, start=1):
-        summary = article["topic_summary"].replace("\n", " ")[:200]
-        items_lines.append(f"{idx}. ID:{article['content_hash']} | {article['title']}\n要約: {summary}")
-
-    prompt = (
-        f"以下の{len(articles)}件の記事からYouTube動画に最適な記事を1件だけ選んでください。\n"
-        "新製品発表、OSアップデート、技術リーク、企業買収など具体的で速報性のある話題を優先してください。\n"
-        "必ず {{\"selected_index\": 5}} のようなJSON形式で返してください。番号のみの返答も受け付けます。\n"
-        f"\n記事一覧:\n{os.linesep.join(items_lines)}\n"
-    )
-
-    print(f"Evaluating {batch_name} with {len(articles)} articles...")
-    response = call_gemini_generate_content(prompt)
-    if response is None:
-        print(f"{batch_name}: Gemini response None")
-        return None
-
-    response = response.strip()
-    print(f"{batch_name} raw response: {response}")
-
-    # JSON形式で解析を試みる
-    selected_index = None
-    try:
-        parsed = json.loads(response)
-        if isinstance(parsed, dict) and "selected_index" in parsed:
-            selected_index = int(parsed["selected_index"])
-            print(f"{batch_name}: JSON parsed successfully, selected_index={selected_index}")
-    except (json.JSONDecodeError, ValueError, KeyError):
-        print(f"{batch_name}: JSON parsing failed, trying regex fallback")
-        # フォールバック: 正規表現で数字を抽出
-        pattern = re.compile(r"([1-" + str(len(articles)) + "])")
-        match = pattern.search(response)
-        if match:
-            selected_index = int(match.group(1))
-            print(f"{batch_name}: Regex fallback found index {selected_index}")
-
-    if selected_index is None:
-        print(f"{batch_name}: no valid choice in response")
-        return None
-
-    # インデックスを0ベースに変換
-    selected_index -= 1
-    if selected_index < 0 or selected_index >= len(articles):
-        print(f"{batch_name}: selected index out of range -> {selected_index}")
-        return None
-
-    return {
-        "article": articles[selected_index],
-        "reason": f"{batch_name} winner",
-    }
-
-
-def _select_final_winner(candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    valid_candidates = [candidate for candidate in candidates if candidate]
-    if len(valid_candidates) <= 1:
-        print(f"Expected multiple candidates, got {len(valid_candidates)}. Returning first candidate.")
-        return valid_candidates[0] if valid_candidates else None
-
-    lines = []
-    for idx, candidate in enumerate(valid_candidates, start=1):
-        article = candidate["article"]
-        summary = article["topic_summary"].replace("\n", " ")[:200]
-        lines.append(f"{idx}. ID:{article['content_hash']} | {article['title']}\n要約: {summary}")
-
-    prompt = (
-        f"{len(valid_candidates)}つの候補から、視聴者にとって最も価値の高いテックニュースを1つ選んでください。\n"
-        "速報性と具体的な発表内容を重視し、最も魅力的な記事番号だけを半角数字で回答してください。\n"
-        "必ず {{\"selected_index\": 2}} のようなJSON形式で返してください。番号のみの返答も受け付けます。\n"
-        f"\n候補一覧:\n{os.linesep.join(lines)}\n"
-    )
-
-    response = call_gemini_generate_content(prompt)
-    if response is None:
-        print("Final selection: Gemini response None")
-        return None
-
-    response = response.strip()
-    print(f"Final selection raw response: {response}")
-
-    # JSON形式で解析を試みる
-    selected_index = None
-    try:
-        parsed = json.loads(response)
-        if isinstance(parsed, dict) and "selected_index" in parsed:
-            selected_index = int(parsed["selected_index"])
-            print(f"Final selection: JSON parsed successfully, selected_index={selected_index}")
-    except (json.JSONDecodeError, ValueError, KeyError):
-        print("Final selection: JSON parsing failed, trying regex fallback")
-        # フォールバック: 正規表現で数字を抽出
-        match = re.search(r"([1-" + str(len(valid_candidates)) + "])", response)
-        if match:
-            selected_index = int(match.group(1))
-            print(f"Final selection: Regex fallback found index {selected_index}")
-
-    if selected_index is None:
-        print("Final selection: no valid number")
-        return None
-
-    # インデックスを0ベースに変換
-    selected_index -= 1
-    if selected_index < 0 or selected_index >= len(valid_candidates):
-        print(f"Final selection: index out of range -> {selected_index}")
-        return None
-
-    winner = valid_candidates[selected_index]
-    winner["reason"] = "final winner"
-    return winner
 
 
 # -----------------------------------------------------------------------------
@@ -527,38 +538,54 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     print(f"Fetched {len(all_articles)} articles")
 
-    print("Step 2: Removing already processed URLs via DynamoDB...")
-    new_articles = [article for article in all_articles if not is_processed_url(article["url"])]
-    print(f"Remaining articles after dedup: {len(new_articles)}")
-    if not new_articles:
-        return {"status": "no_new_articles"}
-
-    # 最新の記事順にソート（published_atが新しい順）
-    new_articles.sort(key=lambda x: x.get("published_at", ""), reverse=True)
-
     reaction = fetch_reaction_summary(group_b)
-    print("Starting Gemini evaluation...")
+    print(f"Reaction summary: {reaction['site']}")
 
-    evaluation_result = evaluate_articles_batch(new_articles, context)
-    if not evaluation_result:
-        return {"status": "evaluation_failed"}
-
-    selected_article = evaluation_result["article"]
-    print(f"Selected article: {selected_article['title']}")
-
-    # 採用記事を「selected」ステータスで保存
-    mark_url_processed(selected_article["url"], selected_article["title"], "selected")
-
+    print(f"Step 2: Filtering articles and collecting candidates...")
+    new_articles, stock_candidates = filter_and_collect_candidates(all_articles)
+    
+    if not new_articles and not stock_candidates:
+        print("No candidates available")
+        return {"status": "no_candidates"}
+    
+    # 新着記事を評価
+    evaluated_new_articles = []
+    if new_articles:
+        print(f"Step 3: Evaluating {len(new_articles)} new articles...")
+        evaluated_new_articles = evaluate_new_articles(new_articles, context)
+    
+    # 基準点以上の新着記事のみを候補に追加
+    qualified_new = [article for article in evaluated_new_articles if article.get("score", 0.0) >= BASE_SCORE_THRESHOLD]
+    print(f"Qualified new articles: {len(qualified_new)}件")
+    
+    # すべての候補を結合
+    all_candidates = qualified_new + stock_candidates
+    
+    if not all_candidates:
+        print("No qualified candidates available")
+        return {"status": "no_qualified_candidates"}
+    
+    print(f"Step 4: Selecting best article from {len(all_candidates)} candidates...")
+    selected_article = select_best_article(all_candidates)
+    
+    if not selected_article:
+        return {"status": "selection_failed"}
+    
+    print(f"Selected article: {selected_article['title']} ({selected_article.get('score', 0)}点)")
+    
     # lambda_writer用にS3に保存
     pending_key = save_pending_article(selected_article, reaction)
-
+    
     print(f"Pending article saved to s3://{S3_BUCKET}/{pending_key}")
     return {
         "status": "ok",
         "pending_key": pending_key,
         "url": selected_article["url"],
         "title": selected_article["title"],
-        "evaluated_count": len(new_articles[:30]),  # 評価対象記事数
+        "score": selected_article.get("score", 0.0),
+        "new_articles_count": len(new_articles),
+        "stock_candidates_count": len(stock_candidates),
+        "total_candidates": len(all_candidates)
     }
 
 
