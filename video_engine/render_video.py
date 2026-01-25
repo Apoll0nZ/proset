@@ -31,8 +31,8 @@ from create_thumbnail import create_thumbnail
 
 
 AWS_REGION = os.environ.get("MY_AWS_REGION", "ap-northeast-1")
-S3_BUCKET = os.environ.get("S3_BUCKET", "")
-SCRIPTS_PREFIX = os.environ.get("SCRIPTS_PATH", "scripts/")
+S3_BUCKET = os.environ.get("SCRIPT_S3_BUCKET", "")
+SCRIPTS_PREFIX = os.environ.get("SCRIPT_S3_PREFIX", "scripts/")
 DDB_TABLE_NAME = os.environ.get("MY_DDB_TABLE_NAME", "VideoHistory")
 
 YOUTUBE_AUTH_JSON = os.environ.get("YOUTUBE_AUTH_JSON", "")
