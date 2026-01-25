@@ -23,4 +23,7 @@ lambda/
 # OS / editor specific
 .DS_Store
 
+# Documentation
+README.md
+
 lambda/

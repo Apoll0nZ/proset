@@ -1,0 +1,308 @@
+import os
+import sys
+
+# 実行ファイルがある場所を取得し、packageフォルダを検索パスに追加
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(current_dir, "package"))
+
+import json
+import os
+import re
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+import boto3
+import requests
+
+# -----------------------------------------------------------------------------
+# 環境変数
+# -----------------------------------------------------------------------------
+S3_BUCKET = os.environ["S3_BUCKET"]
+PENDING_PREFIX = os.environ.get("PENDING_PATH", "pending/")
+SCRIPTS_PREFIX = os.environ.get("SCRIPTS_PATH", "scripts/")
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
+GEMINI_API_VERSION = os.environ.get("GEMINI_API_VERSION", "v1beta")
+AWS_REGION = os.environ.get("MY_AWS_REGION", os.environ.get("AWS_REGION", "ap-northeast-1"))
+PROMPT_PATH = os.path.join(os.path.dirname(__file__), "gemini_script_prompt.txt")
+
+# GitHub連携用環境変数
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_REPO = os.environ.get("GITHUB_REPO")
+GITHUB_EVENT_TYPE = os.environ.get("GITHUB_EVENT_TYPE", "generate_video")
+
+# -----------------------------------------------------------------------------
+# AWS クライアント
+# -----------------------------------------------------------------------------
+s3_client = boto3.client("s3", region_name=AWS_REGION)
+
+
+# -----------------------------------------------------------------------------
+# ユーティリティ
+# -----------------------------------------------------------------------------
+def _ensure_trailing_slash(value: str) -> str:
+    return value if value.endswith("/") else value + "/"
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _load_prompt_template() -> str:
+    with open(PROMPT_PATH, "r", encoding="utf-8") as fp:
+        return fp.read()
+
+
+def _build_prompt(template: str, article: Dict[str, Any]) -> str:
+    reaction_summary = article.get("reaction", {}).get("summary") or "（反応情報なし）"
+    prompt = template
+    prompt = prompt.replace("{title_A}", article.get("title", "Untitled"))
+    prompt = prompt.replace("{summary_A}", article.get("summary", "概要なし"))
+    prompt = prompt.replace("{summary_B}", reaction_summary)
+    return prompt
+
+
+PENDING_PREFIX = _ensure_trailing_slash(PENDING_PREFIX)
+SCRIPTS_PREFIX = _ensure_trailing_slash(SCRIPTS_PREFIX)
+PROMPT_TEMPLATE = _load_prompt_template()
+
+
+# -----------------------------------------------------------------------------
+# Gemini 呼び出し
+# -----------------------------------------------------------------------------
+def call_gemini_generate_content(prompt: str) -> Optional[str]:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("環境変数 GEMINI_API_KEY が設定されていません")
+
+    url = (
+        f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/"
+        f"{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+    )
+
+    headers = {"Content-Type": "application/json"}
+    payload: Dict[str, Any] = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "max_output_tokens": 8192,
+        },
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+        ],
+    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=(5, 120))
+        except requests.RequestException as exc:
+            print(f"Gemini request error: {exc}")
+            if attempt < max_retries - 1:
+                wait_time = min(2 ** attempt * 5, 30)
+                print(f"Retrying Gemini call in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
+                continue
+            return None
+
+        if response.status_code == 503:
+            print(f"Gemini overloaded (503). attempt={attempt + 1}/{max_retries}")
+            if attempt < max_retries - 1:
+                wait_time = min(2 ** attempt * 5, 30)
+                print(f"Retrying in {wait_time}s")
+                time.sleep(wait_time)
+                continue
+            return None
+
+        if response.status_code == 429:
+            print(f"Gemini quota exceeded (429). attempt={attempt + 1}/{max_retries}")
+            if attempt < max_retries - 1:
+                wait_time = min(5 * (attempt + 1), 30)
+                print(f"Backing off for {wait_time}s")
+                time.sleep(wait_time)
+                continue
+            return None
+
+        if response.status_code != 200:
+            print(f"Gemini unexpected status: {response.status_code} {response.text}")
+            response.raise_for_status()
+
+        break
+
+    if not response.text:
+        print("Gemini response empty")
+        return None
+
+    data = response.json()
+    candidates = data.get("candidates", [])
+    if not candidates:
+        print(f"Gemini response missing candidates: {data}")
+        return None
+
+    parts = candidates[0].get("content", {}).get("parts", [])
+    text_parts = [part.get("text", "") for part in parts if part.get("text")]
+    text = "\n".join(text_parts).strip()
+    if not text:
+        print(f"Gemini response missing text: {data}")
+        return None
+
+    return text
+
+
+def extract_json_text(response_text: str) -> Optional[str]:
+    if not response_text:
+        return None
+
+    match = re.search(r"\{.*\}", response_text, re.DOTALL)
+    if match:
+        return match.group(0).strip()
+
+    start = response_text.find("{")
+    end = response_text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return response_text[start : end + 1].strip()
+
+    print("Failed to locate JSON block in Gemini response")
+    return None
+
+
+# -----------------------------------------------------------------------------
+# S3 ヘルパー
+# -----------------------------------------------------------------------------
+def load_pending_article(bucket: str, key: str) -> Dict[str, Any]:
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    body = response["Body"].read().decode("utf-8")
+    return json.loads(body)
+
+
+def save_script(bucket: str, prefix: str, filename: str, payload: Dict[str, Any]) -> str:
+    key = prefix + filename
+    body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body,
+        ContentType="application/json; charset=utf-8",
+    )
+    return key
+
+
+def delete_object(bucket: str, key: str) -> None:
+    s3_client.delete_object(Bucket=bucket, Key=key)
+
+
+# -----------------------------------------------------------------------------
+# メインハンドラー
+# -----------------------------------------------------------------------------
+def trigger_github_actions(script_key: str, s3_bucket: str, content_hash: str) -> bool:
+    """GitHub ActionsをRepository Dispatchで起動"""
+    if not all([GITHUB_TOKEN, GITHUB_REPO]):
+        print("GitHub連携環境変数が未設定のため、GitHub Actionsを起動しません")
+        return False
+    
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/dispatches"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "event_type": GITHUB_EVENT_TYPE,
+        "client_payload": {
+            "s3_key": script_key,
+            "s3_bucket": s3_bucket,
+            "content_hash": content_hash,
+            "triggered_at": _iso_now()
+        }
+    }
+    
+    try:
+        print(f"Triggering GitHub Actions for {GITHUB_REPO}...")
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        
+        if response.status_code == 204:
+            print("GitHub Actions trigger successful")
+            return True
+        else:
+            print(f"GitHub Actions trigger failed: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"Error triggering GitHub Actions: {e}")
+        return False
+
+
+def lambda_handler(event, context):
+    print("Lambda writer started")
+    time.sleep(5)
+
+    records = event.get("Records", [])
+    if not records:
+        raise RuntimeError("S3イベントに Records が含まれていません")
+
+    record = records[0]
+    bucket = record.get("s3", {}).get("bucket", {}).get("name") or S3_BUCKET
+    key = record.get("s3", {}).get("object", {}).get("key")
+    if not key:
+        raise RuntimeError("S3イベントから object.key を取得できません")
+
+    print(f"Pending object: s3://{bucket}/{key}")
+    pending_article = load_pending_article(bucket, key)
+
+    time.sleep(5)
+    prompt = _build_prompt(PROMPT_TEMPLATE, pending_article)
+    print("Prompt prepared. Waiting 5 seconds before Gemini call...")
+    time.sleep(5)
+
+    response_text = call_gemini_generate_content(prompt)
+    if response_text is None:
+        raise RuntimeError("Gemini API から有効なレスポンスが得られませんでした")
+
+    time.sleep(5)
+    json_text = extract_json_text(response_text)
+    if json_text is None:
+        raise RuntimeError("Gemini レスポンスから JSON ブロックを抽出できませんでした")
+
+    try:
+        script_payload = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"生成された JSON の解析に失敗しました: {exc}") from exc
+
+    script_payload.setdefault("meta", {})
+    script_payload["meta"].update(
+        {
+            "source_url": pending_article.get("url"),
+            "selected_at": pending_article.get("selected_at"),
+            "written_at": _iso_now(),
+        }
+    )
+
+    filename = (
+        f"script_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        f"_{pending_article.get('content_hash', 'unknown')[:8]}.json"
+    )
+
+    print("Waiting 5 seconds before saving generated script...")
+    time.sleep(5)
+    script_key = save_script(S3_BUCKET, SCRIPTS_PREFIX, filename, script_payload)
+    print(f"Script saved to s3://{S3_BUCKET}/{script_key}")
+
+    print("Waiting 5 seconds before deleting pending object...")
+    time.sleep(5)
+    delete_object(bucket, key)
+    print("Pending object deleted")
+
+    # GitHub Actionsを起動
+    content_hash = pending_article.get("content_hash", "unknown")
+    github_success = trigger_github_actions(script_key, S3_BUCKET, content_hash)
+    
+    return {
+        "status": "ok",
+        "script_key": script_key,
+        "pending_key": key,
+        "github_triggered": github_success,
+    }
