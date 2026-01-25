@@ -42,11 +42,11 @@ VOICEVOX_API_URL = os.environ.get("VOICEVOX_API_URL", "http://localhost:50021")
 
 BACKGROUND_IMAGE_PATH = os.environ.get(
     "BACKGROUND_IMAGE_PATH",
-    os.path.join(os.path.dirname(__file__), "assets", "background.png"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "background.png"),
 )
 FONT_PATH = os.environ.get(
     "FONT_PATH",
-    os.path.join(os.path.dirname(__file__), "assets", "NotoSansJP-Regular.otf"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "NotoSansJP-Regular.otf"),
 )
 
 VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1920"))
@@ -284,12 +284,17 @@ def build_video_with_subtitles(
         audio_clip = AudioFileClip(audio_path)
         total_duration = audio_clip.duration
 
-        # PILで直接開き、RGBに変換してからnumpy配列化（デバッグ情報付き）
+        # PILで直接開き、RGBに変換してからnumpy配列化（絶対パス対応）
         print(f"Background image path: {background_path}")
+        print(f"Checking absolute path: {os.path.abspath(background_path)}")
+        print(f"File exists: {os.path.exists(background_path)}")
+        print(f"Current working directory: {os.getcwd()}")
+        print(f"Script directory: {os.path.dirname(os.path.abspath(__file__))}")
         
         # ファイルの存在確認とサイズチェック
         if not os.path.exists(background_path):
             print(f"ERROR: Background image does not exist: {background_path}")
+            print(f"ERROR: Absolute path: {os.path.abspath(background_path)}")
             raise FileNotFoundError(f"Background image not found: {background_path}")
         
         file_size = os.path.getsize(background_path)
