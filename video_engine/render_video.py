@@ -1,7 +1,8 @@
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+import math
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 import random
 
@@ -15,7 +16,7 @@ from botocore.client import Config
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from moviepy.editor import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, concatenate_audioclips
+from moviepy.editor import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx
 import requests
 
 from create_thumbnail import create_thumbnail
@@ -61,6 +62,56 @@ s3_client = boto3.client("s3", region_name=AWS_REGION, config=Config(signature_v
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 
 
+def download_background_video() -> str:
+    """S3から背景動画をダウンロード"""
+    bg_key = "assets/game_bg.mp4"
+    temp_dir = tempfile.mkdtemp()
+    local_path = os.path.join(temp_dir, "game_bg.mp4")
+    
+    try:
+        print(f"Downloading background video from S3: s3://{S3_BUCKET}/{bg_key}")
+        s3_client.download_file(S3_BUCKET, bg_key, local_path)
+        print(f"Successfully downloaded to: {local_path}")
+        return local_path
+    except Exception as e:
+        print(f"Failed to download background video: {e}")
+        if os.path.exists(local_path):
+            os.remove(local_path)
+        return None
+
+
+def create_gradient_background(width: int, height: int) -> np.ndarray:
+    """濃いネイビーから黒へのなだらかなグラデーション背景を生成"""
+    # ネイビーから黒へのグラデーション
+    navy_color = np.array([10, 25, 47])  # 濃いネイビー
+    black_color = np.array([0, 0, 0])     # 黒
+    
+    # 垂直グラデーション（上から下へ）
+    gradient = np.zeros((height, width, 3), dtype=np.uint8)
+    for y in range(height):
+        ratio = y / height
+        color = navy_color * (1 - ratio) + black_color * ratio
+        gradient[y, :] = color.astype(np.uint8)
+    
+    return gradient
+
+
+def create_breathing_effect(duration: float) -> List[float]:
+    """呼吸アニメーション（97%〜100%）のスケール値リストを生成"""
+    import math
+    fps = 30
+    frames = int(duration * fps)
+    scales = []
+    
+    for i in range(frames):
+        # 4秒周期で呼吸アニメーション
+        t = (i / fps) % 4.0
+        scale = 0.97 + 0.03 * (0.5 + 0.5 * math.sin(2 * math.pi * t / 4.0))
+        scales.append(scale)
+    
+    return scales
+
+
 def get_latest_script_object() -> Dict[str, Any]:
     """S3 から最新(LastModified が最大)のスクリプト JSON オブジェクトを取得。"""
     if not S3_BUCKET:
@@ -84,15 +135,7 @@ def get_latest_script_object() -> Dict[str, Any]:
 
 
 def split_text_for_voicevox(text: str) -> List[str]:
-    """
-    長いテキストを句読点で適切に分割してVOICEVOXのAPI制限を回避
-    
-    Args:
-        text: 分割するテキスト
-        
-    Returns:
-        分割されたテキストのリスト
-    """
+    """長いテキストを句読点で適切に分割してVOICEVOXのAPI制限を回避"""
     if not text:
         return []
     
@@ -275,70 +318,83 @@ def build_video_with_subtitles(
     out_video_path: str,
 ) -> None:
     """
-    MoviePy を用いて背景 + 字幕 + 音声を合成し mp4 を生成。
-    各セリフごとに字幕を表示する。長尺動画対応のためリソース管理を強化。
+    新しい映像生成ワークフロー：
+    Layer 1: ぼかし済み背景動画（ループ）
+    Layer 2: 中央画像（呼吸アニメーション）
+    Layer 3: 左上セグメント表示
+    Layer 4: 下部字幕
     """
     audio_clip = None
     bg_clip = None
     text_clips = []
+    segment_clips = []
     video = None
     
     try:
+        # 音声の長さを基準にする
         audio_clip = AudioFileClip(audio_path)
         total_duration = audio_clip.duration
+        print(f"Audio duration: {total_duration:.2f} seconds")
 
-        # PILで直接開き、RGBに変換してからnumpy配列化（絶対パス対応）
-        print(f"Background image path: {background_path}")
-        print(f"Checking absolute path: {os.path.abspath(background_path)}")
-        print(f"File exists: {os.path.exists(background_path)}")
-        print(f"Current working directory: {os.getcwd()}")
-        print(f"Script directory: {os.path.dirname(os.path.abspath(__file__))}")
+        # Layer 1: 背景動画の準備
+        bg_video_path = download_background_video()
         
-        # ファイルの存在確認とサイズチェック
-        if not os.path.exists(background_path):
-            print(f"ERROR: Background image does not exist: {background_path}")
-            print(f"ERROR: Absolute path: {os.path.abspath(background_path)}")
-            raise FileNotFoundError(f"Background image not found: {background_path}")
+        if bg_video_path and os.path.exists(bg_video_path):
+            print("Using background video from S3")
+            try:
+                bg_clip = VideoFileClip(bg_video_path)
+                # ガウスぼかしを適用
+                bg_clip = bg_clip.fx(vfx.gaussian_blur, sigma=5)
+                # 音声の長さに合わせてループまたはカット
+                bg_clip = bg_clip.loop(duration=total_duration).set_duration(total_duration)
+                print(f"Background video loaded and processed: {bg_clip.size}")
+            except Exception as e:
+                print(f"Failed to process background video: {e}")
+                bg_clip = None
         
-        file_size = os.path.getsize(background_path)
-        print(f"Background image file size: {file_size} bytes")
-        
-        if file_size == 0:
-            print("ERROR: Background image file is empty")
-            raise ValueError("Background image file is empty")
-        
-        try:
-            with Image.open(background_path) as img:
-                print(f"Image format: {img.format}, size: {img.size}, mode: {img.mode}")
-                bg_image_array = np.array(img.convert("RGB"))
-                print(f"Successfully converted to numpy array: {bg_image_array.shape}")
-        except Exception as e:
-            print(f"ERROR: Failed to load background image: {e}")
-            print("Creating fallback black background...")
-            # フォールバック：黒い背景をnumpyで生成
-            bg_image_array = np.zeros((1080, 1920, 3), dtype=np.uint8)
-            print("Generated fallback black background")
-        
-        bg_clip = ImageClip(bg_image_array).set_duration(total_duration)
-        # MoviePyのリサイズをより安定した方法に変更
-        try:
-            bg_clip = bg_clip.resize(newsize=(VIDEO_WIDTH, VIDEO_HEIGHT))
-        except Exception as e:
-            print(f"WARNING: Resize failed, trying alternative method: {e}")
-            # フォールバック：リサイズせずに中央配置
-            bg_clip = bg_clip.set_position('center')
+        if bg_clip is None:
+            print("Creating gradient background fallback")
+            # グラデーション背景を生成
+            gradient_array = create_gradient_background(VIDEO_WIDTH, VIDEO_HEIGHT)
+            bg_clip = ImageClip(gradient_array).set_duration(total_duration)
 
-        # 各セリフの開始時間を計算
+        # サイズ調整
+        bg_clip = bg_clip.resize(newsize=(VIDEO_WIDTH, VIDEO_HEIGHT))
+
+        # Layer 2: 中央画像（呼吸アニメーション付き）
+        # ここでは仮の画像を使用（実際の実装ではscript_partsから画像を取得）
+        center_image_array = create_gradient_background(800, 600)  # 仮の中央画像
+        center_clip = ImageClip(center_image_array).set_duration(total_duration)
+        center_clip = center_clip.resize(newsize=(800, 600)).set_position('center')
+        
+        # 呼吸アニメーションを適用（シンプルな実装）
+        def breathing_effect(t):
+            # 4秒周期で97%〜100%のスケール変化
+            scale = 0.97 + 0.03 * (0.5 + 0.5 * math.sin(2 * math.pi * t / 4.0))
+            return scale
+        
+        center_clip = center_clip.resize(lambda t: breathing_effect(t))
+
+        # Layer 3: 左上セグメント表示
+        segment_clip = TextClip(
+            "概要",
+            fontsize=24,
+            color="white",
+            font=font_path,
+            bg_color="red",
+            size=(200, 50)
+        ).set_position((50, 50)).set_duration(total_duration)
+
+        # Layer 4: 下部字幕
         current_time = 0
-        
         for i, part in enumerate(script_parts):
             try:
                 text = part.get("text", "")
                 if not text:
                     continue
                 
-                # このセリフの音声長を推定（簡易的に文字数から計算）
-                estimated_duration = min(len(text) * 0.08, 8.0)  # 最大8秒に調整
+                # このセリフの音声長を推定
+                estimated_duration = min(len(text) * 0.08, 8.0)
                 
                 if current_time + estimated_duration > total_duration:
                     estimated_duration = total_duration - current_time
@@ -346,59 +402,62 @@ def build_video_with_subtitles(
                 if estimated_duration <= 0:
                     break
                 
-                # 字幕クリップを作成（フォントサイズを調整）
+                # 字幕クリップを作成
                 txt_clip = TextClip(
                     text,
-                    fontsize=42,  # 少し小さくして長文対応
+                    fontsize=42,
                     color="white",
                     font=font_path,
                     method="caption",
-                    size=(VIDEO_WIDTH - 200, VIDEO_HEIGHT - 200),
-                    stroke_color="black",  # 輪郭を追加して見やすく
+                    size=(VIDEO_WIDTH - 200, 200),
+                    stroke_color="black",
                     stroke_width=2,
-                ).set_position("center").set_start(current_time).set_duration(estimated_duration)
-                
+                    bg_color="rgba(0,0,0,0.7)"
+                )
+                txt_clip = txt_clip.set_position((100, VIDEO_HEIGHT - 250)).set_start(current_time).set_duration(estimated_duration)
                 text_clips.append(txt_clip)
+                
                 current_time += estimated_duration
                 
             except Exception as e:
-                print(f"Error creating subtitle for part {i}: {str(e)}")
+                print(f"Error creating subtitle for part {i}: {e}")
                 continue
-        
-        if not text_clips:
-            print("Warning: No text clips created, creating video without subtitles")
-            video = bg_clip.set_audio(audio_clip)
-        else:
-            # 背景と字幕を合成
-            video = CompositeVideoClip([bg_clip] + text_clips)
-            video = video.set_audio(audio_clip)
 
-        # ffmpeg が PATH にある前提
+        # すべてのレイヤーを合成
+        all_clips = [bg_clip, center_clip, segment_clip] + text_clips
+        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        
+        # 音声を設定して書き出し
+        video = video.set_audio(audio_clip)
+        
+        print(f"Writing video to: {out_video_path}")
         video.write_videofile(
             out_video_path,
             fps=FPS,
-            codec="libx264",
-            audio_codec="aac",
-            temp_audiofile=os.path.join(tempfile.gettempdir(), "temp-audio.m4a"),
+            codec='libx264',
+            audio_codec='aac',
+            temp_audiofile='temp-audio.m4a',
             remove_temp=True,
-            threads=4,  # スレッド数を制限してメモリ使用量を抑制
+            threads=4
         )
         
+        print("Video generation completed successfully")
+
+    except Exception as e:
+        print(f"Error in video generation: {e}")
+        raise
+    
     finally:
-        # クリップを解放（メモリリーク防止）
-        if audio_clip:
-            audio_clip.close()
-        if bg_clip:
-            bg_clip.close()
-        for clip in text_clips:
-            try:
-                clip.close()
-            except:
-                pass
+        # クリップのクリーンアップ
         if video:
             video.close()
-
-
+        if bg_clip:
+            bg_clip.close()
+        if audio_clip:
+            audio_clip.close()
+        for clip in text_clips + segment_clips:
+            if clip:
+                clip.close()
 def build_youtube_client():
     """既に取得済みの OAuth2 資格情報(JSON文字列)から YouTube API クライアントを構築。"""
     if not YOUTUBE_AUTH_JSON:
