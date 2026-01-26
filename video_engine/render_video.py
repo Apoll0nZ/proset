@@ -53,6 +53,11 @@ FONT_PATH = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "NotoSansJP-Regular.otf"),
 )
 
+# 画像取得用環境変数
+IMAGES_S3_BUCKET = os.environ.get("IMAGES_S3_BUCKET", S3_BUCKET)  # デフォルトはメインS3バケット
+IMAGES_S3_PREFIX = os.environ.get("IMAGES_S3_PREFIX", "assets/images/")  # 画像格納先プレフィックス
+LOCAL_TEMP_DIR = os.environ.get("LOCAL_TEMP_DIR", tempfile.gettempdir())  # 一時フォルダ
+
 VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1920"))
 VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1080"))
 FPS = int(os.environ.get("FPS", "30"))
@@ -152,6 +157,23 @@ def download_background_music() -> str:
         print(f"Failed to download background music: {e}")
         if os.path.exists(local_path):
             os.remove(local_path)
+        return None
+
+
+def download_image_from_s3(image_key: str) -> str:
+    """S3から画像をダウンロードしてtempフォルダに保存"""
+    try:
+        # 一時ファイルパスを生成
+        filename = os.path.basename(image_key)
+        local_path = os.path.join(LOCAL_TEMP_DIR, f"video_image_{filename}")
+        
+        print(f"Downloading image from S3: s3://{IMAGES_S3_BUCKET}/{image_key}")
+        s3_client.download_file(IMAGES_S3_BUCKET, image_key, local_path)
+        print(f"Successfully downloaded image to: {local_path}")
+        return local_path
+        
+    except Exception as e:
+        print(f"Failed to download image {image_key}: {e}")
         return None
 
 
