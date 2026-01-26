@@ -58,6 +58,10 @@ IMAGES_S3_BUCKET = os.environ.get("IMAGES_S3_BUCKET", S3_BUCKET)  # デフォル
 IMAGES_S3_PREFIX = os.environ.get("IMAGES_S3_PREFIX", "assets/images/")  # 画像格納先プレフィックス
 LOCAL_TEMP_DIR = os.environ.get("LOCAL_TEMP_DIR", tempfile.gettempdir())  # 一時フォルダ
 
+# Google画像検索用環境変数
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
+GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID", "")
+
 VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1920"))
 VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1080"))
 FPS = int(os.environ.get("FPS", "30"))
@@ -157,6 +161,163 @@ def download_background_music() -> str:
         print(f"Failed to download background music: {e}")
         if os.path.exists(local_path):
             os.remove(local_path)
+        return None
+
+
+def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
+    """台本から画像検索キーワードを抽出"""
+    try:
+        title = script_data.get("title", "")
+        content = script_data.get("content", {})
+        topic_summary = content.get("topic_summary", "")
+        script_parts = content.get("script_parts", [])
+        
+        # 台本のテキストを結合
+        all_text = f"{title} {topic_summary}"
+        for part in script_parts:
+            all_text += f" {part.get('text', '')}"
+        
+        # 重要キーワードを抽出（簡易的な実装）
+        # 技術関連のキーワードを優先
+        tech_keywords = ["AI", "人工知能", "機械学習", "データサイエンス", "プログラミング", 
+                        "ソフトウェア", "テクノロジー", "コンピュータ", "デジタル", "イノベーション"]
+        
+        # テキストからキーワードを検索
+        found_keywords = []
+        for keyword in tech_keywords:
+            if keyword in all_text:
+                found_keywords.append(keyword)
+        
+        # キーワードが見つからない場合はタイトルから重要単語を抽出
+        if not found_keywords:
+            # 簡易的に名詞っぽい単語を抽出（文字数が3文字以上）
+            words = title.split()
+            found_keywords = [word for word in words if len(word) >= 3]
+        
+        # 最初のキーワードを使用
+        if found_keywords:
+            selected_keyword = found_keywords[0]
+            print(f"Extracted keyword: {selected_keyword}")
+            return selected_keyword
+        else:
+            # フォールバックキーワード
+            fallback_keyword = "technology"
+            print(f"Using fallback keyword: {fallback_keyword}")
+            return fallback_keyword
+            
+    except Exception as e:
+        print(f"Failed to extract keywords: {e}")
+        return "technology"  # 最終フォールバック
+
+
+def search_google_images(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """Google画像検索APIで画像を検索"""
+    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
+        print("Google API credentials not configured")
+        return []
+    
+    try:
+        import urllib.parse
+        
+        # 検索クエリをURLエンコード
+        encoded_keyword = urllib.parse.quote(keyword)
+        
+        # Google Custom Search APIのURL
+        url = f"https://www.googleapis.com/customsearch/v1"
+        
+        params = {
+            'key': GOOGLE_API_KEY,
+            'cx': GOOGLE_CSE_ID,
+            'q': keyword,
+            'searchType': 'image',
+            'num': max_results,
+            'imgSize': 'large',  # 大きな画像のみ
+            'imgType': 'photo',  # 写真のみ
+            'safe': 'active',    # セーフサーチ
+        }
+        
+        print(f"Searching Google Images for: {keyword}")
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # 検索結果を処理
+        images = []
+        if 'items' in data:
+            for item in data['items']:
+                if 'link' in item:
+                    images.append({
+                        'url': item['link'],
+                        'title': item.get('title', ''),
+                        'thumbnail': item.get('image', {}).get('thumbnailLink', '')
+                    })
+        
+        print(f"Found {len(images)} images for keyword: {keyword}")
+        return images
+        
+    except Exception as e:
+        print(f"Google Images search failed: {e}")
+        return []
+
+
+def download_image_from_url(image_url: str, filename: str = None) -> str:
+    """URLから画像をダウンロードしてtempフォルダに保存"""
+    try:
+        if not filename:
+            # URLからファイル名を生成
+            import hashlib
+            url_hash = hashlib.md5(image_url.encode()).hexdigest()[:8]
+            filename = f"ai_image_{url_hash}.jpg"
+        
+        local_path = os.path.join(LOCAL_TEMP_DIR, filename)
+        
+        print(f"Downloading image from URL: {image_url}")
+        response = requests.get(image_url, timeout=30)
+        response.raise_for_status()
+        
+        # 画像を保存
+        with open(local_path, 'wb') as f:
+            f.write(response.content)
+        
+        print(f"Successfully downloaded image to: {local_path}")
+        return local_path
+        
+    except Exception as e:
+        print(f"Failed to download image from URL {image_url}: {e}")
+        return None
+
+
+def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
+    """AIによる動的選別・自動取得で最適な画像を取得"""
+    try:
+        # 1. キーワード抽出
+        keyword = extract_image_keywords_from_script(script_data)
+        
+        # 2. Google画像検索
+        images = search_google_images(keyword)
+        
+        if images:
+            # 最初の画像（最も関連性が高い）をダウンロード
+            best_image = images[0]
+            image_path = download_image_from_url(best_image['url'])
+            
+            if image_path:
+                print(f"Successfully selected and downloaded AI image: {best_image['title']}")
+                return image_path
+        
+        # 3. フォールバック：S3のデフォルト画像
+        print("AI image selection failed, using fallback image from S3")
+        fallback_path = download_image_from_s3("assets/images/default.jpg")
+        
+        if fallback_path:
+            return fallback_path
+        else:
+            print("All image acquisition methods failed, using gradient background")
+            return None
+            
+    except Exception as e:
+        print(f"AI image selection process failed: {e}")
         return None
 
 
@@ -490,11 +651,30 @@ def build_video_with_subtitles(
             bg_clip = ImageClip(gradient_array).set_duration(total_duration)
             print(f"Created gradient background: {VIDEO_WIDTH}x{VIDEO_HEIGHT}")
 
-        # Layer 2: 中央画像（呼吸アニメーション付き）- 1920x1080用に調整
-        # ここでは仮の画像を使用（実際の実装ではscript_partsから画像を取得）
-        center_image_array = create_gradient_background(1000, 600)  # 1920x1080用にサイズ調整
-        center_clip = ImageClip(center_image_array).set_duration(total_duration)
-        center_clip = center_clip.resize(newsize=(1000, 600)).set_position('center')
+        # Layer 2: 中央画像（AI選択画像 + 呼吸アニメーション）- 1920x1080用に調整
+        # AIによる動的選別・自動取得で最適な画像を取得
+        center_image_path = get_ai_selected_image(data)
+        
+        if center_image_path and os.path.exists(center_image_path):
+            print(f"Using AI-selected image: {center_image_path}")
+            try:
+                # 画像を読み込んで中央画像として使用
+                center_image_array = np.array(Image.open(center_image_path).convert("RGB"))
+                center_clip = ImageClip(center_image_array).set_duration(total_duration)
+                center_clip = center_clip.resize(newsize=(1000, 600)).set_position('center')
+                print("Successfully loaded AI-selected image")
+            except Exception as e:
+                print(f"Failed to load AI-selected image: {e}")
+                # フォールバック：グラデーション画像
+                center_image_array = create_gradient_background(1000, 600)
+                center_clip = ImageClip(center_image_array).set_duration(total_duration)
+                center_clip = center_clip.resize(newsize=(1000, 600)).set_position('center')
+        else:
+            print("Using gradient background as center image")
+            # フォールバック：グラデーション画像
+            center_image_array = create_gradient_background(1000, 600)
+            center_clip = ImageClip(center_image_array).set_duration(total_duration)
+            center_clip = center_clip.resize(newsize=(1000, 600)).set_position('center')
         
         # 呼吸アニメーションを適用（シンプルな実装）
         def breathing_effect(t):
