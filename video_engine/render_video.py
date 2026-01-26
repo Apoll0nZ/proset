@@ -431,12 +431,17 @@ def build_video_with_subtitles(
                     bgm_clip = bgm_clip.subclip(0, total_duration)
                     print("BGM trimmed to match video duration")
                 
-                # 音量を15%に下げてナレーションを主役に
-                bgm_clip = bgm_clip.volumex(0.15)
-                print("BGM volume reduced to 15%")
+                # 音量を10%に下げてナレーションを主役に
+                bgm_clip = bgm_clip.volumex(0.10)
+                print("BGM volume reduced to 10%")
+                
+                # 最初の2秒でフェードイン
+                if total_duration > 2:
+                    bgm_clip = bgm_clip.audio_fadein(2)
+                    print("Applied 2-second fadein to BGM")
                 
                 # 最後の2秒でフェードアウト
-                if total_duration > 2:
+                if total_duration > 4:  # フェードインと重ならないように
                     bgm_clip = bgm_clip.audio_fadeout(2)
                     print("Applied 2-second fadeout to BGM")
                 
