@@ -53,8 +53,8 @@ FONT_PATH = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "NotoSansJP-Regular.otf"),
 )
 
-VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1920"))
-VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1080"))
+VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1080"))
+VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1920"))
 FPS = int(os.environ.get("FPS", "30"))
 
 
@@ -62,21 +62,99 @@ s3_client = boto3.client("s3", region_name=AWS_REGION, config=Config(signature_v
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 
 
-def download_background_video() -> str:
-    """S3から背景動画をダウンロード"""
-    bg_key = "assets/game_bg.mp4"
-    temp_dir = tempfile.mkdtemp()
-    local_path = os.path.join(temp_dir, "game_bg.mp4")
-    
+def download_random_background_video() -> str:
+    """S3からassets/フォルダの.mp4ファイルをランダムに1つ選択してダウンロード"""
     try:
-        print(f"Downloading background video from S3: s3://{S3_BUCKET}/{bg_key}")
-        s3_client.download_file(S3_BUCKET, bg_key, local_path)
+        # assets/フォルダから.mp4ファイルをリストアップ
+        print(f"Listing .mp4 files in s3://{S3_BUCKET}/assets/")
+        resp = s3_client.list_objects_v2(
+            Bucket=S3_BUCKET,
+            Prefix="assets/",
+            MaxKeys=100
+        )
+        
+        mp4_files = []
+        contents = resp.get("Contents", [])
+        for obj in contents:
+            key = obj["Key"]
+            if key.lower().endswith(".mp4"):
+                mp4_files.append(key)
+        
+        if not mp4_files:
+            print("No .mp4 files found in assets/ folder")
+            return None
+        
+        # ランダムに1つ選択
+        import random
+        selected_key = random.choice(mp4_files)
+        print(f"Selected background video: {selected_key}")
+        
+        # ダウンロード
+        temp_dir = tempfile.mkdtemp()
+        filename = os.path.basename(selected_key)
+        local_path = os.path.join(temp_dir, filename)
+        
+        print(f"Downloading background video from S3: s3://{S3_BUCKET}/{selected_key}")
+        s3_client.download_file(S3_BUCKET, selected_key, local_path)
         print(f"Successfully downloaded to: {local_path}")
         return local_path
+        
     except Exception as e:
         print(f"Failed to download background video: {e}")
-        if os.path.exists(local_path):
-            os.remove(local_path)
+        return None
+
+
+def process_background_video_for_mobile(bg_path: str, total_duration: float):
+    """背景動画をスマホ全画面（9:16）に最適化"""
+    try:
+        print(f"Processing background video for mobile: {bg_path}")
+        
+        # 動画を読み込み
+        bg_clip = VideoFileClip(bg_path)
+        
+        # 音声をミュート
+        bg_clip = bg_clip.without_audio()
+        print("Background video audio muted")
+        
+        # スマホ全画面（1080x1920）に最適化
+        # 高さを1920pxに合わせてから、横幅を1080pxで中央切り抜き
+        original_width, original_height = bg_clip.size
+        print(f"Original video size: {original_width}x{original_height}")
+        
+        # 高さを1920pxにスケール
+        scale_factor = 1920 / original_height
+        new_width = int(original_width * scale_factor)
+        new_height = 1920
+        
+        bg_clip = bg_clip.resize(newsize=(new_width, new_height))
+        print(f"Resized to: {new_width}x{new_height}")
+        
+        # 横幅を1080pxで中央切り抜き（Center Crop）
+        if new_width > 1080:
+            x_offset = (new_width - 1080) // 2
+            bg_clip = bg_clip.crop(x1=x_offset, x2=x_offset + 1080)
+            print(f"Center cropped to: 1080x1920")
+        elif new_width < 1080:
+            # 横幅が足りない場合は黒背景で埋める
+            bg_clip = bg_clip.set_position('center').on_color(
+                size=(1080, 1920), 
+                color=(0, 0, 0), 
+                pos='center'
+            )
+            print("Padded with black background to 1080x1920")
+        
+        # ガウスぼかしを適用
+        bg_clip = bg_clip.fx(vfx.gaussian_blur, sigma=5)
+        print("Applied gaussian blur (sigma=5)")
+        
+        # 音声の長さに合わせてループ
+        bg_clip = bg_clip.loop(duration=total_duration).set_duration(total_duration)
+        print(f"Looped to match audio duration: {total_duration:.2f}s")
+        
+        return bg_clip
+        
+    except Exception as e:
+        print(f"Failed to process background video: {e}")
         return None
 
 
@@ -336,30 +414,22 @@ def build_video_with_subtitles(
         total_duration = audio_clip.duration
         print(f"Audio duration: {total_duration:.2f} seconds")
 
-        # Layer 1: 背景動画の準備
-        bg_video_path = download_background_video()
+        # Layer 1: 背景動画の準備（ランダム選択・消音・スマホ全画面最適化）
+        bg_video_path = download_random_background_video()
         
         if bg_video_path and os.path.exists(bg_video_path):
-            print("Using background video from S3")
-            try:
-                bg_clip = VideoFileClip(bg_video_path)
-                # ガウスぼかしを適用
-                bg_clip = bg_clip.fx(vfx.gaussian_blur, sigma=5)
-                # 音声の長さに合わせてループまたはカット
-                bg_clip = bg_clip.loop(duration=total_duration).set_duration(total_duration)
-                print(f"Background video loaded and processed: {bg_clip.size}")
-            except Exception as e:
-                print(f"Failed to process background video: {e}")
-                bg_clip = None
+            print("Using random background video from S3")
+            bg_clip = process_background_video_for_mobile(bg_video_path, total_duration)
+            
+            if bg_clip is None:
+                print("Failed to process background video, falling back to gradient")
         
         if bg_clip is None:
             print("Creating gradient background fallback")
-            # グラデーション背景を生成
+            # グラデーション背景を生成（スマホ全画面対応）
             gradient_array = create_gradient_background(VIDEO_WIDTH, VIDEO_HEIGHT)
             bg_clip = ImageClip(gradient_array).set_duration(total_duration)
-
-        # サイズ調整
-        bg_clip = bg_clip.resize(newsize=(VIDEO_WIDTH, VIDEO_HEIGHT))
+            print(f"Created gradient background: {VIDEO_WIDTH}x{VIDEO_HEIGHT}")
 
         # Layer 2: 中央画像（呼吸アニメーション付き）
         # ここでは仮の画像を使用（実際の実装ではscript_partsから画像を取得）
@@ -635,16 +705,29 @@ def main() -> None:
             raise
         
         finally:
-            # 7. 一時ファイルのクリーンアップ（明示的な削除）
-            try:
-                if audio_path and os.path.exists(audio_path):
+            # 一時ファイルのクリーンアップ
+            if 'bg_video_path' in locals() and bg_video_path and os.path.exists(bg_video_path):
+                try:
+                    os.remove(bg_video_path)
+                    os.rmdir(os.path.dirname(bg_video_path))
+                    print("Cleaned up temporary background video file")
+                except Exception as e:
+                    print(f"Failed to cleanup temporary file: {e}")
+            if audio_path and os.path.exists(audio_path):
+                try:
                     os.remove(audio_path)
-                if video_path and os.path.exists(video_path):
+                except Exception as e:
+                    print(f"Failed to cleanup temporary file: {e}")
+            if video_path and os.path.exists(video_path):
+                try:
                     os.remove(video_path)
-                if thumbnail_path and os.path.exists(thumbnail_path):
+                except Exception as e:
+                    print(f"Failed to cleanup temporary file: {e}")
+            if thumbnail_path and os.path.exists(thumbnail_path):
+                try:
                     os.remove(thumbnail_path)
-            except Exception as e:
-                print(f"Error cleaning up temporary files: {str(e)}")
+                except Exception as e:
+                    print(f"Failed to cleanup temporary file: {e}")
 
 
 if __name__ == "__main__":
