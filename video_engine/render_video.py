@@ -53,8 +53,8 @@ FONT_PATH = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "NotoSansJP-Regular.otf"),
 )
 
-VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1080"))
-VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1920"))
+VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1920"))
+VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1080"))
 FPS = int(os.environ.get("FPS", "30"))
 
 
@@ -104,48 +104,27 @@ def download_random_background_video() -> str:
         return None
 
 
-def process_background_video_for_mobile(bg_path: str, total_duration: float):
-    """背景動画をスマホ全画面（9:16）に最適化"""
+def process_background_video_for_hd(bg_path: str, total_duration: float):
+    """背景動画を1920x1080フルHDにインテリジェント・リサイズ"""
     try:
-        print(f"Processing background video for mobile: {bg_path}")
+        print(f"Processing background video for HD: {bg_path}")
         
-        # 動画を読み込み
+        # 動画を読み込み（低解像度素材を想定）
         bg_clip = VideoFileClip(bg_path)
+        original_width, original_height = bg_clip.size
+        print(f"Original video size: {original_width}x{original_height}")
         
         # 音声をミュート
         bg_clip = bg_clip.without_audio()
         print("Background video audio muted")
         
-        # スマホ全画面（1080x1920）に最適化
-        # 高さを1920pxに合わせてから、横幅を1080pxで中央切り抜き
-        original_width, original_height = bg_clip.size
-        print(f"Original video size: {original_width}x{original_height}")
+        # 1920x1080に引き伸ばして画面いっぱいに
+        bg_clip = bg_clip.resize(newsize=(1920, 1080))
+        print("Resized to 1920x1080 (intelligent stretch)")
         
-        # 高さを1920pxにスケール
-        scale_factor = 1920 / original_height
-        new_width = int(original_width * scale_factor)
-        new_height = 1920
-        
-        bg_clip = bg_clip.resize(newsize=(new_width, new_height))
-        print(f"Resized to: {new_width}x{new_height}")
-        
-        # 横幅を1080pxで中央切り抜き（Center Crop）
-        if new_width > 1080:
-            x_offset = (new_width - 1080) // 2
-            bg_clip = bg_clip.crop(x1=x_offset, x2=x_offset + 1080)
-            print(f"Center cropped to: 1080x1920")
-        elif new_width < 1080:
-            # 横幅が足りない場合は黒背景で埋める
-            bg_clip = bg_clip.set_position('center').on_color(
-                size=(1080, 1920), 
-                color=(0, 0, 0), 
-                pos='center'
-            )
-            print("Padded with black background to 1080x1920")
-        
-        # ガウスぼかしを適用
+        # ガウスぼかしを適用して引き伸ばしの粗さを隠す
         bg_clip = bg_clip.fx(vfx.gaussian_blur, sigma=5)
-        print("Applied gaussian blur (sigma=5)")
+        print("Applied gaussian blur (sigma=5) to hide stretching artifacts")
         
         # 音声の長さに合わせてループ
         bg_clip = bg_clip.loop(duration=total_duration).set_duration(total_duration)
@@ -467,28 +446,28 @@ def build_video_with_subtitles(
         else:
             print("No BGM available, continuing without background music")
 
-        # Layer 1: 背景動画の準備（ランダム選択・消音・スマホ全画面最適化）
+        # Layer 1: 背景動画の準備（インテリジェント・リサイズ）
         bg_video_path = download_random_background_video()
         
         if bg_video_path and os.path.exists(bg_video_path):
             print("Using random background video from S3")
-            bg_clip = process_background_video_for_mobile(bg_video_path, total_duration)
+            bg_clip = process_background_video_for_hd(bg_video_path, total_duration)
             
             if bg_clip is None:
                 print("Failed to process background video, falling back to gradient")
         
         if bg_clip is None:
             print("Creating gradient background fallback")
-            # グラデーション背景を生成（スマホ全画面対応）
+            # グラデーション背景を生成（1920x1080対応）
             gradient_array = create_gradient_background(VIDEO_WIDTH, VIDEO_HEIGHT)
             bg_clip = ImageClip(gradient_array).set_duration(total_duration)
             print(f"Created gradient background: {VIDEO_WIDTH}x{VIDEO_HEIGHT}")
 
-        # Layer 2: 中央画像（呼吸アニメーション付き）
+        # Layer 2: 中央画像（呼吸アニメーション付き）- 1920x1080用に調整
         # ここでは仮の画像を使用（実際の実装ではscript_partsから画像を取得）
-        center_image_array = create_gradient_background(800, 600)  # 仮の中央画像
+        center_image_array = create_gradient_background(1000, 600)  # 1920x1080用にサイズ調整
         center_clip = ImageClip(center_image_array).set_duration(total_duration)
-        center_clip = center_clip.resize(newsize=(800, 600)).set_position('center')
+        center_clip = center_clip.resize(newsize=(1000, 600)).set_position('center')
         
         # 呼吸アニメーションを適用（シンプルな実装）
         def breathing_effect(t):
@@ -498,17 +477,17 @@ def build_video_with_subtitles(
         
         center_clip = center_clip.resize(lambda t: breathing_effect(t))
 
-        # Layer 3: 左上セグメント表示
+        # Layer 3: 左上セグメント表示 - 1920x1080用に調整
         segment_clip = TextClip(
             "概要",
-            fontsize=24,
+            fontsize=28,  # 少し大きく
             color="white",
             font=font_path,
             bg_color="red",
-            size=(200, 50)
-        ).set_position((50, 50)).set_duration(total_duration)
+            size=(250, 60)  # 少し大きく
+        ).set_position((80, 60)).set_duration(total_duration)
 
-        # Layer 4: 下部字幕
+        # Layer 4: 下部字幕 - 1920x1080用に調整
         current_time = 0
         for i, part in enumerate(script_parts):
             try:
@@ -525,19 +504,19 @@ def build_video_with_subtitles(
                 if estimated_duration <= 0:
                     break
                 
-                # 字幕クリップを作成
+                # 字幕クリップを作成（1920x1080用に調整）
                 txt_clip = TextClip(
                     text,
-                    fontsize=42,
+                    fontsize=48,  # 大きくして読みやすく
                     color="white",
                     font=font_path,
                     method="caption",
-                    size=(VIDEO_WIDTH - 200, 200),
+                    size=(VIDEO_WIDTH - 300, 250),  # 余白を調整
                     stroke_color="black",
                     stroke_width=2,
                     bg_color="rgba(0,0,0,0.7)"
                 )
-                txt_clip = txt_clip.set_position((100, VIDEO_HEIGHT - 250)).set_start(current_time).set_duration(estimated_duration)
+                txt_clip = txt_clip.set_position((150, VIDEO_HEIGHT - 300)).set_start(current_time).set_duration(estimated_duration)
                 text_clips.append(txt_clip)
                 
                 current_time += estimated_duration
