@@ -158,6 +158,24 @@ def process_background_video_for_mobile(bg_path: str, total_duration: float):
         return None
 
 
+def download_background_music() -> str:
+    """S3からBGM（assets/bgm.mp3）をダウンロード"""
+    bgm_key = "assets/bgm.mp3"
+    temp_dir = tempfile.mkdtemp()
+    local_path = os.path.join(temp_dir, "bgm.mp3")
+    
+    try:
+        print(f"Downloading background music from S3: s3://{S3_BUCKET}/{bgm_key}")
+        s3_client.download_file(S3_BUCKET, bgm_key, local_path)
+        print(f"Successfully downloaded BGM to: {local_path}")
+        return local_path
+    except Exception as e:
+        print(f"Failed to download background music: {e}")
+        if os.path.exists(local_path):
+            os.remove(local_path)
+        return None
+
+
 def create_gradient_background(width: int, height: int) -> np.ndarray:
     """濃いネイビーから黒へのなだらかなグラデーション背景を生成"""
     # ネイビーから黒へのグラデーション
@@ -401,18 +419,53 @@ def build_video_with_subtitles(
     Layer 2: 中央画像（呼吸アニメーション）
     Layer 3: 左上セグメント表示
     Layer 4: 下部字幕
+    BGM: 背景音楽をミックス
     """
     audio_clip = None
     bg_clip = None
+    bgm_clip = None
     text_clips = []
     segment_clips = []
     video = None
     
     try:
-        # 音声の長さを基準にする
+        # メイン音声（VOICEVOX）の長さを基準にする
         audio_clip = AudioFileClip(audio_path)
         total_duration = audio_clip.duration
-        print(f"Audio duration: {total_duration:.2f} seconds")
+        print(f"Main audio duration: {total_duration:.2f} seconds")
+
+        # BGMの準備
+        bgm_path = download_background_music()
+        if bgm_path and os.path.exists(bgm_path):
+            print("Loading background music")
+            try:
+                bgm_clip = AudioFileClip(bgm_path)
+                print(f"BGM original duration: {bgm_clip.duration:.2f} seconds")
+                
+                # BGMを動画長に合わせてループまたはトリミング
+                if bgm_clip.duration < total_duration:
+                    # BGMが短い場合はループ
+                    bgm_clip = bgm_clip.loop(duration=total_duration)
+                    print("BGM looped to match video duration")
+                elif bgm_clip.duration > total_duration:
+                    # BGMが長い場合はトリミング
+                    bgm_clip = bgm_clip.subclip(0, total_duration)
+                    print("BGM trimmed to match video duration")
+                
+                # 音量を15%に下げてナレーションを主役に
+                bgm_clip = bgm_clip.volumex(0.15)
+                print("BGM volume reduced to 15%")
+                
+                # 最後の2秒でフェードアウト
+                if total_duration > 2:
+                    bgm_clip = bgm_clip.audio_fadeout(2)
+                    print("Applied 2-second fadeout to BGM")
+                
+            except Exception as e:
+                print(f"Failed to process BGM: {e}")
+                bgm_clip = None
+        else:
+            print("No BGM available, continuing without background music")
 
         # Layer 1: 背景動画の準備（ランダム選択・消音・スマホ全画面最適化）
         bg_video_path = download_random_background_video()
@@ -497,8 +550,18 @@ def build_video_with_subtitles(
         all_clips = [bg_clip, center_clip, segment_clip] + text_clips
         video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
         
-        # 音声を設定して書き出し
-        video = video.set_audio(audio_clip)
+        # 音声トラックを結合（メイン音声 + BGM）
+        if bgm_clip:
+            # CompositeAudioClipでメイン音声とBGMをミックス
+            final_audio = CompositeAudioClip([audio_clip, bgm_clip])
+            print("Mixed main audio with BGM")
+        else:
+            # BGMがない場合はメイン音声のみ
+            final_audio = audio_clip
+            print("Using main audio only (no BGM)")
+        
+        # 最終音声を動画に設定
+        video = video.set_audio(final_audio)
         
         print(f"Writing video to: {out_video_path}")
         video.write_videofile(
@@ -525,18 +588,28 @@ def build_video_with_subtitles(
             bg_clip.close()
         if audio_clip:
             audio_clip.close()
+        if bgm_clip:
+            bgm_clip.close()
         for clip in text_clips + segment_clips:
             if clip:
                 clip.close()
-def build_youtube_client():
-    """既に取得済みの OAuth2 資格情報(JSON文字列)から YouTube API クライアントを構築。"""
-    if not YOUTUBE_AUTH_JSON:
-        raise RuntimeError("YOUTUBE_AUTH_JSON が設定されていません。")
-
-    info = json.loads(YOUTUBE_AUTH_JSON)
-    creds = Credentials.from_authorized_user_info(info)
-    youtube = build("youtube", "v3", credentials=creds)
-    return youtube
+        
+        # 一時ファイルのクリーンアップ
+        if 'bg_video_path' in locals() and bg_video_path and os.path.exists(bg_video_path):
+            try:
+                os.remove(bg_video_path)
+                os.rmdir(os.path.dirname(bg_video_path))
+                print("Cleaned up temporary background video file")
+            except Exception as e:
+                print(f"Failed to cleanup temporary file: {e}")
+        
+        if 'bgm_path' in locals() and bgm_path and os.path.exists(bgm_path):
+            try:
+                os.remove(bgm_path)
+                os.rmdir(os.path.dirname(bgm_path))
+                print("Cleaned up temporary BGM file")
+            except Exception as e:
+                print(f"Failed to cleanup temporary BGM file: {e}")
 
 
 def upload_to_youtube(
@@ -713,6 +786,13 @@ def main() -> None:
                     print("Cleaned up temporary background video file")
                 except Exception as e:
                     print(f"Failed to cleanup temporary file: {e}")
+            if 'bgm_path' in locals() and bgm_path and os.path.exists(bgm_path):
+                try:
+                    os.remove(bgm_path)
+                    os.rmdir(os.path.dirname(bgm_path))
+                    print("Cleaned up temporary BGM file")
+                except Exception as e:
+                    print(f"Failed to cleanup temporary BGM file: {e}")
             if audio_path and os.path.exists(audio_path):
                 try:
                     os.remove(audio_path)
