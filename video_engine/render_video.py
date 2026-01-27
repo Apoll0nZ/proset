@@ -53,7 +53,10 @@ FONT_PATH = os.environ.get(
 # 画像取得用環境変数
 IMAGES_S3_BUCKET = os.environ.get("IMAGES_S3_BUCKET", S3_BUCKET)  # デフォルトはメインS3バケット
 IMAGES_S3_PREFIX = os.environ.get("IMAGES_S3_PREFIX", "assets/images/")  # 画像格納先プレフィックス
-LOCAL_TEMP_DIR = os.environ.get("LOCAL_TEMP_DIR", tempfile.gettempdir())  # 一時フォルダ
+LOCAL_TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")  # ローカルtempフォルダ（S3 tempフォルダと連携）
+
+# tempフォルダが存在しない場合は作成
+os.makedirs(LOCAL_TEMP_DIR, exist_ok=True)
 
 # Google画像検索用環境変数（Playwright使用）
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
@@ -149,8 +152,7 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
 def download_background_music() -> str:
     """S3からBGM（assets/bgm.mp3）をダウンロード"""
     bgm_key = "assets/bgm.mp3"
-    temp_dir = tempfile.mkdtemp()
-    local_path = os.path.join(temp_dir, "bgm.mp3")
+    local_path = os.path.join(LOCAL_TEMP_DIR, "bgm.mp3")
     
     try:
         print(f"Downloading background music from S3: s3://{S3_BUCKET}/{bgm_key}")
@@ -159,8 +161,6 @@ def download_background_music() -> str:
         return local_path
     except Exception as e:
         print(f"Failed to download background music: {e}")
-        if os.path.exists(local_path):
-            os.remove(local_path)
         return None
 
 
@@ -344,59 +344,9 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
         return "technology"  # 最終フォールバック
 
 
-def search_google_images(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """Google画像検索APIで画像を検索"""
-    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
-        print("Google API credentials not configured")
-        return []
-    
-    try:
-        import urllib.parse
-        
-        # 検索クエリをURLエンコード
-        encoded_keyword = urllib.parse.quote(keyword)
-        
-        # Google Custom Search APIのURL
-        url = f"https://www.googleapis.com/customsearch/v1"
-        
-        params = {
-            'key': GOOGLE_API_KEY,
-            'cx': GOOGLE_CSE_ID,
-            'q': keyword,
-            'searchType': 'image',
-            'num': max_results,
-            'imgSize': 'large',  # 大きな画像のみ
-            'imgType': 'photo',  # 写真のみ
-            'safe': 'active',    # セーフサーチ
-        }
-        
-        print(f"Searching Google Images for: {keyword}")
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        # 検索結果を処理
-        images = []
-        if 'items' in data:
-            for item in data['items']:
-                if 'link' in item:
-                    images.append({
-                        'url': item['link'],
-                        'title': item.get('title', ''),
-                        'thumbnail': item.get('image', {}).get('thumbnailLink', '')
-                    })
-        
-        print(f"Found {len(images)} images for keyword: {keyword}")
-        return images
-        
-    except Exception as e:
-        print(f"Google Images search failed: {e}")
-        return []
-
 
 def download_image_from_url(image_url: str, filename: str = None) -> str:
-    """URLから画像をダウンロードしてtempフォルダに保存"""
+    """URLから画像をダウンロードしてtempフォルダに保存し、S3にもアップロード"""
     try:
         if not filename:
             # URLからファイル名を生成
@@ -410,9 +360,17 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
         response = requests.get(image_url, timeout=30)
         response.raise_for_status()
         
-        # 画像を保存
+        # 画像をローカルに保存
         with open(local_path, 'wb') as f:
             f.write(response.content)
+        
+        # S3のtempフォルダにもアップロード
+        try:
+            s3_key = f"temp/{filename}"
+            s3_client.upload_file(local_path, S3_BUCKET, s3_key)
+            print(f"Uploaded image to S3: s3://{S3_BUCKET}/{s3_key}")
+        except Exception as e:
+            print(f"Failed to upload image to S3: {e}")
         
         print(f"Successfully downloaded image to: {local_path}")
         return local_path
@@ -423,12 +381,12 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
 
 
 def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
-    """AIによる動的選別・自動取得で最適な画像を取得（Playwright版）"""
+    """AIによる動的選別・自動取得で最適な画像を取得（Playwright版のみ）"""
     try:
         # 1. キーワード抽出
         keyword = extract_image_keywords_from_script(script_data)
         
-        # 2. Playwrightで画像検索（無料）
+        # 2. Playwrightで画像検索（無料）のみ使用
         images = search_images_with_playwright(keyword)
         
         if images:
@@ -440,15 +398,9 @@ def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
                 print(f"Successfully selected and downloaded AI image: {best_image['title']}")
                 return image_path
         
-        # 3. フォールバック：S3のデフォルト画像
-        print("AI image selection failed, using fallback image from S3")
-        fallback_path = download_image_from_s3("assets/images/default.jpg")
-        
-        if fallback_path:
-            return fallback_path
-        else:
-            print("All image acquisition methods failed, using gradient background")
-            return None
+        # 画像が取得できなかった場合はNoneを返す（フォールバックなし）
+        print("No images found with Playwright, using gradient background")
+        return None
             
     except Exception as e:
         print(f"AI image selection process failed: {e}")
@@ -892,9 +844,10 @@ def build_video_with_subtitles(
         print(f"Writing video to: {out_video_path}")
         video.write_videofile(
             out_video_path,
-            fps=FPS,
+            fps=30,  # 30fps固定
             codec='libx264',
             audio_codec='aac',
+            audio_bitrate='256k',  # 音声256kbps
             temp_audiofile='temp-audio.m4a',
             remove_temp=True,
             threads=4
@@ -1115,10 +1068,9 @@ def main() -> None:
             if 'bgm_path' in locals() and bgm_path and os.path.exists(bgm_path):
                 try:
                     os.remove(bgm_path)
-                    os.rmdir(os.path.dirname(bgm_path))
-                    print("Cleaned up temporary BGM file")
+                    print("Cleaned up BGM file")
                 except Exception as e:
-                    print(f"Failed to cleanup temporary BGM file: {e}")
+                    print(f"Failed to cleanup BGM file: {e}")
             if audio_path and os.path.exists(audio_path):
                 try:
                     os.remove(audio_path)
@@ -1134,6 +1086,23 @@ def main() -> None:
                     os.remove(thumbnail_path)
                 except Exception as e:
                     print(f"Failed to cleanup temporary file: {e}")
+            
+            # ダウンロードした画像ファイルを削除（ローカルとS3両方）
+            import glob
+            downloaded_images = glob.glob(os.path.join(LOCAL_TEMP_DIR, "ai_image_*.jpg"))
+            for img_path in downloaded_images:
+                try:
+                    # ローカルファイルを削除
+                    os.remove(img_path)
+                    print(f"Cleaned up downloaded image: {img_path}")
+                    
+                    # S3のtempフォルダからも削除
+                    filename = os.path.basename(img_path)
+                    s3_key = f"temp/{filename}"
+                    s3_client.delete_object(Bucket=S3_BUCKET, Key=s3_key)
+                    print(f"Deleted image from S3: s3://{S3_BUCKET}/{s3_key}")
+                except Exception as e:
+                    print(f"Failed to cleanup downloaded image {img_path}: {e}")
 
 
 if __name__ == "__main__":
