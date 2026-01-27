@@ -58,6 +58,24 @@ LOCAL_TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp"
 # tempフォルダが存在しない場合は作成
 os.makedirs(LOCAL_TEMP_DIR, exist_ok=True)
 
+# ImageMagickの環境変数を設定（GitHub Actions対応）
+if not os.environ.get("IMAGEMAGICK_BINARY"):
+    # 一般的なImageMagickのパスを設定
+    possible_paths = [
+        "/usr/bin/convert",
+        "/usr/local/bin/convert", 
+        "/opt/homebrew/bin/convert",
+        "convert"
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path) or path == "convert":  # convertはPATHにある可能性
+            os.environ["IMAGEMAGICK_BINARY"] = path
+            print(f"Set IMAGEMAGICK_BINARY to: {path}")
+            break
+    else:
+        print("Warning: ImageMagick not found, text generation may fail")
+
 # Google画像検索用環境変数（Playwright使用）
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID", "")
@@ -172,43 +190,60 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
         print(f"Searching images with Playwright for: {keyword}")
         
         with sync_playwright() as p:
-            # ヘッドレスブラウザ起動
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context()
-            page = context.new_page()
+            try:
+                # ヘッドレスブラウザ起動
+                browser = p.chromium.launch(headless=True)
+            except Exception as e:
+                print(f"Failed to launch browser: {e}")
+                print("Falling back to gradient background")
+                return []
             
-            # Google画像検索ページへ
-            search_url = f"https://www.google.com/search?q={keyword}&tbm=isch"
-            page.goto(search_url)
-            page.wait_for_load_state('networkidle')
-            
-            # 画像URLを収集
-            images = []
-            image_elements = page.query_selector_all('img[src]')
-            
-            for i, img in enumerate(image_elements[:max_results]):
+            try:
+                context = browser.new_context()
+                page = context.new_page()
+                
+                # Google画像検索ページへ
+                search_url = f"https://www.google.com/search?q={keyword}&tbm=isch"
+                page.goto(search_url)
+                page.wait_for_load_state('networkidle')
+                
+                # 画像URLを収集
+                images = []
+                image_elements = page.query_selector_all('img[src]')
+                
+                for i, img in enumerate(image_elements[:max_results]):
+                    try:
+                        src = img.get_attribute('src')
+                        if src and src.startswith('http') and 'encrypted' not in src:
+                            # サムネイルURLをフルサイズに変換（簡易的）
+                            if 'base64' not in src:
+                                images.append({
+                                    'url': src,
+                                    'title': f'Image {i+1} for {keyword}',
+                                    'thumbnail': src
+                                })
+                    except:
+                        continue
+                
+                browser.close()
+                print(f"Found {len(images)} images with Playwright")
+                return images
+                
+            except Exception as e:
+                print(f"Error during browser operation: {e}")
                 try:
-                    src = img.get_attribute('src')
-                    if src and src.startswith('http') and 'encrypted' not in src:
-                        # サムネイルURLをフルサイズに変換（簡易的）
-                        if 'base64' not in src:
-                            images.append({
-                                'url': src,
-                                'title': f'Image {i+1} for {keyword}',
-                                'thumbnail': src
-                            })
+                    browser.close()
                 except:
-                    continue
-            
-            browser.close()
-            print(f"Found {len(images)} images with Playwright")
-            return images
+                    pass
+                print("Falling back to gradient background")
+                return []
             
     except ImportError:
-        print("Playwright not installed, falling back to default image")
+        print("Playwright not installed, falling back to gradient background")
         return []
     except Exception as e:
         print(f"Playwright image search failed: {e}")
+        print("Falling back to gradient background")
         return []
 
 
@@ -807,7 +842,8 @@ def build_video_with_subtitles(
                 # BGMを動画長に合わせてループまたはトリミング
                 if bgm_clip.duration < total_duration:
                     # BGMが短い場合はループ
-                    bgm_clip = bgm_clip.loop(duration=total_duration)
+                    from moviepy.audio.fx import audio_loop as afx_audio_loop
+                    bgm_clip = bgm_clip.fx(afx_audio_loop, duration=total_duration)
                     print("BGM looped to match video duration")
                 elif bgm_clip.duration > total_duration:
                     # BGMが長い場合はトリミング
@@ -885,14 +921,19 @@ def build_video_with_subtitles(
         center_clip = center_clip.resize(lambda t: breathing_effect(t))
 
         # Layer 3: 左上セグメント表示 - 1920x1080用に調整
-        segment_clip = TextClip(
-            "概要",
-            fontsize=28,  # 少し大きく
-            color="white",
-            font=font_path,
-            bg_color="red",
-            size=(250, 60)  # 少し大きく
-        ).set_position((80, 60)).set_duration(total_duration)
+        try:
+            segment_clip = TextClip(
+                "概要",
+                fontsize=28,  # 少し大きく
+                color="white",
+                font=font_path,
+                bg_color="red",
+                size=(250, 60)  # 少し大きく
+            ).set_position((80, 60)).set_duration(total_duration)
+        except Exception as e:
+            print(f"Warning: Failed to create segment text: {e}")
+            print("Continuing without segment text...")
+            segment_clip = None  # セグメントテキストなしで続行
 
         # Layer 4: 下部字幕 - 1920x1080用に調整
         current_time = 0
@@ -912,19 +953,24 @@ def build_video_with_subtitles(
                     break
                 
                 # 字幕クリップを作成（1920x1080用に調整）
-                txt_clip = TextClip(
-                    text,
-                    fontsize=48,  # 大きくして読みやすく
-                    color="white",
-                    font=font_path,
-                    method="caption",
-                    size=(VIDEO_WIDTH - 300, 250),  # 余白を調整
-                    stroke_color="black",
-                    stroke_width=2,
-                    bg_color="rgba(0,0,0,0.7)"
-                )
-                txt_clip = txt_clip.set_position((150, VIDEO_HEIGHT - 300)).set_start(current_time).set_duration(estimated_duration)
-                text_clips.append(txt_clip)
+                try:
+                    txt_clip = TextClip(
+                        text,
+                        fontsize=48,  # 大きくして読みやすく
+                        color="white",
+                        font=font_path,
+                        method="caption",
+                        size=(VIDEO_WIDTH - 300, 250),  # 余白を調整
+                        stroke_color="black",
+                        stroke_width=2,
+                        bg_color="rgba(0,0,0,0.7)"
+                    )
+                    txt_clip = txt_clip.set_position((150, VIDEO_HEIGHT - 300)).set_start(current_time).set_duration(estimated_duration)
+                    text_clips.append(txt_clip)
+                except Exception as e:
+                    print(f"Warning: Failed to create subtitle for part {i}: {e}")
+                    print("Continuing without subtitle for this part...")
+                    # 字幕なしで続行（審査用動画として優先）
                 
                 current_time += estimated_duration
                 
@@ -933,7 +979,10 @@ def build_video_with_subtitles(
                 continue
 
         # すべてのレイヤーを合成
-        all_clips = [bg_clip, center_clip, segment_clip] + text_clips
+        all_clips = [bg_clip, center_clip]
+        if segment_clip:
+            all_clips.append(segment_clip)
+        all_clips.extend(text_clips)
         video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
         
         # 音声トラックを結合（メイン音声 + BGM）
