@@ -13,7 +13,7 @@ from botocore.client import Config
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from moviepy.editor import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips
+from moviepy.editor import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, CompositeAudioClip
 import requests
 
 from create_thumbnail import create_thumbnail
