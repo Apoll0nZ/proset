@@ -58,9 +58,12 @@ IMAGES_S3_BUCKET = os.environ.get("IMAGES_S3_BUCKET", S3_BUCKET)  # デフォル
 IMAGES_S3_PREFIX = os.environ.get("IMAGES_S3_PREFIX", "assets/images/")  # 画像格納先プレフィックス
 LOCAL_TEMP_DIR = os.environ.get("LOCAL_TEMP_DIR", tempfile.gettempdir())  # 一時フォルダ
 
-# Google画像検索用環境変数
+# Google画像検索用環境変数（Playwright使用）
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID", "")
+# OAuth 2.0認証情報
+YOUTUBE_TOKEN_JSON = os.environ.get("YOUTUBE_TOKEN_JSON", "")
+YOUTUBE_CLIENT_SECRETS_JSON = os.environ.get("YOUTUBE_CLIENT_SECRETS_JSON", "")
 
 VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1920"))
 VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1080"))
@@ -162,6 +165,140 @@ def download_background_music() -> str:
         if os.path.exists(local_path):
             os.remove(local_path)
         return None
+
+
+def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """PlaywrightでGoogle画像検索（無料版）"""
+    try:
+        from playwright.sync_api import sync_playwright
+        
+        print(f"Searching images with Playwright for: {keyword}")
+        
+        with sync_playwright() as p:
+            # ヘッドレスブラウザ起動
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context()
+            page = context.new_page()
+            
+            # Google画像検索ページへ
+            search_url = f"https://www.google.com/search?q={keyword}&tbm=isch"
+            page.goto(search_url)
+            page.wait_for_load_state('networkidle')
+            
+            # 画像URLを収集
+            images = []
+            image_elements = page.query_selector_all('img[src]')
+            
+            for i, img in enumerate(image_elements[:max_results]):
+                try:
+                    src = img.get_attribute('src')
+                    if src and src.startswith('http') and 'encrypted' not in src:
+                        # サムネイルURLをフルサイズに変換（簡易的）
+                        if 'base64' not in src:
+                            images.append({
+                                'url': src,
+                                'title': f'Image {i+1} for {keyword}',
+                                'thumbnail': src
+                            })
+                except:
+                    continue
+            
+            browser.close()
+            print(f"Found {len(images)} images with Playwright")
+            return images
+            
+    except ImportError:
+        print("Playwright not installed, falling back to default image")
+        return []
+    except Exception as e:
+        print(f"Playwright image search failed: {e}")
+        return []
+
+
+def get_youtube_credentials_from_env():
+    """環境変数からYouTube OAuth認証情報を取得"""
+    try:
+        if not YOUTUBE_TOKEN_JSON or not YOUTUBE_CLIENT_SECRETS_JSON:
+            raise RuntimeError("YouTube OAuth credentials not found in environment variables")
+        
+        token_data = json.loads(YOUTUBE_TOKEN_JSON)
+        client_secrets = json.loads(YOUTUBE_CLIENT_SECRETS_JSON)
+        
+        print("Successfully loaded YouTube OAuth credentials from environment")
+        return token_data, client_secrets
+        
+    except Exception as e:
+        print(f"Failed to load YouTube credentials: {e}")
+        raise
+
+
+def refresh_youtube_token_if_needed():
+    """必要に応じてYouTubeトークンをリフレッシュ"""
+    try:
+        token_data, client_secrets = get_youtube_credentials_from_env()
+        
+        # トークンの有効期限チェック
+        import time
+        if token_data.get('expires_at', 0) > time.time():
+            print("YouTube token is still valid")
+            return token_data
+        
+        print("YouTube token expired, attempting refresh...")
+        
+        # トークンリフレッシュロジック（簡易実装）
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        
+        credentials = Credentials.from_authorized_user_info(
+            token_data,
+            scopes=['https://www.googleapis.com/auth/youtube.upload']
+        )
+        
+        # トークンリフレッシュ
+        credentials.refresh(Request())
+        
+        # 新しいトークン情報を返す
+        new_token_data = {
+            'token': credentials.token,
+            'refresh_token': credentials.refresh_token,
+            'expires_at': credentials.expiry.timestamp(),
+            'client_id': credentials.client_id,
+            'client_secret': credentials.client_secret
+        }
+        
+        print("Successfully refreshed YouTube token")
+        return new_token_data
+        
+    except Exception as e:
+        print(f"Failed to refresh YouTube token: {e}")
+        raise
+
+
+def build_youtube_client_from_env():
+    """環境変数からYouTube APIクライアントを構築（ヘッドレス対応）"""
+    try:
+        token_data = refresh_youtube_token_if_needed()
+        client_secrets = json.loads(YOUTUBE_CLIENT_SECRETS_JSON)
+        
+        # 認証情報を構築
+        from google.oauth2.credentials import Credentials
+        credentials = Credentials(
+            token=token_data['token'],
+            refresh_token=token_data['refresh_token'],
+            token_uri='https://oauth2.googleapis.com/token',
+            client_id=client_secrets['installed']['client_id'],
+            client_secret=client_secrets['installed']['client_secret'],
+            scopes=['https://www.googleapis.com/auth/youtube.upload']
+        )
+        
+        # YouTube APIクライアント構築
+        youtube = build("youtube", "v3", credentials=credentials)
+        print("Successfully built YouTube client from environment variables")
+        return youtube
+        
+    except Exception as e:
+        print(f"Failed to build YouTube client: {e}")
+        raise
 
 
 def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
@@ -289,13 +426,13 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
 
 
 def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
-    """AIによる動的選別・自動取得で最適な画像を取得"""
+    """AIによる動的選別・自動取得で最適な画像を取得（Playwright版）"""
     try:
         # 1. キーワード抽出
         keyword = extract_image_keywords_from_script(script_data)
         
-        # 2. Google画像検索
-        images = search_google_images(keyword)
+        # 2. Playwrightで画像検索（無料）
+        images = search_images_with_playwright(keyword)
         
         if images:
             # 最初の画像（最も関連性が高い）をダウンロード
@@ -368,6 +505,12 @@ def create_breathing_effect(duration: float) -> List[float]:
         scales.append(scale)
     
     return scales
+
+
+def build_youtube_client():
+    """既に取得済みの OAuth2 資格情報(JSON文字列)から YouTube API クライアントを構築。"""
+    # 環境変数から認証情報を取得（ヘッドレス対応）
+    return build_youtube_client_from_env()
 
 
 def get_latest_script_object() -> Dict[str, Any]:
