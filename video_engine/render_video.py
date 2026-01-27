@@ -13,7 +13,7 @@ from botocore.client import Config
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from moviepy.editor import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx
+from moviepy.editor import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips
 import requests
 
 from create_thumbnail import create_thumbnail
@@ -605,14 +605,18 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> Non
 def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str) -> str:
     """
     複数のセリフを順番に音声合成し、結合した音声ファイルを生成。
-    新しいJSONフォーマットに対応し、part名に応じてspeaker_idを決定。
+    メモリ効率を改善し、大量の音声パーツ処理に対応。
     
     Returns:
         結合された音声ファイルのパス
     """
     audio_clips = []
+    generated_audio_files = []
+    
+    print(f"Processing {len(script_parts)} script parts...")
     
     for i, part in enumerate(script_parts):
+        clip = None
         try:
             part_name = part.get("part", "")
             text = part.get("text", "")
@@ -623,39 +627,77 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
             
             # part名に応じてspeaker_idを決定
             if part_name.startswith("article_"):
-                # 解説パートはすべてspeaker_id: 3（ずんだもん）
                 speaker_id = 3
             elif part_name == "reaction":
-                # 反応パートはJSON内のspeaker_idを使用
                 speaker_id = part.get("speaker_id", 3)
             else:
-                # その他の場合はデフォルトでずんだもん
                 speaker_id = part.get("speaker_id", 3)
             
             audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
+            
+            # 音声合成
+            print(f"Synthesizing part {i}: {text[:50]}...")
             synthesize_speech_voicevox(text, speaker_id, audio_path)
             
-            clip = AudioFileClip(audio_path)
-            audio_clips.append(clip)
-            
+            if os.path.exists(audio_path):
+                # AudioFileClipを作成してリストに追加
+                clip = AudioFileClip(audio_path)
+                audio_clips.append(clip)
+                generated_audio_files.append(audio_path)
+                print(f"Successfully created audio clip for part {i}")
+            else:
+                print(f"Warning: Audio file not created for part {i}")
+                
         except Exception as e:
             print(f"Error processing part {i}: {str(e)}")
             print(f"Part data: {part}")
-            # エラーがあっても処理を継続
+            # エラーが発生したクリップをクリーンアップ
+            if clip:
+                try:
+                    clip.close()
+                except:
+                    pass
             continue
     
     if not audio_clips:
         raise RuntimeError("音声クリップが生成されませんでした。script_partsの内容を確認してください。")
     
-    # すべての音声クリップを結合
-    final_audio = concatenate_audioclips(audio_clips)
-    final_audio_path = os.path.join(tmpdir, "final_audio.wav")
-    final_audio.write_audiofile(final_audio_path, codec="pcm_s16le", fps=44100)
+    print(f"Concatenating {len(audio_clips)} audio clips...")
     
-    # クリップを解放
-    for clip in audio_clips:
-        clip.close()
-    final_audio.close()
+    final_audio = None
+    final_audio_path = os.path.join(tmpdir, "final_audio.wav")
+    
+    try:
+        # すべての音声クリップを結合
+        final_audio = concatenate_audioclips(audio_clips)
+        final_audio.write_audiofile(final_audio_path, codec="pcm_s16le", fps=44100)
+        print(f"Final audio saved to: {final_audio_path}")
+        
+    except Exception as e:
+        print(f"Error during audio concatenation: {e}")
+        raise
+    finally:
+        # すべてのクリップを解放
+        for clip in audio_clips:
+            try:
+                clip.close()
+            except Exception as e:
+                print(f"Error closing audio clip: {e}")
+        
+        if final_audio:
+            try:
+                final_audio.close()
+            except Exception as e:
+                print(f"Error closing final audio: {e}")
+        
+        # 個別の音声ファイルを削除してメモリを解放
+        for audio_file in generated_audio_files:
+            try:
+                if os.path.exists(audio_file):
+                    os.remove(audio_file)
+                    print(f"Cleaned up temporary audio file: {audio_file}")
+            except Exception as e:
+                print(f"Failed to remove temporary audio file {audio_file}: {e}")
     
     return final_audio_path
 
