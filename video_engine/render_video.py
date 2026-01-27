@@ -134,9 +134,9 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         bg_clip = bg_clip.resize(newsize=(1920, 1080))
         print("Resized to 1920x1080 (intelligent stretch)")
         
-        # ガウスぼかしを適用して引き伸ばしの粗さを隠す
-        bg_clip = bg_clip.fx(vfx.gaussian_blur, sigma=5)
-        print("Applied gaussian blur (sigma=5) to hide stretching artifacts")
+        # 画像処理を適用して引き伸ばしの粗さを隠す
+        bg_clip = bg_clip.fx(vfx.colorx, 0.8)  # 少し暗くして引き伸ばしの粗さを目立たなくする
+        print("Applied colorx effect (0.8) to hide stretching artifacts")
         
         # 音声の長さに合わせてループ
         bg_clip = bg_clip.loop(duration=total_duration).set_duration(total_duration)
@@ -771,6 +771,7 @@ def build_video_with_subtitles(
     background_path: str,
     font_path: str,
     script_parts: List[Dict[str, Any]],
+    script_data: Dict[str, Any],
     audio_path: str,
     out_video_path: str,
 ) -> None:
@@ -852,7 +853,7 @@ def build_video_with_subtitles(
 
         # Layer 2: 中央画像（AI選択画像 + 呼吸アニメーション）- 1920x1080用に調整
         # AIによる動的選別・自動取得で最適な画像を取得
-        center_image_path = get_ai_selected_image(data)
+        center_image_path = get_ai_selected_image(script_data)
         
         if center_image_path and os.path.exists(center_image_path):
             print(f"Using AI-selected image: {center_image_path}")
@@ -1092,6 +1093,7 @@ def main() -> None:
                 background_path=BACKGROUND_IMAGE_PATH,
                 font_path=FONT_PATH,
                 script_parts=script_parts,
+                script_data=data,
                 audio_path=audio_path,
                 out_video_path=video_path,
             )
