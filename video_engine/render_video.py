@@ -257,8 +257,9 @@ def get_youtube_credentials_from_env():
         token_data = json.loads(YOUTUBE_TOKEN_JSON)
         
         # YOUTUBE_CLIENT_SECRETS_JSONがあれば使用、なければ個別変数から構築
-        if YOUTUBE_CLIENT_SECRETS_JSON:
-            client_secrets = json.loads(YOUTUBE_CLIENT_SECRETS_JSON)
+        client_secrets_json = os.environ.get("YOUTUBE_CLIENT_SECRETS_JSON", "")
+        if client_secrets_json:
+            client_secrets = json.loads(client_secrets_json)
         else:
             # 個別の環境変数からclient_secrets.json形式を構築
             client_id = os.environ.get("YOUTUBE_CLIENT_ID", "")
