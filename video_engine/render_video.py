@@ -9,9 +9,6 @@ import random
 import boto3
 import numpy as np
 from PIL import Image
-# Pillow互換性パッチ：ANTIALIASをLANCZOSにリンク
-if not hasattr(Image, 'ANTIALIAS'):
-    Image.ANTIALIAS = Image.LANCZOS
 from botocore.client import Config
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
