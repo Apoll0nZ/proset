@@ -530,12 +530,15 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> Non
     """
     VOICEVOX API を用いて日本語音声を生成し、音声ファイルとして保存。
     長いテキストは自動的に分割して合成し、結合する。
+    リトライロジックを実装し、ネットワークエラーに対応。
     
     Args:
         text: 音声化するテキスト
         speaker_id: VOICEVOX のスピーカーID（例: 3=ずんだもん）
         out_path: 出力音声ファイルパス（.wav形式）
     """
+    import time
+    
     # テキストを分割
     text_parts = split_text_for_voicevox(text)
     
@@ -550,36 +553,66 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> Non
         for i, part_text in enumerate(text_parts):
             if not part_text.strip():
                 continue
-                
-            # 音声クエリを生成
-            query_url = f"{VOICEVOX_API_URL}/audio_query"
-            query_params = {
-                "text": part_text,
-                "speaker": speaker_id
-            }
-            query_resp = requests.post(query_url, params=query_params, timeout=30)
-            if query_resp.status_code != 200:
-                raise RuntimeError(f"VOICEVOX クエリ生成失敗: {query_resp.status_code} {query_resp.text}")
             
-            query_data = query_resp.json()
+            # 音声クエリ生成のリトライロジック
+            query_data = None
+            for attempt in range(1, 4):  # 最大3回リトライ
+                try:
+                    print(f"Generating audio query for part {i}, attempt {attempt}/3")
+                    query_url = f"{VOICEVOX_API_URL}/audio_query"
+                    query_params = {
+                        "text": part_text,
+                        "speaker": speaker_id
+                    }
+                    query_resp = requests.post(query_url, params=query_params, timeout=30)
+                    if query_resp.status_code != 200:
+                        raise RuntimeError(f"VOICEVOX クエリ生成失敗: {query_resp.status_code} {query_resp.text}")
+                    
+                    query_data = query_resp.json()
+                    print(f"Audio query generated successfully for part {i}")
+                    break  # 成功したらループを抜ける
+                    
+                except Exception as e:
+                    if attempt < 3:
+                        print(f"Attempt {attempt} failed for audio query (part {i}), retrying... Error: {str(e)}")
+                        time.sleep(2)  # 2秒待機
+                    else:
+                        print(f"Critical error: All 3 attempts failed for audio query (part {i}). Error: {str(e)}")
+                        raise RuntimeError(f"Failed to generate audio query after 3 attempts for part {i}: {str(e)}")
             
-            # 音声合成
-            synthesis_url = f"{VOICEVOX_API_URL}/synthesis"
-            synthesis_params = {"speaker": speaker_id}
-            synthesis_resp = requests.post(
-                synthesis_url,
-                params=synthesis_params,
-                json=query_data,
-                timeout=60,
-                headers={"Content-Type": "application/json"}
-            )
-            if synthesis_resp.status_code != 200:
-                raise RuntimeError(f"VOICEVOX 音声合成失敗: {synthesis_resp.status_code} {synthesis_resp.text}")
+            # 音声合成のリトライロジック
+            synthesis_content = None
+            for attempt in range(1, 4):  # 最大3回リトライ
+                try:
+                    print(f"Synthesizing audio for part {i}, attempt {attempt}/3")
+                    synthesis_url = f"{VOICEVOX_API_URL}/synthesis"
+                    synthesis_params = {"speaker": speaker_id}
+                    synthesis_resp = requests.post(
+                        synthesis_url,
+                        params=synthesis_params,
+                        json=query_data,
+                        timeout=60,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    if synthesis_resp.status_code != 200:
+                        raise RuntimeError(f"VOICEVOX 音声合成失敗: {synthesis_resp.status_code} {synthesis_resp.text}")
+                    
+                    synthesis_content = synthesis_resp.content
+                    print(f"Audio synthesis successful for part {i}")
+                    break  # 成功したらループを抜ける
+                    
+                except Exception as e:
+                    if attempt < 3:
+                        print(f"Attempt {attempt} failed for audio synthesis (part {i}), retrying... Error: {str(e)}")
+                        time.sleep(2)  # 2秒待機
+                    else:
+                        print(f"Critical error: All 3 attempts failed for audio synthesis (part {i}). Error: {str(e)}")
+                        raise RuntimeError(f"Failed to synthesize audio after 3 attempts for part {i}: {str(e)}")
             
             # 一時音声ファイルとして保存
             temp_audio_path = os.path.join(temp_dir, f"temp_audio_{i}.wav")
             with open(temp_audio_path, "wb") as out_f:
-                out_f.write(synthesis_resp.content)
+                out_f.write(synthesis_content)
             
             clip = AudioFileClip(temp_audio_path)
             audio_clips.append(clip)
@@ -606,61 +639,93 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     """
     複数のセリフを順番に音声合成し、結合した音声ファイルを生成。
     メモリ効率を改善し、大量の音声パーツ処理に対応。
+    リトライロジックを実装し、ネットワークエラーに対応。
     
     Returns:
         結合された音声ファイルのパス
     """
+    import time
+    
     audio_clips = []
     generated_audio_files = []
+    successful_parts = 0
+    failed_parts = []
     
     print(f"Processing {len(script_parts)} script parts...")
     
     for i, part in enumerate(script_parts):
         clip = None
-        try:
-            part_name = part.get("part", "")
-            text = part.get("text", "")
-            
-            if not text:
-                print(f"Warning: Empty text for part {i}, skipping...")
-                continue
-            
-            # part名に応じてspeaker_idを決定
-            if part_name.startswith("article_"):
-                speaker_id = 3
-            elif part_name == "reaction":
-                speaker_id = part.get("speaker_id", 3)
-            else:
-                speaker_id = part.get("speaker_id", 3)
-            
-            audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
-            
-            # 音声合成
-            print(f"Synthesizing part {i}: {text[:50]}...")
-            synthesize_speech_voicevox(text, speaker_id, audio_path)
-            
-            if os.path.exists(audio_path):
-                # AudioFileClipを作成してリストに追加
-                clip = AudioFileClip(audio_path)
-                audio_clips.append(clip)
-                generated_audio_files.append(audio_path)
-                print(f"Successfully created audio clip for part {i}")
-            else:
-                print(f"Warning: Audio file not created for part {i}")
+        success = False
+        
+        # 各パーツの処理にリトライロジックを実装
+        for attempt in range(1, 4):  # 最大3回リトライ
+            try:
+                part_name = part.get("part", "")
+                text = part.get("text", "")
                 
-        except Exception as e:
-            print(f"Error processing part {i}: {str(e)}")
-            print(f"Part data: {part}")
-            # エラーが発生したクリップをクリーンアップ
-            if clip:
-                try:
-                    clip.close()
-                except:
-                    pass
-            continue
+                if not text:
+                    print(f"Warning: Empty text for part {i}, skipping...")
+                    success = True  # 空テキストは成功とみなす
+                    break
+                
+                # part名に応じてspeaker_idを決定
+                if part_name.startswith("article_"):
+                    speaker_id = 3
+                elif part_name == "reaction":
+                    speaker_id = part.get("speaker_id", 3)
+                else:
+                    speaker_id = part.get("speaker_id", 3)
+                
+                audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
+                
+                # 音声合成（内部でリトライロジックが動作）
+                print(f"Synthesizing part {i} (attempt {attempt}/3): {text[:50]}...")
+                synthesize_speech_voicevox(text, speaker_id, audio_path)
+                
+                if os.path.exists(audio_path):
+                    # AudioFileClipを作成してリストに追加
+                    clip = AudioFileClip(audio_path)
+                    audio_clips.append(clip)
+                    generated_audio_files.append(audio_path)
+                    successful_parts += 1
+                    success = True
+                    print(f"Successfully created audio clip for part {i}")
+                    break  # 成功したらリトライループを抜ける
+                else:
+                    raise RuntimeError(f"Audio file not created for part {i}")
+                    
+            except Exception as e:
+                if attempt < 3:
+                    print(f"Attempt {attempt} failed for part {i}, retrying... Error: {str(e)}")
+                    time.sleep(2)  # 2秒待機
+                    
+                    # クリップが存在する場合はクリーンアップ
+                    if clip:
+                        try:
+                            clip.close()
+                        except:
+                            pass
+                        clip = None
+                else:
+                    print(f"Critical error: All 3 attempts failed for part {i}. Error: {str(e)}")
+                    print(f"Part data: {part}")
+                    failed_parts.append(i)
+                    
+                    # 最後の試行で失敗したクリップをクリーンアップ
+                    if clip:
+                        try:
+                            clip.close()
+                        except:
+                            pass
+    
+    # 処理結果のサマリーを出力
+    print(f"Audio synthesis completed: {successful_parts}/{len(script_parts)} parts successful")
+    if failed_parts:
+        print(f"Failed parts: {failed_parts}")
+        print(f"Warning: {len(failed_parts)} parts failed, but continuing with successful parts...")
     
     if not audio_clips:
-        raise RuntimeError("音声クリップが生成されませんでした。script_partsの内容を確認してください。")
+        raise RuntimeError(f"音声クリップが生成されませんでした。{len(failed_parts)}個のパーツが失敗しました。script_partsの内容を確認してください。")
     
     print(f"Concatenating {len(audio_clips)} audio clips...")
     
