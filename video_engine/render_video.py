@@ -248,13 +248,35 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
 
 
 def get_youtube_credentials_from_env():
-    """環境変数からYouTube OAuth認証情報を取得"""
+    """環境変数からYouTube OAuth認証情報を取得（GitHub Secrets対応）"""
     try:
-        if not YOUTUBE_TOKEN_JSON or not YOUTUBE_CLIENT_SECRETS_JSON:
-            raise RuntimeError("YouTube OAuth credentials not found in environment variables")
+        # YOUTUBE_TOKEN_JSONは必須
+        if not YOUTUBE_TOKEN_JSON:
+            raise RuntimeError("YOUTUBE_TOKEN_JSON not found in environment variables")
         
         token_data = json.loads(YOUTUBE_TOKEN_JSON)
-        client_secrets = json.loads(YOUTUBE_CLIENT_SECRETS_JSON)
+        
+        # YOUTUBE_CLIENT_SECRETS_JSONがあれば使用、なければ個別変数から構築
+        if YOUTUBE_CLIENT_SECRETS_JSON:
+            client_secrets = json.loads(YOUTUBE_CLIENT_SECRETS_JSON)
+        else:
+            # 個別の環境変数からclient_secrets.json形式を構築
+            client_id = os.environ.get("YOUTUBE_CLIENT_ID", "")
+            client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
+            
+            if not client_id or not client_secret:
+                raise RuntimeError("YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET must be set")
+            
+            client_secrets = {
+                "installed": {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "redirect_uris": ["http://localhost"]
+                }
+            }
         
         print("Successfully loaded YouTube OAuth credentials from environment")
         return token_data, client_secrets
