@@ -716,6 +716,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     import time
     
     audio_clips = []
+    part_durations: List[float] = []
     generated_audio_files = []
     successful_parts = 0
     failed_parts = []
