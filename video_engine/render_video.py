@@ -943,6 +943,20 @@ def build_video_with_subtitles(
             print("Using gradient background as image fallback")
             image_paths.append(None)
 
+        def make_pos_func(start_time: float, target_x: int, target_y: int, start_x: int):
+            """画像ごとに独立した位置関数を生成するクロージャ"""
+            def pos_func(t: float):
+                local_t = max(0.0, t - start_time)
+                if local_t < 0.5:
+                    # 0.5秒未満：左外から中央へスライド
+                    progress = local_t / 0.5
+                    x = start_x + (target_x - start_x) * progress
+                else:
+                    # 0.5秒以降：中央で固定
+                    x = target_x
+                return (x, target_y)
+            return pos_func
+
         image_duration = total_duration / max(len(image_paths), 1)
         for idx, image_path in enumerate(image_paths):
             start_time = idx * image_duration
@@ -958,13 +972,9 @@ def build_video_with_subtitles(
             target_y = int((VIDEO_HEIGHT - clip_h) / 2)
             start_x = -clip_w
 
-            def slide_in_pos(t, start=start_time, tx=target_x, ty=target_y, sx=start_x):
-                local_t = max(0.0, t - start)
-                progress = min(1.0, local_t / 0.5)
-                x = sx + (tx - sx) * progress
-                return (x, ty)
-
-            clip = clip.set_position(slide_in_pos)
+            # クロージャで位置関数を生成
+            pos_func = make_pos_func(start_time, target_x, target_y, start_x)
+            clip = clip.set_position(pos_func)
             image_clips.append(clip)
 
         # Layer 3: 左上セグメント表示 - 1920x1080用に調整
