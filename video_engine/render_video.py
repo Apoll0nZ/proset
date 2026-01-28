@@ -87,6 +87,9 @@ VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1920"))
 VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1080"))
 FPS = int(os.environ.get("FPS", "30"))
 
+# デバッグモード（Trueの時は最初の60秒のみ書き出し）
+DEBUG_MODE = True
+
 
 s3_client = boto3.client("s3", region_name=AWS_REGION, config=Config(signature_version="s3v4"))
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
@@ -611,6 +614,7 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> Non
         raise RuntimeError(f"音声化するテキストが空です: {text[:50]}")
     
     audio_clips = []
+    part_durations: List[float] = []
     temp_dir = tempfile.mkdtemp()
     
     try:
@@ -700,7 +704,7 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> Non
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str) -> str:
+def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str) -> (str, List[float]):
     """
     複数のセリフを順番に音声合成し、結合した音声ファイルを生成。
     メモリ効率を改善し、大量の音声パーツ処理に対応。
@@ -720,6 +724,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     
     for i, part in enumerate(script_parts):
         clip = None
+        part_duration = 0.0
         success = False
         
         # 各パーツの処理にリトライロジックを実装
@@ -737,7 +742,9 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 if part_name.startswith("article_"):
                     speaker_id = 3
                 elif part_name == "reaction":
-                    speaker_id = part.get("speaker_id", 3)
+                    speaker_id = part.get("speaker_id", 1)
+                    if speaker_id == 3:
+                        speaker_id = random.choice([1, 2, 8, 10, 14])
                 else:
                     speaker_id = part.get("speaker_id", 3)
                 
@@ -750,8 +757,10 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 if os.path.exists(audio_path):
                     # AudioFileClipを作成してリストに追加
                     clip = AudioFileClip(audio_path)
+                    part_duration = clip.duration
                     audio_clips.append(clip)
                     generated_audio_files.append(audio_path)
+                    part_durations.append(part_duration)
                     successful_parts += 1
                     success = True
                     print(f"Successfully created audio clip for part {i}")
@@ -770,7 +779,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                             clip.close()
                         except:
                             pass
-                        clip = None
+                    clip = None
                 else:
                     print(f"Critical error: All 3 attempts failed for part {i}. Error: {str(e)}")
                     print(f"Part data: {part}")
@@ -782,6 +791,8 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                             clip.close()
                         except:
                             pass
+        if not success:
+            part_durations.append(0.0)
     
     # 処理結果のサマリーを出力
     print(f"Audio synthesis completed: {successful_parts}/{len(script_parts)} parts successful")
@@ -829,7 +840,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
             except Exception as e:
                 print(f"Failed to remove temporary audio file {audio_file}: {e}")
     
-    return final_audio_path
+    return final_audio_path, part_durations
 
 
 def build_video_with_subtitles(
@@ -837,15 +848,16 @@ def build_video_with_subtitles(
     font_path: str,
     script_parts: List[Dict[str, Any]],
     script_data: Dict[str, Any],
+    part_durations: List[float],
     audio_path: str,
     out_video_path: str,
 ) -> None:
     """
     新しい映像生成ワークフロー：
     Layer 1: ぼかし済み背景動画（ループ）
-    Layer 2: 中央画像（呼吸アニメーション）
+    Layer 2: 画像スライド（複数枚）
     Layer 3: 左上セグメント表示
-    Layer 4: 下部字幕
+    Layer 4: 下部字幕（音声同期）
     BGM: 背景音楽をミックス
     """
     audio_clip = None
@@ -917,38 +929,43 @@ def build_video_with_subtitles(
             bg_clip = ImageClip(gradient_array).set_duration(total_duration)
             print(f"Created gradient background: {VIDEO_WIDTH}x{VIDEO_HEIGHT}")
 
-        # Layer 2: 中央画像（AI選択画像 + 呼吸アニメーション）- 1920x1080用に調整
-        # AIによる動的選別・自動取得で最適な画像を取得
-        center_image_path = get_ai_selected_image(script_data)
-        
-        if center_image_path and os.path.exists(center_image_path):
-            print(f"Using AI-selected image: {center_image_path}")
-            try:
-                # 画像を読み込んで中央画像として使用
-                center_image_array = np.array(Image.open(center_image_path).convert("RGB"))
-                center_clip = ImageClip(center_image_array).set_duration(total_duration)
-                center_clip = center_clip.resize(newsize=(1000, 600)).set_position('center')
-                print("Successfully loaded AI-selected image")
-            except Exception as e:
-                print(f"Failed to load AI-selected image: {e}")
-                # フォールバック：グラデーション画像
-                center_image_array = create_gradient_background(1000, 600)
-                center_clip = ImageClip(center_image_array).set_duration(total_duration)
-                center_clip = center_clip.resize(newsize=(1000, 600)).set_position('center')
-        else:
-            print("Using gradient background as center image")
-            # フォールバック：グラデーション画像
-            center_image_array = create_gradient_background(1000, 600)
-            center_clip = ImageClip(center_image_array).set_duration(total_duration)
-            center_clip = center_clip.resize(newsize=(1000, 600)).set_position('center')
-        
-        # 呼吸アニメーションを適用（シンプルな実装）
-        def breathing_effect(t):
-            # 4秒周期で97%〜100%のスケール変化
-            scale = 0.97 + 0.03 * (0.5 + 0.5 * math.sin(2 * math.pi * t / 4.0))
-            return scale
-        
-        center_clip = center_clip.resize(lambda t: breathing_effect(t))
+        # Layer 2: 画像スライド（複数枚）
+        image_clips = []
+        keyword = extract_image_keywords_from_script(script_data)
+        images = search_images_with_playwright(keyword, max_results=3)
+        image_paths = []
+        for image in images:
+            image_path = download_image_from_url(image.get("url"))
+            if image_path and os.path.exists(image_path):
+                image_paths.append(image_path)
+
+        if not image_paths:
+            print("Using gradient background as image fallback")
+            image_paths.append(None)
+
+        image_duration = total_duration / max(len(image_paths), 1)
+        for idx, image_path in enumerate(image_paths):
+            start_time = idx * image_duration
+            if image_path:
+                image_array = np.array(Image.open(image_path).convert("RGB"))
+            else:
+                image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
+
+            clip = ImageClip(image_array).set_start(start_time).set_duration(image_duration)
+            clip = clip.resize(width=int(VIDEO_WIDTH * 0.8))
+            clip_w, clip_h = clip.w, clip.h
+            target_x = int((VIDEO_WIDTH - clip_w) / 2)
+            target_y = int((VIDEO_HEIGHT - clip_h) / 2)
+            start_x = -clip_w
+
+            def slide_in_pos(t, start=start_time, tx=target_x, ty=target_y, sx=start_x):
+                local_t = max(0.0, t - start)
+                progress = min(1.0, local_t / 0.5)
+                x = sx + (tx - sx) * progress
+                return (x, ty)
+
+            clip = clip.set_position(slide_in_pos)
+            image_clips.append(clip)
 
         # Layer 3: 左上セグメント表示 - 1920x1080用に調整
         try:
@@ -966,20 +983,15 @@ def build_video_with_subtitles(
             segment_clip = None  # セグメントテキストなしで続行
 
         # Layer 4: 下部字幕 - 1920x1080用に調整
-        current_time = 0
-        for i, part in enumerate(script_parts):
+        current_time = 0.0
+        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             try:
                 text = part.get("text", "")
                 if not text:
                     continue
-                
-                # このセリフの音声長を推定
-                estimated_duration = min(len(text) * 0.08, 8.0)
-                
-                if current_time + estimated_duration > total_duration:
-                    estimated_duration = total_duration - current_time
-                
-                if estimated_duration <= 0:
+
+                subtitle_duration = min(duration, total_duration - current_time)
+                if subtitle_duration <= 0:
                     break
                 
                 # 字幕クリップを作成（1920x1080用に調整）
@@ -995,21 +1007,22 @@ def build_video_with_subtitles(
                         stroke_width=2,
                         bg_color="rgba(0,0,0,0.7)"
                     )
-                    txt_clip = txt_clip.set_position((150, VIDEO_HEIGHT - 300)).set_start(current_time).set_duration(estimated_duration)
+                    txt_clip = txt_clip.set_position((150, VIDEO_HEIGHT - 300)).set_start(current_time).set_duration(subtitle_duration)
                     text_clips.append(txt_clip)
                 except Exception as e:
                     print(f"Warning: Failed to create subtitle for part {i}: {e}")
                     print("Continuing without subtitle for this part...")
                     # 字幕なしで続行（審査用動画として優先）
                 
-                current_time += estimated_duration
+                current_time += subtitle_duration
                 
             except Exception as e:
                 print(f"Error creating subtitle for part {i}: {e}")
                 continue
 
-        # すべてのレイヤーを合成
-        all_clips = [bg_clip, center_clip]
+        # すべてのレイヤーを合成（背景動画 -> 背景画像 -> 字幕）
+        all_clips = [bg_clip]
+        all_clips.extend(image_clips)
         if segment_clip:
             all_clips.append(segment_clip)
         all_clips.extend(text_clips)
@@ -1028,6 +1041,11 @@ def build_video_with_subtitles(
         # 最終音声を動画に設定
         video = video.set_audio(final_audio)
         
+        if DEBUG_MODE:
+            debug_duration = min(60, video.duration)
+            print(f"DEBUG_MODE enabled: trimming video to {debug_duration}s")
+            video = video.subclip(0, debug_duration)
+
         print(f"Writing video to: {out_video_path}")
         video.write_videofile(
             out_video_path,
@@ -1159,11 +1177,18 @@ def main() -> None:
             if not script_parts:
                 raise RuntimeError("script_parts が空です。Gemini の出力を確認してください。")
             
-            print(f"Processing {len(script_parts)} script parts...")
+            # 0. タイトル読み上げパートを先頭に追加（ずんだもん: ID 3）
+            title_part = {
+                "part": "title",
+                "text": title,
+                "speaker_id": 3
+            }
+            script_parts = [title_part] + script_parts
+            print(f"Processing {len(script_parts)} script parts (title included)...")
 
             # 2. VOICEVOX で音声生成（複数セリフ対応）
             print("Generating audio...")
-            audio_path = synthesize_multiple_speeches(script_parts, tmpdir)
+            audio_path, part_durations = synthesize_multiple_speeches(script_parts, tmpdir)
 
             # 3. Video 合成
             print("Generating video...")
@@ -1173,6 +1198,7 @@ def main() -> None:
                 font_path=FONT_PATH,
                 script_parts=script_parts,
                 script_data=data,
+                part_durations=part_durations,
                 audio_path=audio_path,
                 out_video_path=video_path,
             )
