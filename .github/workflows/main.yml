@@ -13,7 +13,9 @@ jobs:
       SCRIPT_S3_BUCKET: ${{ secrets.SCRIPT_S3_BUCKET }}
       SCRIPT_S3_PREFIX: ${{ secrets.SCRIPT_S3_PREFIX }}
       MY_DDB_TABLE_NAME: ${{ secrets.MY_DDB_TABLE_NAME }}
-      YOUTUBE_AUTH_JSON: ${{ secrets.YOUTUBE_AUTH_JSON }}
+      YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+      YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRETS_JSON }}
+      YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
       VOICEVOX_API_URL: http://localhost:50021
 
     steps:
@@ -86,7 +88,9 @@ jobs:
           MY_DDB_TABLE_NAME: ${{ secrets.MY_DDB_TABLE_NAME }}
           SCRIPT_S3_BUCKET: ${{ secrets.SCRIPT_S3_BUCKET }}
           SCRIPT_S3_PREFIX: ${{ secrets.SCRIPT_S3_PREFIX }}
-          YOUTUBE_AUTH_JSON: ${{ secrets.YOUTUBE_AUTH_JSON }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRETS_JSON }}
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
         run: |
           python render_video.py \
             --s3-key "${{ github.event.client_payload.s3_key }}" \
