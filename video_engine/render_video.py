@@ -151,6 +151,14 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         bg_clip = bg_clip.without_audio()
         print("Background video audio muted")
         
+        # DEBUG_MODEなら60秒にカット（処理対象を大幅削減）
+        if DEBUG_MODE:
+            bg_clip = bg_clip.subclip(0, 60)
+            print("DEBUG_MODE: Background video trimmed to 60s")
+        else:
+            bg_clip = bg_clip.subclip(0, total_duration)
+            print(f"Background video trimmed to {total_duration:.2f}s")
+        
         # 1920x1080に引き伸ばして画面いっぱいに
         bg_clip = bg_clip.resize(newsize=(1920, 1080))
         print("Resized to 1920x1080 (intelligent stretch)")
@@ -159,9 +167,12 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         bg_clip = bg_clip.fx(vfx.colorx, 0.8)  # 少し暗くして引き伸ばしの粗さを目立たなくする
         print("Applied colorx effect (0.8) to hide stretching artifacts")
         
-        # 音声の長さに合わせてループ
-        bg_clip = bg_clip.loop(duration=total_duration).set_duration(total_duration)
-        print(f"Looped to match audio duration: {total_duration:.2f}s")
+        # 音声の長さに合わせてループ（DEBUG_MODEなら60秒で固定）
+        if DEBUG_MODE:
+            bg_clip = bg_clip.loop(duration=60).set_duration(60)
+        else:
+            bg_clip = bg_clip.loop(duration=total_duration).set_duration(total_duration)
+        print(f"Looped to match duration: {60 if DEBUG_MODE else total_duration:.2f}s")
         
         return bg_clip
         
@@ -967,7 +978,7 @@ def build_video_with_subtitles(
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
             clip = ImageClip(image_array).set_start(start_time).set_duration(image_duration)
-            clip = clip.resize(width=int(VIDEO_WIDTH * 0.8))
+            clip = clip.resize(width=int(VIDEO_WIDTH * 0.8), method="fast")  # 高速リサイズ
             clip_w, clip_h = clip.w, clip.h
             target_x = int((VIDEO_WIDTH - clip_w) / 2)
             target_y = int((VIDEO_HEIGHT - clip_h) / 2)
@@ -1041,10 +1052,21 @@ def build_video_with_subtitles(
         
         # 音声トラックを結合（メイン音声 + BGM）
         if bgm_clip:
+            # DEBUG_MODEなら音声も60秒にカット
+            if DEBUG_MODE:
+                audio_clip = audio_clip.subclip(0, 60)
+                bgm_clip = bgm_clip.subclip(0, 60)
+                print("DEBUG_MODE: Audio clips trimmed to 60s")
+            
             # CompositeAudioClipでメイン音声とBGMをミックス
             final_audio = CompositeAudioClip([audio_clip, bgm_clip])
             print("Mixed main audio with BGM")
         else:
+            # DEBUG_MODEならメイン音声も60秒にカット
+            if DEBUG_MODE:
+                audio_clip = audio_clip.subclip(0, 60)
+                print("DEBUG_MODE: Main audio trimmed to 60s")
+            
             # BGMがない場合はメイン音声のみ
             final_audio = audio_clip
             print("Using main audio only (no BGM)")
@@ -1062,11 +1084,13 @@ def build_video_with_subtitles(
             out_video_path,
             fps=30,  # 30fps固定
             codec='libx264',
+            preset='ultrafast',  # 最速エンコード
             audio_codec='aac',
             audio_bitrate='256k',  # 音声256kbps
             temp_audiofile='temp-audio.m4a',
             remove_temp=True,
-            threads=4
+            threads=8,  # 並列処理を明示
+            logger=None  # コンソール書き込みを抑制
         )
         
         print("Video generation completed successfully")
