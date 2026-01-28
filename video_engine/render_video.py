@@ -256,28 +256,23 @@ def get_youtube_credentials_from_env():
         
         token_data = json.loads(YOUTUBE_TOKEN_JSON)
         
-        # YOUTUBE_CLIENT_SECRETS_JSONがあれば使用、なければ個別変数から構築
-        client_secrets_json = os.environ.get("YOUTUBE_CLIENT_SECRETS_JSON", "")
-        if client_secrets_json:
-            client_secrets = json.loads(client_secrets_json)
-        else:
-            # 個別の環境変数からclient_secrets.json形式を構築
-            client_id = os.environ.get("YOUTUBE_CLIENT_ID", "")
-            client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
-            
-            if not client_id or not client_secret:
-                raise RuntimeError("YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET must be set")
-            
-            client_secrets = {
-                "installed": {
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                    "redirect_uris": ["http://localhost"]
-                }
+        # 個別の環境変数からclient_secrets.json形式を構築（常にこちらを使用）
+        client_id = os.environ.get("YOUTUBE_CLIENT_ID", "")
+        client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
+        
+        if not client_id or not client_secret:
+            raise RuntimeError("YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET must be set")
+        
+        client_secrets = {
+            "installed": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "redirect_uris": ["http://localhost"]
             }
+        }
         
         print("Successfully loaded YouTube OAuth credentials from environment")
         return token_data, client_secrets
