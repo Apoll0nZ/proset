@@ -1268,14 +1268,10 @@ def main() -> None:
             print("Saving to DynamoDB...")
             now = datetime.now(timezone.utc).isoformat()
             
-            # urlを主キーとして使用、content_hashは必須ではない
-            url = meta.get("url") or ""
+            # URLの厳格なチェック
+            url = meta.get("url")
             if not url:
-                print("WARNING: meta.url が存在しません。content_hashをフォールバックとして使用します。")
-                url = meta.get("content_hash") or ""
-            
-            if not url:
-                raise RuntimeError("meta.url と meta.content_hash の両方が存在しません。Lambda 側の保存処理を確認してください。")
+                raise RuntimeError("meta.url が存在しません。処理を中断します。")
 
             # TTL（3年後）
             from datetime import timedelta
