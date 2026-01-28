@@ -325,10 +325,23 @@ def refresh_youtube_token_if_needed():
 
 
 def build_youtube_client_from_env():
-    """環境変数からYouTube APIクライアントを構築（ヘッドレス対応）"""
+    """環境変数からYouTube APIクライアントを構築（個別文字列から動的生成）"""
     try:
         token_data = refresh_youtube_token_if_needed()
-        client_secrets = json.loads(YOUTUBE_CLIENT_SECRETS_JSON)
+        
+        # 環境変数から直接文字列を取得
+        client_id = os.environ.get("YOUTUBE_CLIENT_ID")
+        client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET")
+        
+        # JSONパースを介さず、プログラム内で辞書を組み立てる
+        client_secrets = {
+            "installed": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token"
+            }
+        }
         
         # 認証情報を構築
         from google.oauth2.credentials import Credentials
@@ -341,9 +354,8 @@ def build_youtube_client_from_env():
             scopes=['https://www.googleapis.com/auth/youtube.upload']
         )
         
-        # YouTube APIクライアント構築
         youtube = build("youtube", "v3", credentials=credentials)
-        print("Successfully built YouTube client from environment variables")
+        print("Successfully built YouTube client by dynamic dictionary generation")
         return youtube
         
     except Exception as e:
