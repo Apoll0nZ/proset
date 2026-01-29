@@ -119,16 +119,32 @@ def draw_text_with_outline(
     outline_color: str = "black",
     outline_width: int = 3,
 ):
-    """縁取り付きテキストを描画。"""
-    x, y = position
-    # 縁取りを描画（8方向）
-    for adj_x in [-outline_width, 0, outline_width]:
-        for adj_y in [-outline_width, 0, outline_width]:
-            if adj_x == 0 and adj_y == 0:
-                continue
-            draw.text((x + adj_x, y + adj_y), text, font=font, fill=outline_color)
-    # メインテキストを描画
-    draw.text(position, text, font=font, fill=fill)
+    """縁取り付きテキストを描画。UTF-8対応。"""
+    try:
+        # テキストをUTF-8で安全に処理
+        if isinstance(text, bytes):
+            text = text.decode('utf-8', errors='ignore')
+        else:
+            text = str(text)
+        
+        x, y = position
+        # 縁取りを描画（8方向）
+        for adj_x in [-outline_width, 0, outline_width]:
+            for adj_y in [-outline_width, 0, outline_width]:
+                if adj_x == 0 and adj_y == 0:
+                    continue
+                draw.text((x + adj_x, y + adj_y), text, font=font, fill=outline_color, encoding='unic')
+        # メインテキストを描画
+        draw.text(position, text, font=font, fill=fill, encoding='unic')
+    except Exception as e:
+        print(f"[DEBUG] Text drawing failed: {e}, using fallback")
+        # フォールバック：ASCIIのみで描画
+        try:
+            ascii_text = text.encode('ascii', errors='ignore').decode('ascii')
+            draw.text(position, ascii_text, font=font, fill=fill)
+        except:
+            # 最終フォールバック：プレースホルダー
+            draw.text(position, "THUMBNAIL", font=font, fill=fill)
 
 
 def create_thumbnail(

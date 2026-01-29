@@ -9,6 +9,16 @@ import random
 # GitHub Actions (Linux) 環境向けに ImageMagick のパスを明示
 if os.name != 'nt':
     os.environ["IMAGEMAGICK_BINARY"] = "/usr/bin/convert"
+    # ImageMagickセキュリティポリシーを修正
+    import subprocess
+    try:
+        subprocess.run(['sudo', 'sed', '-i', 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/g', '/etc/ImageMagick-6/policy.xml'], 
+                      check=True, capture_output=True)
+        print("[DEBUG] ImageMagick security policy updated")
+    except subprocess.CalledProcessError as e:
+        print(f"[WARNING] Failed to update ImageMagick policy: {e}")
+    except Exception as e:
+        print(f"[WARNING] ImageMagick policy update failed: {e}")
 
 import boto3
 import numpy as np
@@ -1230,8 +1240,24 @@ def upload_to_youtube(
 
 def put_video_history_item(item: Dict[str, Any]) -> None:
     """DynamoDB VideoHistory テーブルに put_item する。"""
+    import decimal
+    
+    # floatをDecimal型に変換（文字列経由で誤差を回避）
+    def convert_floats_to_decimal(obj):
+        if isinstance(obj, float):
+            return decimal.Decimal(str(obj))
+        elif isinstance(obj, dict):
+            return {k: convert_floats_to_decimal(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_floats_to_decimal(item) for item in obj]
+        else:
+            return obj
+    
+    # item内のfloatをDecimalに変換
+    converted_item = convert_floats_to_decimal(item)
+    
     table = dynamodb.Table(DDB_TABLE_NAME)
-    table.put_item(Item=item)
+    table.put_item(Item=converted_item)
 
 
 def main() -> None:
