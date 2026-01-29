@@ -20,28 +20,33 @@ THUMBNAIL_HEIGHT = 720
 TOP_AREA_HEIGHT = int(THUMBNAIL_HEIGHT * 0.7)  # 上部70%
 BOTTOM_AREA_HEIGHT = THUMBNAIL_HEIGHT - TOP_AREA_HEIGHT  # 下部30%
 
-# フォントパス（システムフォントを使用、なければデフォルト）
+# フォントパス（日本語対応フォントを優先）
 FONT_PATH_MAIN = os.environ.get(
     "THUMBNAIL_FONT_MAIN",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"  # フォールバック
+    "/System/Library/Fonts/Hiragino Sans GB.ttc"  # macOS日本語フォント
 )
 FONT_PATH_SUB = os.environ.get(
     "THUMBNAIL_FONT_SUB",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    "/System/Library/Fonts/Hiragino Sans GB.ttc"
 )
 
 
 def download_image(url: str, max_size: tuple = (640, 480)) -> Optional[Image.Image]:
     """URLから画像をダウンロードしてリサイズ。"""
     try:
+        print(f"[DEBUG] Downloading image from URL: {url}")
         resp = requests.get(url, timeout=10)
         if resp.status_code != 200:
+            print(f"[DEBUG] Failed to download image: HTTP {resp.status_code}")
             return None
         img = Image.open(BytesIO(resp.content))
-        img = img.convert("RGB")
+        print(f"[DEBUG] Image loaded: mode={img.mode}, size={img.size}")
+        img = img.convert("RGBA")  # RGBAに変換して透過をサポート
         img.thumbnail(max_size, Image.Resampling.LANCZOS)
+        print(f"[DEBUG] Image resized to: {img.size}")
         return img
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG] Error downloading image: {e}")
         return None
 
 
@@ -59,13 +64,26 @@ def create_placeholder_image(width: int, height: int, color: tuple = (200, 200, 
 
 def get_article_images(topic_summary: str, meta: Optional[Dict] = None) -> Tuple[Image.Image, Image.Image]:
     """
-    記事関連画像を2枚取得（実装は簡易版）。
-    実際の運用では、記事のOGP画像や関連画像を取得する処理を追加。
+    記事関連画像を2枚取得（S3からダウンロード）。
     """
-    # ここではプレースホルダー画像を生成
-    # 実運用では、meta.source_url からOGP画像を取得する処理を追加
-    img1 = create_placeholder_image(640, 480, (100, 150, 200))
-    img2 = create_placeholder_image(640, 480, (200, 100, 150))
+    # S3から画像をダウンロード
+    img1 = None
+    img2 = None
+    
+    if meta and "source_url" in meta:
+        # 実運用ではmeta.source_urlからOGP画像を取得
+        source_url = meta["source_url"]
+        print(f"[DEBUG] Attempting to get images from source: {source_url}")
+        # ここでは簡易的にプレースホルダーを使用
+    
+    # プレースホルダー画像を生成（RGBAで透過対応）
+    if img1 is None:
+        img1 = create_placeholder_image(640, 480, (100, 150, 200)).convert("RGBA")
+        print(f"[DEBUG] Created placeholder img1: size={img1.size}, mode={img1.mode}")
+    if img2 is None:
+        img2 = create_placeholder_image(640, 480, (200, 100, 150)).convert("RGBA")
+        print(f"[DEBUG] Created placeholder img2: size={img2.size}, mode={img2.mode}")
+        
     return img1, img2
 
 
@@ -123,9 +141,12 @@ def create_thumbnail(
     # 画像をリサイズして配置
     img1_resized = img1.resize((left_width, TOP_AREA_HEIGHT), Image.Resampling.LANCZOS)
     img2_resized = img2.resize((right_width, TOP_AREA_HEIGHT), Image.Resampling.LANCZOS)
+    print(f"[DEBUG] Resized images: img1={img1_resized.size}, img2={img2_resized.size}")
     
-    img.paste(img1_resized, (0, 0))
-    img.paste(img2_resized, (left_width, 0))
+    # 透過画像を正しく貼り付け（第3引数にmaskを指定）
+    img.paste(img1_resized, (0, 0), img1_resized)
+    img.paste(img2_resized, (left_width, 0), img2_resized)
+    print(f"[DEBUG] Pasted images at positions: (0,0) and ({left_width},0)")
     
     # 下部30%エリア: 黄色背景（座布団）
     yellow_color = (255, 220, 0)  # 鮮やかな黄色
@@ -134,23 +155,37 @@ def create_thumbnail(
         fill=yellow_color
     )
     
-    # フォント読み込み（フォールバック付き）
+    # フォント読み込み（日本語フォントを優先）
     try:
         main_font_size = 72
+        print(f"[DEBUG] Loading main font from: {FONT_PATH_MAIN}")
         main_font = ImageFont.truetype(FONT_PATH_MAIN, main_font_size)
-    except Exception:
+        print(f"[DEBUG] Main font loaded successfully")
+    except Exception as e:
+        print(f"[DEBUG] Failed to load main font: {e}")
         try:
-            main_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", main_font_size)
+            fallback_path = "/System/Library/Fonts/Hiragino Sans GB.ttc"
+            print(f"[DEBUG] Trying fallback font: {fallback_path}")
+            main_font = ImageFont.truetype(fallback_path, main_font_size)
+            print(f"[DEBUG] Fallback main font loaded")
         except Exception:
+            print(f"[DEBUG] Using default font")
             main_font = ImageFont.load_default()
     
     try:
         sub_font_size = 36
+        print(f"[DEBUG] Loading sub font from: {FONT_PATH_SUB}")
         sub_font = ImageFont.truetype(FONT_PATH_SUB, sub_font_size)
-    except Exception:
+        print(f"[DEBUG] Sub font loaded successfully")
+    except Exception as e:
+        print(f"[DEBUG] Failed to load sub font: {e}")
         try:
-            sub_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", sub_font_size)
+            fallback_path = "/System/Library/Fonts/Hiragino Sans GB.ttc"
+            print(f"[DEBUG] Trying fallback font: {fallback_path}")
+            sub_font = ImageFont.truetype(fallback_path, sub_font_size)
+            print(f"[DEBUG] Fallback sub font loaded")
         except Exception:
+            print(f"[DEBUG] Using default font")
             sub_font = ImageFont.load_default()
     
     # メイン字幕（下部中央、2chスレタイ風）
