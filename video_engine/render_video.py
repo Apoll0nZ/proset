@@ -47,8 +47,15 @@ BACKGROUND_IMAGE_PATH = os.environ.get(
 )
 FONT_PATH = os.environ.get(
     "FONT_PATH",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "NotoSansJP-Regular.otf"),
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",  # macOS日本語フォント
 )
+
+# フォント存在チェック
+print(f"[DEBUG] Font path: {FONT_PATH}")
+if os.path.exists(FONT_PATH):
+    print(f"[DEBUG] Font file exists")
+else:
+    print(f"[DEBUG] Font file not found, will use fallback")
 
 # 画像取得用環境変数
 IMAGES_S3_BUCKET = os.environ.get("IMAGES_S3_BUCKET", S3_BUCKET)  # デフォルトはメインS3バケット
@@ -978,7 +985,7 @@ def build_video_with_subtitles(
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
             clip = ImageClip(image_array).set_start(start_time).set_duration(image_duration)
-            clip = clip.resize(width=int(VIDEO_WIDTH * 0.8), method="fast")  # 高速リサイズ
+            clip = clip.resize(width=int(VIDEO_WIDTH * 0.95), method="fast")  # ほぼ全画面に拡大
             clip_w, clip_h = clip.w, clip.h
             target_x = int((VIDEO_WIDTH - clip_w) / 2)
             target_y = int((VIDEO_HEIGHT - clip_h) / 2)
