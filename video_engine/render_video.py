@@ -6,6 +6,10 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 import random
 
+# GitHub Actions (Linux) 環境向けに ImageMagick のパスを明示
+if os.name != 'nt':
+    os.environ["IMAGEMAGICK_BINARY"] = "/usr/bin/convert"
+
 import boto3
 import numpy as np
 from PIL import Image
