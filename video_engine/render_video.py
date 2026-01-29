@@ -974,6 +974,12 @@ def build_video_with_subtitles(
         # Layer 2: 画像スライド（複数枚）
         image_clips = []
         keyword = extract_image_keywords_from_script(script_data)
+        # 検索キーワードを調整して写真がヒットしやすくする
+        if len(keyword.strip()) < 3:
+            keyword = f"{keyword} テクノロジー ニュース"
+        else:
+            keyword = f"{keyword} ニュース"
+        print(f"[DEBUG] Enhanced search keyword: {keyword}")
         images = search_images_with_playwright(keyword, max_results=3)
         image_paths = []
         for image in images:
@@ -1003,7 +1009,19 @@ def build_video_with_subtitles(
         for idx, image_path in enumerate(image_paths):
             start_time = idx * image_duration
             if image_path:
-                image_array = np.array(Image.open(image_path).convert("RGB"))
+                try:
+                    # SVGファイルを除外
+                    if image_path.lower().endswith('.svg'):
+                        print(f"[DEBUG] Skipping SVG file: {image_path}")
+                        image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
+                    else:
+                        # PILで画像を読み込み、エラー時はフォールバック
+                        image_array = np.array(Image.open(image_path).convert("RGB"))
+                        print(f"[DEBUG] Successfully loaded image: {image_path}")
+                except Exception as e:
+                    print(f"[DEBUG] Failed to load image {image_path}: {e}")
+                    print("[DEBUG] Using gradient background as fallback")
+                    image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
             else:
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
@@ -1333,52 +1351,14 @@ def main() -> None:
             raise
         
         finally:
-            # 一時ファイルのクリーンアップ
-            if 'bg_video_path' in locals() and bg_video_path and os.path.exists(bg_video_path):
-                try:
-                    os.remove(bg_video_path)
-                    os.rmdir(os.path.dirname(bg_video_path))
-                    print("Cleaned up temporary background video file")
-                except Exception as e:
-                    print(f"Failed to cleanup temporary file: {e}")
-            if 'bgm_path' in locals() and bgm_path and os.path.exists(bgm_path):
-                try:
-                    os.remove(bgm_path)
-                    print("Cleaned up BGM file")
-                except Exception as e:
-                    print(f"Failed to cleanup BGM file: {e}")
-            if audio_path and os.path.exists(audio_path):
-                try:
-                    os.remove(audio_path)
-                except Exception as e:
-                    print(f"Failed to cleanup temporary file: {e}")
-            if video_path and os.path.exists(video_path):
-                try:
-                    os.remove(video_path)
-                except Exception as e:
-                    print(f"Failed to cleanup temporary file: {e}")
-            if thumbnail_path and os.path.exists(thumbnail_path):
-                try:
-                    os.remove(thumbnail_path)
-                except Exception as e:
-                    print(f"Failed to cleanup temporary file: {e}")
-            
-            # ダウンロードした画像ファイルを削除（ローカルとS3両方）
-            import glob
-            downloaded_images = glob.glob(os.path.join(LOCAL_TEMP_DIR, "ai_image_*.jpg"))
-            for img_path in downloaded_images:
-                try:
-                    # ローカルファイルを削除
-                    os.remove(img_path)
-                    print(f"Cleaned up downloaded image: {img_path}")
-                    
-                    # S3のtempフォルダからも削除
-                    filename = os.path.basename(img_path)
-                    s3_key = f"temp/{filename}"
-                    s3_client.delete_object(Bucket=S3_BUCKET, Key=s3_key)
-                    print(f"Deleted image from S3: s3://{S3_BUCKET}/{s3_key}")
-                except Exception as e:
-                    print(f"Failed to cleanup downloaded image {img_path}: {e}")
+            # 一時フォルダ全体を強制的にクリーンアップ
+            import shutil
+            try:
+                if tmpdir and os.path.exists(tmpdir):
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                    print(f"Cleaned up temporary directory: {tmpdir}")
+            except Exception as e:
+                print(f"Failed to cleanup temporary directory: {e}")
 
 
 if __name__ == "__main__":
