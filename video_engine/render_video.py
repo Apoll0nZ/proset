@@ -278,6 +278,7 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                 
                 # 検索結果が表示されるまで待機
                 page.wait_for_timeout(1000)
+                page.wait_for_load_state('networkidle')
                 
                 # 画像URLを収集
                 images = []
@@ -479,19 +480,56 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
         return "technology"  # 最終フォールバック
 
 
+def load_keyword_prompt() -> str:
+    """キーワード抽出プロンプトを外部ファイルから読み込む"""
+    prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts", "keyword_prompt.txt")
+    try:
+        if os.path.exists(prompt_path):
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        else:
+            print(f"[ERROR] Keyword prompt file not found: {prompt_path}")
+            raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
+    except Exception as e:
+        print(f"[ERROR] Failed to load keyword prompt: {e}")
+        raise
+
+
+def validate_and_clean_keywords(keywords: str, fallback_text: str) -> List[str]:
+    """キーワードをバリデーション・洗浄する"""
+    if not keywords:
+        return [fallback_text[:10]]
+    
+    # 不要語を除去
+    forbidden_words = ['AI', 'IT', 'テクノロジー', 'ニュース', '技術', 'サービス']
+    cleaned = keywords
+    for word in forbidden_words:
+        cleaned = cleaned.replace(word, '').replace(word.lower(), '').replace(word.upper(), '')
+    
+    # カンマ区切りで分割
+    result = [kw.strip() for kw in cleaned.split(',') if kw.strip()]
+    
+    # 空の場合はフォールバック
+    if not result:
+        return [fallback_text[:10]]
+    
+    return result[:3]  # 最大3つ
+
+
 def generate_keywords_with_gemini(text: str, max_keywords: int = 3) -> List[str]:
     """Geminiでセグメントごとのキーワードを生成（失敗時はフォールバック）。"""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
+        print("[ERROR] GEMINI_API_KEY not found in environment")
         return []
 
-    prompt = (
-        "台本から、具体的で視覚化しやすい『固有名詞（製品名、モデル番号、企業名、特定の技術名）』だけを3つ、日本語で抽出してください。"
-        "'AI' 'IT' 'テクノロジー' 'ニュース' といった抽象的で範囲の広すぎる言葉は【禁止】します。"
-        "具体的なキーワードがない場合は、台本に出てくる最も重要な名詞を1つだけ選んでください。\n"
-        f"文章: {text}"
-    )
     try:
+        # 外部プロンプトファイルを読み込み
+        prompt_template = load_keyword_prompt()
+        prompt = prompt_template.format(segment_text=text)
+        
+        print(f"[DEBUG] Gemini API を呼び出します（セグメント内容の冒頭20文字: {text[:20]}...）")
+        
         response = requests.post(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
             params={"key": api_key},
@@ -499,13 +537,30 @@ def generate_keywords_with_gemini(text: str, max_keywords: int = 3) -> List[str]
             timeout=20,
         )
         response.raise_for_status()
-        data = response.json()
-        raw = data["candidates"][0]["content"]["parts"][0]["text"]
-        keywords = [k.strip() for k in raw.split(",") if k.strip()]
-        return keywords[:max_keywords]
+        
+        result = response.json()
+        raw_response = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+        
+        print(f"[DEBUG] Gemini API からの生の返答: {raw_response}")
+        
+        # バリデーション・洗浄
+        cleaned_keywords = validate_and_clean_keywords(raw_response, text)
+        print(f"[DEBUG] 洗浄後のキーワード: {cleaned_keywords}")
+        
+        return cleaned_keywords
+        
+    except requests.exceptions.HTTPError as e:
+        print(f"[ERROR] Gemini API HTTP Error: {e}")
+        print(f"[ERROR] Response status: {e.response.status_code}")
+        print(f"[ERROR] Response body: {e.response.text}")
+        return [text[:10]]  # フォールバック
+    except requests.exceptions.Timeout as e:
+        print(f"[ERROR] Gemini API Timeout: {e}")
+        return [text[:10]]  # フォールバック
     except Exception as e:
-        print(f"[DEBUG] Gemini keyword generation failed: {e}")
-        return []
+        print(f"[ERROR] Gemini API call failed: {e}")
+        print(f"[ERROR] Exception type: {type(e).__name__}")
+        return [text[:10]]  # フォールバック
 
 
 def extract_fallback_keywords(text: str, title: str, topic_summary: str) -> List[str]:
