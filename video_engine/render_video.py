@@ -68,10 +68,12 @@ def find_japanese_font() -> str:
     for font_path in possible_fonts:
         if font_path and os.path.exists(font_path):
             print(f"[DEBUG] Found font: {font_path}")
+            print(f"[DEBUG] Selected font path: {font_path}")
             return font_path
     
     # どれも見つからない場合はデフォルト（MoviePyが自動選択）
     print("[DEBUG] No Japanese font found, using default")
+    print(f"[DEBUG] Selected font path: (default)")
     return ""
 
 FONT_PATH = os.environ.get("FONT_PATH", find_japanese_font())
@@ -270,20 +272,18 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                 return images
                 
             except Exception as e:
-                print(f"Error during browser operation: {e}")
+                print(f"Browser operation failed: {e}")
                 try:
                     browser.close()
                 except:
                     pass
-                print("Falling back to gradient background")
                 return []
             
     except ImportError:
-        print("Playwright not installed, falling back to gradient background")
+        print("Playwright unavailable, using gradient background")
         return []
     except Exception as e:
-        print(f"Playwright image search failed: {e}")
-        print("Falling back to gradient background")
+        print(f"Image search failed: {e}")
         return []
 
 
@@ -922,8 +922,8 @@ def build_video_with_subtitles(
                 # BGMを動画長に合わせてループまたはトリミング
                 if bgm_clip.duration < total_duration:
                     # BGMが短い場合はループ
-                    from moviepy.audio.fx import audio_loop as afx_audio_loop
-                    bgm_clip = bgm_clip.fx(afx_audio_loop, duration=total_duration)
+                    from moviepy.audio.fx.audio_loop import audio_loop
+                    bgm_clip = audio_loop(bgm_clip, duration=total_duration)
                     print("BGM looped to match video duration")
                 elif bgm_clip.duration > total_duration:
                     # BGMが長い場合はトリミング
@@ -1004,7 +1004,7 @@ def build_video_with_subtitles(
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
             clip = ImageClip(image_array).set_start(start_time).set_duration(image_duration)
-            clip = clip.resize(width=int(VIDEO_WIDTH * 0.95), method="fast")  # ほぼ全画面に拡大
+            clip = clip.resize(width=int(VIDEO_WIDTH * 0.95))  # ほぼ全画面に拡大
             clip_w, clip_h = clip.w, clip.h
             target_x = int((VIDEO_WIDTH - clip_w) / 2)
             target_y = int((VIDEO_HEIGHT - clip_h) / 2)
