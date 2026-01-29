@@ -1274,10 +1274,37 @@ def build_video_with_subtitles(
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
             clip = ImageClip(image_array).set_start(start_time).set_duration(image_duration)
-            clip = clip.resize(width=int(VIDEO_WIDTH * 0.95))  # ほぼ全画面に拡大
             clip_w, clip_h = clip.w, clip.h
+
+            # 画像サイズ: 画面幅の58%〜72%でランダム
+            width_ratio = random.uniform(0.58, 0.72)
+            target_width = int(VIDEO_WIDTH * width_ratio)
+            scale = target_width / max(clip_w, 1)
+            target_height = int(clip_h * scale)
+
+            # 高さが画面を圧迫しないように制限
+            max_height = int(VIDEO_HEIGHT * 0.72)  # 上8%〜下80%の範囲
+            if target_height > max_height:
+                scale = max_height / max(clip_h, 1)
+                target_width = int(clip_w * scale)
+                target_height = int(clip_h * scale)
+
+            clip = clip.resize(width=target_width)
+            clip_w, clip_h = clip.w, clip.h
+
+            # 配置: 横は中央固定、縦は42%〜50%でランダム
             target_x = int((VIDEO_WIDTH - clip_w) / 2)
-            target_y = int((VIDEO_HEIGHT - clip_h) / 2)
+            base_y = random.uniform(0.42, 0.50) * VIDEO_HEIGHT
+            target_y = int(base_y - clip_h / 2)
+
+            # 安全制約: 上端8%より上に行かない、下端80%より下に行かない
+            min_top = int(VIDEO_HEIGHT * 0.08)
+            max_bottom = int(VIDEO_HEIGHT * 0.80)
+            if target_y < min_top:
+                target_y = min_top
+            if target_y + clip_h > max_bottom:
+                target_y = max_bottom - clip_h
+
             start_x = -clip_w
 
             # クロージャで位置関数を生成
@@ -1321,13 +1348,13 @@ def build_video_with_subtitles(
                         txt_clip = TextClip(
                             chunk,
                             fontsize=48,  # 大きくして読みやすく
-                            color="white",
+                            color="black",
                             font=font_path,
                             method="caption",
                             size=(1700, None),
-                            stroke_color="black",
-                            stroke_width=2,
-                            bg_color="rgba(0,0,0,0.7)"
+                            stroke_color="yellowgreen",
+                            stroke_width=1,
+                            bg_color="white"
                         )
                         clip_start = current_time + chunk_idx * chunk_duration
                         txt_clip = txt_clip.set_position((150, VIDEO_HEIGHT - 300)).set_start(clip_start).set_duration(chunk_duration)
