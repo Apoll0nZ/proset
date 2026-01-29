@@ -276,6 +276,9 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                 page.goto(search_url)
                 page.wait_for_load_state('networkidle')
                 
+                # 検索結果が表示されるまで待機
+                page.wait_for_timeout(1000)
+                
                 # 画像URLを収集
                 images = []
                 image_elements = page.query_selector_all('img[src]')
@@ -483,8 +486,9 @@ def generate_keywords_with_gemini(text: str, max_keywords: int = 3) -> List[str]
         return []
 
     prompt = (
-        "次の文章に関連する『IT企業名』『製品名』『技術用語』を最優先で抽出し、"
-        "画像検索キーワードを日本語で2〜3個、カンマ区切りで出力してください。\n"
+        "台本から、具体的で視覚化しやすい『固有名詞（製品名、モデル番号、企業名、特定の技術名）』だけを3つ、日本語で抽出してください。"
+        "'AI' 'IT' 'テクノロジー' 'ニュース' といった抽象的で範囲の広すぎる言葉は【禁止】します。"
+        "具体的なキーワードがない場合は、台本に出てくる最も重要な名詞を1つだけ選んでください。\n"
         f"文章: {text}"
     )
     try:
@@ -623,8 +627,10 @@ def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
             if image_path:
                 print(f"Successfully selected and downloaded AI image: {best_image['title']}")
                 return image_path
-        
-        # 画像が取得できなかった場合はNoneを返す（フォールバックなし）
+            # 検索結果が表示されるまで待機
+            page.wait_for_timeout(1000)
+            
+            # 画像要素を取得できなかった場合はNoneを返す（フォールバックなし）
         print("No images found with Playwright, using gradient background")
         return None
             
@@ -648,6 +654,13 @@ def download_image_from_s3(image_key: str) -> str:
     except Exception as e:
         print(f"Failed to download image {image_key}: {e}")
         return None
+
+
+def create_dark_blue_background(width: int, height: int) -> np.ndarray:
+    """ダークブルー (#1a1a2e) の背景画像を生成"""
+    import numpy as np
+    color = np.array([26, 26, 46])  # #1a1a2e in RGB
+    return np.full((height, width, 3), color, dtype=np.uint8)
 
 
 def create_gradient_background(width: int, height: int) -> np.ndarray:
@@ -1196,12 +1209,12 @@ def build_video_with_subtitles(
                             )
                 except UnidentifiedImageError as e:
                     print(f"[DEBUG] Image decode failed (UnidentifiedImageError): {e}")
-                    print("[DEBUG] Using gradient background as fallback")
-                    image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
+                    print("[DEBUG] Using dark blue background as fallback")
+                    image_array = create_dark_blue_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
                 except Exception as e:
                     print(f"[DEBUG] Failed to load image {image_path}: {e}")
-                    print("[DEBUG] Using gradient background as fallback")
-                    image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
+                    print("[DEBUG] Using dark blue background as fallback")
+                    image_array = create_dark_blue_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
             else:
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
@@ -1240,6 +1253,7 @@ def build_video_with_subtitles(
                 if not text:
                     continue
 
+                print(f"[DEBUG] Starting subtitle creation for part {i}...")
                 subtitle_duration = min(duration, total_duration - current_time)
                 if subtitle_duration <= 0:
                     break
