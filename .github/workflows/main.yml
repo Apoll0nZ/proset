@@ -33,6 +33,9 @@ jobs:
           sudo apt-get install -y ffmpeg imagemagick
           # ImageMagickセキュリティポリシーを修正
           sudo sed -i 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/g' /etc/ImageMagick-6/policy.xml
+          sudo sed -i 's/area="[0-9]*[A-Z]*"/area="4GP"/g' /etc/ImageMagick-6/policy.xml
+          sudo sed -i 's/width="[0-9]*[A-Z]*"/width="32KP"/g' /etc/ImageMagick-6/policy.xml
+          sudo sed -i 's/height="[0-9]*[A-Z]*"/height="32KP"/g' /etc/ImageMagick-6/policy.xml
           pip install playwright
           playwright install chromium
 

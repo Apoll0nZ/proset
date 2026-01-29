@@ -49,9 +49,22 @@ def find_japanese_font() -> str:
     print("[DEBUG] No Japanese thumbnail font found, using default")
     return ""
 
+# けいふぉんとを優先
+KEIFONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "keifont.ttf")
+
+def resolve_thumbnail_font(env_key: str) -> str:
+    env_font = os.environ.get(env_key, "")
+    if env_font and os.path.exists(env_font):
+        print(f"[DEBUG] Selected thumbnail font path: {env_font}")
+        return env_font
+    if os.path.exists(KEIFONT_PATH):
+        print(f"[DEBUG] Selected thumbnail font path: {KEIFONT_PATH}")
+        return KEIFONT_PATH
+    return find_japanese_font()
+
 # フォントパス（クロスプラットフォーム対応）
-FONT_PATH_MAIN = os.environ.get("THUMBNAIL_FONT_MAIN", find_japanese_font())
-FONT_PATH_SUB = os.environ.get("THUMBNAIL_FONT_SUB", find_japanese_font())
+FONT_PATH_MAIN = resolve_thumbnail_font("THUMBNAIL_FONT_MAIN")
+FONT_PATH_SUB = resolve_thumbnail_font("THUMBNAIL_FONT_SUB")
 
 
 def download_image(url: str, max_size: tuple = (640, 480)) -> Optional[Image.Image]:

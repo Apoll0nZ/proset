@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import math
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 import random
@@ -59,6 +60,9 @@ BACKGROUND_IMAGE_PATH = os.environ.get(
     "BACKGROUND_IMAGE_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "background.png"),
 )
+# けいふぉんとを優先
+KEIFONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "keifont.ttf")
+
 # クロスプラットフォーム対応のフォント検出
 def find_japanese_font() -> str:
     """日本語対応フォントをクロスプラットフォームで検出"""
@@ -90,7 +94,13 @@ def find_japanese_font() -> str:
     print(f"[DEBUG] Selected font path: (default)")
     return ""
 
-FONT_PATH = os.environ.get("FONT_PATH", find_japanese_font())
+def resolve_font_path() -> str:
+    if os.path.exists(KEIFONT_PATH):
+        print(f"[DEBUG] Selected font path: {KEIFONT_PATH}")
+        return KEIFONT_PATH
+    return find_japanese_font()
+
+FONT_PATH = os.environ.get("FONT_PATH", resolve_font_path())
 
 # 画像取得用環境変数
 IMAGES_S3_BUCKET = os.environ.get("IMAGES_S3_BUCKET", S3_BUCKET)  # デフォルトはメインS3バケット
@@ -258,6 +268,8 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                 context = browser.new_context()
                 page = context.new_page()
                 
+                # ブロック回避のため軽く待機
+                time.sleep(0.5)
                 # Google画像検索ページへ
                 search_url = f"https://www.google.com/search?q={keyword}&tbm=isch"
                 page.goto(search_url)
@@ -461,6 +473,53 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
     except Exception as e:
         print(f"Failed to extract keywords: {e}")
         return "technology"  # 最終フォールバック
+
+
+def generate_keywords_with_gemini(text: str, max_keywords: int = 3) -> List[str]:
+    """Geminiでセグメントごとのキーワードを生成（失敗時はフォールバック）。"""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return []
+
+    prompt = (
+        "次の文章に関連する画像検索キーワードを日本語で2〜3個、カンマ区切りで出力してください。\n"
+        f"文章: {text}"
+    )
+    try:
+        response = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+            params={"key": api_key},
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+        raw = data["candidates"][0]["content"]["parts"][0]["text"]
+        keywords = [k.strip() for k in raw.split(",") if k.strip()]
+        return keywords[:max_keywords]
+    except Exception as e:
+        print(f"[DEBUG] Gemini keyword generation failed: {e}")
+        return []
+
+
+def extract_fallback_keywords(text: str, title: str, topic_summary: str) -> List[str]:
+    combined = f"{title} {topic_summary} {text}"
+    candidates = []
+    for word in ["AI", "人工知能", "テクノロジー", "半導体", "ソフトウェア", "デバイス"]:
+        if word in combined:
+            candidates.append(word)
+    if not candidates:
+        for token in combined.split():
+            if len(token) >= 3:
+                candidates.append(token)
+    return candidates[:3] if candidates else ["テクノロジー"]
+
+
+def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List[str]:
+    keywords = generate_keywords_with_gemini(part_text)
+    if not keywords:
+        keywords = extract_fallback_keywords(part_text, title, topic_summary)
+    return keywords
 
 
 
@@ -981,25 +1040,73 @@ def build_video_with_subtitles(
             bg_clip = ImageClip(gradient_array).set_duration(total_duration)
             print(f"Created gradient background: {VIDEO_WIDTH}x{VIDEO_HEIGHT}")
 
-        # Layer 2: 画像スライド（複数枚）
+        # Layer 2: 画像スライド（セグメント連動）
         image_clips = []
-        keyword = extract_image_keywords_from_script(script_data)
-        # 検索キーワードを調整して写真がヒットしやすくする
-        if len(keyword.strip()) < 3:
-            keyword = f"{keyword} テクノロジー ニュース"
-        else:
-            keyword = f"{keyword} ニュース"
-        print(f"[DEBUG] Enhanced search keyword: {keyword}")
-        images = search_images_with_playwright(keyword, max_results=3)
-        image_paths = []
-        for image in images:
-            image_path = download_image_from_url(image.get("url"))
-            if image_path and os.path.exists(image_path):
-                image_paths.append(image_path)
+        title = script_data.get("title", "")
+        content = script_data.get("content", {})
+        topic_summary = content.get("topic_summary", "")
+        image_schedule = []
+        total_images_collected = 0
+        current_time = 0.0
 
-        if not image_paths:
+        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+            if duration <= 0:
+                continue
+            part_text = part.get("text", "")
+            keywords = get_segment_keywords(part_text, title, topic_summary)
+            part_images = []
+
+            for keyword in keywords:
+                if total_images_collected >= 50 and part_images:
+                    break
+                search_keyword = f"{keyword} ニュース"
+                print(f"[DEBUG] Segment {i} search keyword: {search_keyword}")
+                images = search_images_with_playwright(search_keyword, max_results=6)
+                for image in images:
+                    image_url = image.get("url")
+                    if not image_url or image_url.lower().endswith(".svg"):
+                        continue
+                    image_path = download_image_from_url(image_url)
+                    if image_path and os.path.exists(image_path):
+                        part_images.append(image_path)
+                        total_images_collected += 1
+                        if total_images_collected >= 50 and len(part_images) >= 2:
+                            break
+                if total_images_collected >= 50 and part_images:
+                    break
+
+            if not part_images:
+                print(f"[DEBUG] No images found for segment {i}, using background only")
+                image_schedule.append({"start": current_time, "duration": duration, "path": None})
+                current_time += duration
+                continue
+
+            if duration <= 4 or len(part_images) == 1:
+                image_schedule.append({"start": current_time, "duration": duration, "path": part_images[0]})
+            else:
+                switch_interval = max(2.0, min(4.0, duration / max(1, len(part_images))))
+                slots = max(1, int(duration / switch_interval))
+                for idx in range(slots):
+                    start_time = current_time + idx * switch_interval
+                    remaining = duration - idx * switch_interval
+                    clip_duration = min(switch_interval, remaining)
+                    image_schedule.append({
+                        "start": start_time,
+                        "duration": clip_duration,
+                        "path": part_images[idx % len(part_images)],
+                    })
+
+            current_time += duration
+
+        if not image_schedule:
             print("Using gradient background as image fallback")
-            image_paths.append(None)
+            image_schedule.append({"start": 0.0, "duration": total_duration, "path": None})
+        elif current_time < total_duration:
+            image_schedule.append({
+                "start": current_time,
+                "duration": total_duration - current_time,
+                "path": None,
+            })
 
         def make_pos_func(start_time: float, target_x: int, target_y: int, start_x: int):
             """画像ごとに独立した位置関数を生成するクロージャ"""
@@ -1015,9 +1122,10 @@ def build_video_with_subtitles(
                 return (x, target_y)
             return pos_func
 
-        image_duration = total_duration / max(len(image_paths), 1)
-        for idx, image_path in enumerate(image_paths):
-            start_time = idx * image_duration
+        for item in image_schedule:
+            start_time = item["start"]
+            image_duration = item["duration"]
+            image_path = item["path"]
             if image_path:
                 try:
                     # SVGファイルを除外
@@ -1082,7 +1190,7 @@ def build_video_with_subtitles(
                         color="white",
                         font=font_path,
                         method="caption",
-                        size=(VIDEO_WIDTH - 300, 250),  # 余白を調整
+                        size=(1700, None),
                         stroke_color="black",
                         stroke_width=2,
                         bg_color="rgba(0,0,0,0.7)"
@@ -1385,6 +1493,12 @@ def main() -> None:
                     print(f"Cleaned up temporary directory: {tmpdir}")
             except Exception as e:
                 print(f"Failed to cleanup temporary directory: {e}")
+            try:
+                if os.path.exists(LOCAL_TEMP_DIR):
+                    shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
+                    print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
+            except Exception as e:
+                print(f"Failed to cleanup image temp directory: {e}")
 
 
 if __name__ == "__main__":
