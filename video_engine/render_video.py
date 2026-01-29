@@ -23,7 +23,7 @@ if os.name != 'nt':
 
 import boto3
 import numpy as np
-from PIL import Image
+from PIL import Image, UnidentifiedImageError, WebPImagePlugin
 from botocore.client import Config
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -62,6 +62,7 @@ BACKGROUND_IMAGE_PATH = os.environ.get(
 )
 # けいふぉんとを優先
 KEIFONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "keifont.ttf")
+print(f"[DEBUG] keifont exists: {os.path.exists(KEIFONT_PATH)}")
 
 # クロスプラットフォーム対応のフォント検出
 def find_japanese_font() -> str:
@@ -482,7 +483,8 @@ def generate_keywords_with_gemini(text: str, max_keywords: int = 3) -> List[str]
         return []
 
     prompt = (
-        "次の文章に関連する画像検索キーワードを日本語で2〜3個、カンマ区切りで出力してください。\n"
+        "次の文章に関連する『IT企業名』『製品名』『技術用語』を最優先で抽出し、"
+        "画像検索キーワードを日本語で2〜3個、カンマ区切りで出力してください。\n"
         f"文章: {text}"
     )
     try:
@@ -526,11 +528,18 @@ def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List
 def download_image_from_url(image_url: str, filename: str = None) -> str:
     """URLから画像をダウンロードしてtempフォルダに保存し、S3にもアップロード"""
     try:
+        if not image_url or image_url.lower().endswith(".svg"):
+            print(f"[DEBUG] Skipping unsupported image URL: {image_url}")
+            return None
+
         if not filename:
             # URLからファイル名を生成
             import hashlib
             url_hash = hashlib.md5(image_url.encode()).hexdigest()[:8]
-            filename = f"ai_image_{url_hash}.jpg"
+            ext = os.path.splitext(image_url.split("?")[0])[1].lower()
+            if ext not in [".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"]:
+                ext = ".jpg"
+            filename = f"ai_image_{url_hash}{ext}"
         
         local_path = os.path.join(LOCAL_TEMP_DIR, filename)
         
@@ -541,6 +550,22 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
         # 画像をローカルに保存
         with open(local_path, 'wb') as f:
             f.write(response.content)
+
+        file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+        print(f"[DEBUG] Saved image: path={local_path}, size={file_size} bytes, ext={os.path.splitext(local_path)[1]}")
+        print(f"[DEBUG] Image exists after save: {os.path.exists(local_path)}")
+
+        # 画像のフォーマット検証
+        try:
+            with Image.open(local_path) as img:
+                img.verify()
+                print(f"[DEBUG] Image decode success: format={img.format}, mode={img.mode}")
+        except UnidentifiedImageError as e:
+            print(f"[DEBUG] Image decode failed (UnidentifiedImageError): {e}")
+            return None
+        except Exception as e:
+            print(f"[DEBUG] Image decode failed: {e}")
+            return None
         
         # S3のtempフォルダにもアップロード
         try:
@@ -556,6 +581,29 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
     except Exception as e:
         print(f"Failed to download image from URL {image_url}: {e}")
         return None
+
+
+def split_subtitle_text(text: str, max_chars: int = 100) -> List[str]:
+    """字幕を100文字以内で分割する。"""
+    if len(text) <= max_chars:
+        return [text]
+
+    import re
+    parts = re.split(r"([。、])", text)
+    chunks = []
+    current = ""
+    for token in parts:
+        if not token:
+            continue
+        candidate = f"{current}{token}"
+        if len(candidate) > max_chars and current:
+            chunks.append(current)
+            current = token
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return [chunk.strip() for chunk in chunks if chunk.strip()]
 
 
 def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
@@ -1059,7 +1107,7 @@ def build_video_with_subtitles(
             for keyword in keywords:
                 if total_images_collected >= 50 and part_images:
                     break
-                search_keyword = f"{keyword} ニュース"
+                search_keyword = f"{keyword} IT テクノロジー"
                 print(f"[DEBUG] Segment {i} search keyword: {search_keyword}")
                 images = search_images_with_playwright(search_keyword, max_results=6)
                 for image in images:
@@ -1070,6 +1118,11 @@ def build_video_with_subtitles(
                     if image_path and os.path.exists(image_path):
                         part_images.append(image_path)
                         total_images_collected += 1
+                        print(
+                            f"[DEBUG] Image list updated: total={total_images_collected}, "
+                            f"segment={i}, segment_images={len(part_images)}"
+                        )
+                        print(f"現在、有効な画像リストには計{total_images_collected}枚の画像が格納されています")
                         if total_images_collected >= 50 and len(part_images) >= 2:
                             break
                 if total_images_collected >= 50 and part_images:
@@ -1134,8 +1187,17 @@ def build_video_with_subtitles(
                         image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
                     else:
                         # PILで画像を読み込み、エラー時はフォールバック
-                        image_array = np.array(Image.open(image_path).convert("RGB"))
-                        print(f"[DEBUG] Successfully loaded image: {image_path}")
+                        with Image.open(image_path) as img:
+                            img = img.convert("RGBA")
+                            image_array = np.array(img.convert("RGB"))
+                            print(
+                                f"[DEBUG] Image decode success: path={image_path}, "
+                                f"format={img.format}, mode={img.mode}"
+                            )
+                except UnidentifiedImageError as e:
+                    print(f"[DEBUG] Image decode failed (UnidentifiedImageError): {e}")
+                    print("[DEBUG] Using gradient background as fallback")
+                    image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
                 except Exception as e:
                     print(f"[DEBUG] Failed to load image {image_path}: {e}")
                     print("[DEBUG] Using gradient background as fallback")
@@ -1184,21 +1246,26 @@ def build_video_with_subtitles(
                 
                 # 字幕クリップを作成（1920x1080用に調整）
                 try:
-                    txt_clip = TextClip(
-                        text,
-                        fontsize=48,  # 大きくして読みやすく
-                        color="white",
-                        font=font_path,
-                        method="caption",
-                        size=(1700, None),
-                        stroke_color="black",
-                        stroke_width=2,
-                        bg_color="rgba(0,0,0,0.7)"
-                    )
-                    txt_clip = txt_clip.set_position((150, VIDEO_HEIGHT - 300)).set_start(current_time).set_duration(subtitle_duration)
-                    text_clips.append(txt_clip)
+                    chunks = split_subtitle_text(text, max_chars=100)
+                    chunk_duration = subtitle_duration / max(len(chunks), 1)
+                    for chunk_idx, chunk in enumerate(chunks):
+                        txt_clip = TextClip(
+                            chunk,
+                            fontsize=48,  # 大きくして読みやすく
+                            color="white",
+                            font=font_path,
+                            method="caption",
+                            size=(1700, None),
+                            stroke_color="black",
+                            stroke_width=2,
+                            bg_color="rgba(0,0,0,0.7)"
+                        )
+                        clip_start = current_time + chunk_idx * chunk_duration
+                        txt_clip = txt_clip.set_position((150, VIDEO_HEIGHT - 300)).set_start(clip_start).set_duration(chunk_duration)
+                        text_clips.append(txt_clip)
                 except Exception as e:
                     print(f"Warning: Failed to create subtitle for part {i}: {e}")
+                    print(f"[DEBUG] Subtitle error detail: {repr(e)}")
                     print("Continuing without subtitle for this part...")
                     # 字幕なしで続行（審査用動画として優先）
                 
@@ -1489,12 +1556,21 @@ def main() -> None:
             import shutil
             try:
                 if tmpdir and os.path.exists(tmpdir):
+                    files = []
+                    for root, _, filenames in os.walk(tmpdir):
+                        for name in filenames:
+                            files.append(os.path.join(root, name))
+                    if files:
+                        print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
                     shutil.rmtree(tmpdir, ignore_errors=True)
                     print(f"Cleaned up temporary directory: {tmpdir}")
             except Exception as e:
                 print(f"Failed to cleanup temporary directory: {e}")
             try:
                 if os.path.exists(LOCAL_TEMP_DIR):
+                    files = [os.path.join(LOCAL_TEMP_DIR, name) for name in os.listdir(LOCAL_TEMP_DIR)]
+                    if files:
+                        print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
                     shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
                     print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
             except Exception as e:

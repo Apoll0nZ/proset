@@ -102,6 +102,15 @@ def get_article_images(topic_summary: str, meta: Optional[Dict] = None) -> Tuple
     """
     記事関連画像を2枚取得（S3からダウンロード）。
     """
+    # IT系汎用背景素材（チップ風）をフォールバックに使用
+    fallback_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "background.png")
+    fallback_image = None
+    if os.path.exists(fallback_path):
+        try:
+            fallback_image = Image.open(fallback_path).convert("RGBA")
+            print(f"[DEBUG] Loaded fallback image: {fallback_path}")
+        except Exception as e:
+            print(f"[DEBUG] Failed to load fallback image: {e}")
     # S3から画像をダウンロード
     img1 = None
     img2 = None
@@ -112,6 +121,14 @@ def get_article_images(topic_summary: str, meta: Optional[Dict] = None) -> Tuple
         print(f"[DEBUG] Attempting to get images from source: {source_url}")
         # ここでは簡易的にプレースホルダーを使用
     
+    # 画像がない場合はフォールバック素材を使用
+    if img1 is None and fallback_image is not None:
+        img1 = fallback_image.copy()
+        print(f"[DEBUG] Using fallback image for img1")
+    if img2 is None and fallback_image is not None:
+        img2 = fallback_image.copy()
+        print(f"[DEBUG] Using fallback image for img2")
+
     # プレースホルダー画像を生成（RGBAで透過対応）
     if img1 is None:
         img1 = create_placeholder_image(640, 480, (100, 150, 200)).convert("RGBA")
