@@ -20,15 +20,38 @@ THUMBNAIL_HEIGHT = 720
 TOP_AREA_HEIGHT = int(THUMBNAIL_HEIGHT * 0.7)  # 上部70%
 BOTTOM_AREA_HEIGHT = THUMBNAIL_HEIGHT - TOP_AREA_HEIGHT  # 下部30%
 
-# フォントパス（日本語対応フォントを優先）
-FONT_PATH_MAIN = os.environ.get(
-    "THUMBNAIL_FONT_MAIN",
-    "/System/Library/Fonts/Hiragino Sans GB.ttc"  # macOS日本語フォント
-)
-FONT_PATH_SUB = os.environ.get(
-    "THUMBNAIL_FONT_SUB",
-    "/System/Library/Fonts/Hiragino Sans GB.ttc"
-)
+# クロスプラットフォーム対応のフォント検出
+def find_japanese_font() -> str:
+    """日本語対応フォントをクロスプラットフォームで検出"""
+    possible_fonts = [
+        # Linux (GitHub Actions)
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansJP-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansJP-Regular.otf",
+        # macOS
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Hiragino Sans.ttc",
+        # Windows
+        "C:\\Windows\\Fonts\\msgothic.ttc",
+        "C:\\Windows\\Fonts\\msmincho.ttc",
+        # 環境変数指定
+        os.environ.get("THUMBNAIL_FONT_MAIN", ""),
+    ]
+    
+    for font_path in possible_fonts:
+        if font_path and os.path.exists(font_path):
+            print(f"[DEBUG] Found thumbnail font: {font_path}")
+            return font_path
+    
+    # どれも見つからない場合はデフォルト
+    print("[DEBUG] No Japanese thumbnail font found, using default")
+    return ""
+
+# フォントパス（クロスプラットフォーム対応）
+FONT_PATH_MAIN = os.environ.get("THUMBNAIL_FONT_MAIN", find_japanese_font())
+FONT_PATH_SUB = os.environ.get("THUMBNAIL_FONT_SUB", find_japanese_font())
 
 
 def download_image(url: str, max_size: tuple = (640, 480)) -> Optional[Image.Image]:

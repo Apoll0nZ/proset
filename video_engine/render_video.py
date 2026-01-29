@@ -45,17 +45,36 @@ BACKGROUND_IMAGE_PATH = os.environ.get(
     "BACKGROUND_IMAGE_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "background.png"),
 )
-FONT_PATH = os.environ.get(
-    "FONT_PATH",
-    "/System/Library/Fonts/Hiragino Sans GB.ttc",  # macOS日本語フォント
-)
+# クロスプラットフォーム対応のフォント検出
+def find_japanese_font() -> str:
+    """日本語対応フォントをクロスプラットフォームで検出"""
+    possible_fonts = [
+        # Linux (GitHub Actions)
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansJP-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansJP-Regular.otf",
+        # macOS
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Hiragino Sans.ttc",
+        # Windows
+        "C:\\Windows\\Fonts\\msgothic.ttc",
+        "C:\\Windows\\Fonts\\msmincho.ttc",
+        # 環境変数指定
+        os.environ.get("FONT_PATH", ""),
+    ]
+    
+    for font_path in possible_fonts:
+        if font_path and os.path.exists(font_path):
+            print(f"[DEBUG] Found font: {font_path}")
+            return font_path
+    
+    # どれも見つからない場合はデフォルト（MoviePyが自動選択）
+    print("[DEBUG] No Japanese font found, using default")
+    return ""
 
-# フォント存在チェック
-print(f"[DEBUG] Font path: {FONT_PATH}")
-if os.path.exists(FONT_PATH):
-    print(f"[DEBUG] Font file exists")
-else:
-    print(f"[DEBUG] Font file not found, will use fallback")
+FONT_PATH = os.environ.get("FONT_PATH", find_japanese_font())
 
 # 画像取得用環境変数
 IMAGES_S3_BUCKET = os.environ.get("IMAGES_S3_BUCKET", S3_BUCKET)  # デフォルトはメインS3バケット
