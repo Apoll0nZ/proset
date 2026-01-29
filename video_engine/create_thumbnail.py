@@ -86,6 +86,12 @@ def download_image(url: str, max_size: tuple = (640, 480)) -> Optional[Image.Ima
         return None
 
 
+def create_dark_blue_background(width: int, height: int) -> Image.Image:
+    """ダークブルー (#1a1a2e) の背景画像を生成"""
+    color = (26, 26, 46)  # #1a1a2e in RGB
+    return Image.new("RGB", (width, height), color)
+
+
 def create_placeholder_image(width: int, height: int, color: tuple = (200, 200, 200)) -> Image.Image:
     """プレースホルダー画像を生成。"""
     img = Image.new("RGB", (width, height), color)
@@ -111,6 +117,11 @@ def get_article_images(topic_summary: str, meta: Optional[Dict] = None) -> Tuple
             print(f"[DEBUG] Loaded fallback image: {fallback_path}")
         except Exception as e:
             print(f"[DEBUG] Failed to load fallback image: {e}")
+            print("[DEBUG] Using dark blue background as fallback")
+            fallback_image = create_dark_blue_background(1920, 1080).convert("RGBA")
+    else:
+        print("[DEBUG] Fallback image not found, using dark blue background")
+        fallback_image = create_dark_blue_background(1920, 1080).convert("RGBA")
     # S3から画像をダウンロード
     img1 = None
     img2 = None
