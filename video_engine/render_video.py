@@ -6,11 +6,12 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 import random
+import google.genai as genai
 
 # GitHub Actions (Linux) 環境向けに ImageMagick のパスを明示
 if os.name != 'nt':
     os.environ["IMAGEMAGICK_BINARY"] = "/usr/bin/convert"
-    # ImageMagickセキュリティポリシーを修正
+    # ImageMagickセキュリティポリシーを修正（エラーを無視）
     import subprocess
     try:
         subprocess.run(['sudo', 'sed', '-i', 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/g', '/etc/ImageMagick-6/policy.xml'], 
@@ -20,6 +21,8 @@ if os.name != 'nt':
         print(f"[WARNING] Failed to update ImageMagick policy: {e}")
     except Exception as e:
         print(f"[WARNING] ImageMagick policy update failed: {e}")
+    except FileNotFoundError:
+        print("[WARNING] ImageMagick not found or sudo not available, skipping policy update")
 
 import boto3
 import numpy as np
@@ -28,7 +31,7 @@ from botocore.client import Config
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from moviepy.editor import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, CompositeAudioClip
+from moviepy import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, CompositeAudioClip
 import requests
 
 from create_thumbnail import create_thumbnail
@@ -250,72 +253,109 @@ def download_background_music() -> str:
 
 
 def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """PlaywrightでGoogle画像検索（無料版）"""
+    """画像検索（Google Playwrightまたは代替ソース）"""
+    
+    # まず代替ソースを試す
+    print(f"Searching images for: {keyword}")
+    
+    # 代替画像ソース（Picsum + キーワードベース）
+    fallback_images = []
+    try:
+        import random
+        
+        # キーワードに基づいてシード値を生成
+        seed = abs(hash(keyword)) % 1000
+        
+        for i in range(max_results):
+            # Picsum Photosを使用（シード値で同じ画像を取得）
+            width = 800 + random.randint(0, 400)
+            height = 600 + random.randint(0, 300)
+            url = f"https://picsum.photos/seed/{seed}_{i}/{width}/{height}.jpg"
+            
+            fallback_images.append({
+                'url': url,
+                'title': f'Generated image {i+1} for {keyword}',
+                'thumbnail': url,
+                'alt': f'Generated image for {keyword}',
+                'is_fallback': True
+            })
+        
+        print(f"Generated {len(fallback_images)} fallback images")
+        return fallback_images
+        
+    except Exception as e:
+        print(f"Fallback image generation failed: {e}")
+    
+    # Google Playwrightを試す（フォールバック）
     try:
         from playwright.sync_api import sync_playwright
         
-        print(f"Searching images with Playwright for: {keyword}")
+        print("Trying Playwright Google search...")
         
         with sync_playwright() as p:
             try:
-                # ヘッドレスブラウザ起動
                 browser = p.chromium.launch(headless=True)
-            except Exception as e:
-                print(f"Failed to launch browser: {e}")
-                print("Falling back to gradient background")
-                return []
-            
-            try:
                 context = browser.new_context()
                 page = context.new_page()
                 
-                # ブロック回避のため軽く待機
-                time.sleep(0.5)
-                # Google画像検索ページへ
+                # タイムアウトを短く設定
                 search_url = f"https://www.google.com/search?q={keyword}&tbm=isch"
-                page.goto(search_url)
-                page.wait_for_load_state('networkidle')
                 
-                # 検索結果が表示されるまで待機
-                page.wait_for_timeout(1000)
-                page.wait_for_load_state('networkidle')
-                
-                # 画像URLを収集
-                images = []
-                image_elements = page.query_selector_all('img[src]')
-                
-                for i, img in enumerate(image_elements[:max_results]):
-                    try:
-                        src = img.get_attribute('src')
-                        if src and src.startswith('http') and 'encrypted' not in src:
-                            # サムネイルURLをフルサイズに変換（簡易的）
-                            if 'base64' not in src:
-                                images.append({
-                                    'url': src,
-                                    'title': f'Image {i+1} for {keyword}',
-                                    'thumbnail': src
-                                })
-                    except:
-                        continue
-                
-                browser.close()
-                print(f"Found {len(images)} images with Playwright")
-                return images
-                
+                try:
+                    page.goto(search_url, timeout=10000)
+                    page.wait_for_load_state('networkidle', timeout=5000)
+                    page.wait_for_timeout(2000)
+                    
+                    # 画像URLを収集
+                    images = []
+                    image_elements = page.query_selector_all('img[src]')
+                    
+                    for i, img in enumerate(image_elements[:max_results * 2]):
+                        try:
+                            src = img.get_attribute('src')
+                            if src and src.startswith('http') and 'base64' not in src:
+                                is_google_thumbnail = 'encrypted-tbn0.gstatic.com' in src
+                                is_valid = 'encrypted' not in src or is_google_thumbnail
+                                
+                                if is_valid:
+                                    images.append({
+                                        'url': src,
+                                        'title': f'Google image {i+1} for {keyword}',
+                                        'thumbnail': src,
+                                        'alt': img.get_attribute('alt') or '',
+                                        'is_google_thumbnail': is_google_thumbnail
+                                    })
+                                    
+                                    if len(images) >= max_results:
+                                        break
+                        except:
+                            continue
+                    
+                    browser.close()
+                    
+                    if images:
+                        print(f"Found {len(images)} Google images")
+                        return images
+                    
+                except Exception as e:
+                    print(f"Google search failed: {e}")
+                    browser.close()
+                    
             except Exception as e:
-                print(f"Browser operation failed: {e}")
+                print(f"Browser setup failed: {e}")
                 try:
                     browser.close()
                 except:
                     pass
-                return []
             
     except ImportError:
-        print("Playwright unavailable, using gradient background")
-        return []
+        print("Playwright not available")
     except Exception as e:
-        print(f"Image search failed: {e}")
-        return []
+        print(f"Playwright error: {e}")
+    
+    # すべて失敗した場合は空リストを返す
+    print("All image search methods failed, using gradient background")
+    return []
 
 
 def get_youtube_credentials_from_env():
@@ -530,16 +570,14 @@ def generate_keywords_with_gemini(text: str, max_keywords: int = 3) -> List[str]
         
         print(f"[DEBUG] Gemini API を呼び出します（セグメント内容の冒頭20文字: {text[:20]}...）")
         
-        response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
-            params={"key": api_key},
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=20,
-        )
-        response.raise_for_status()
+        # 最新の Google Gen AI ライブラリを使用
+        client = genai.Client(api_key=api_key)
         
-        result = response.json()
-        raw_response = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=prompt
+        )
+        raw_response = response.text
         
         print(f"[DEBUG] Gemini API からの生の返答: {raw_response}")
         
@@ -549,14 +587,6 @@ def generate_keywords_with_gemini(text: str, max_keywords: int = 3) -> List[str]
         
         return cleaned_keywords
         
-    except requests.exceptions.HTTPError as e:
-        print(f"[ERROR] Gemini API HTTP Error: {e}")
-        print(f"[ERROR] Response status: {e.response.status_code}")
-        print(f"[ERROR] Response body: {e.response.text}")
-        return [text[:10]]  # フォールバック
-    except requests.exceptions.Timeout as e:
-        print(f"[ERROR] Gemini API Timeout: {e}")
-        return [text[:10]]  # フォールバック
     except Exception as e:
         print(f"[ERROR] Gemini API call failed: {e}")
         print(f"[ERROR] Exception type: {type(e).__name__}")
@@ -602,8 +632,18 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
         
         local_path = os.path.join(LOCAL_TEMP_DIR, filename)
         
-        print(f"Downloading image from URL: {image_url}")
-        response = requests.get(image_url, timeout=30)
+        print(f"[DEBUG] Downloading image from URL: {image_url}")
+        
+        # User-Agentを設定してブロック回避
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(image_url, timeout=30, headers=headers)
+        print(f"[DEBUG] HTTP Status: {response.status_code}")
+        print(f"[DEBUG] Content-Type: {response.headers.get('Content-Type', 'Unknown')}")
+        print(f"[DEBUG] Content-Length: {response.headers.get('Content-Length', 'Unknown')} bytes")
+        
         response.raise_for_status()
         
         # 画像をローカルに保存
@@ -666,32 +706,39 @@ def split_subtitle_text(text: str, max_chars: int = 100) -> List[str]:
 
 
 def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
-    """AIによる動的選別・自動取得で最適な画像を取得（Playwright版のみ）"""
+    """AIによる動的選別・自動取得で最適な画像を取得"""
     try:
         # 1. キーワード抽出
         keyword = extract_image_keywords_from_script(script_data)
+        print(f"[DEBUG] Extracted keyword for image search: {keyword}")
         
-        # 2. Playwrightで画像検索（無料）のみ使用
+        # 2. 画像検索
         images = search_images_with_playwright(keyword)
         
-        if images:
-            # 最初の画像（最も関連性が高い）をダウンロード
-            best_image = images[0]
-            image_path = download_image_from_url(best_image['url'])
-            
-            if image_path:
-                print(f"Successfully selected and downloaded AI image: {best_image['title']}")
-                return image_path
-            # 検索結果が表示されるまで待機
-            page.wait_for_timeout(1000)
-            
-            # 画像要素を取得できなかった場合はNoneを返す（フォールバックなし）
-        print("No images found with Playwright, using gradient background")
-        return None
+        if not images:
+            print("[ERROR] No images found for the video")
+            raise RuntimeError(f"画像検索でキーワード '{keyword}' に一致する画像が見つかりませんでした")
+        
+        print(f"[DEBUG] Found {len(images)} images, selecting the first one")
+        
+        # 最初の画像（最も関連性が高い）をダウンロード
+        best_image = images[0]
+        image_path = download_image_from_url(best_image['url'])
+        
+        if not image_path:
+            print("[ERROR] Failed to download the selected image")
+            raise RuntimeError(f"画像のダウンロードに失敗しました: {best_image['url']}")
+        
+        print(f"Successfully selected and downloaded AI image: {best_image['title']}")
+        return image_path
             
     except Exception as e:
-        print(f"AI image selection process failed: {e}")
-        return None
+        print(f"[ERROR] AI image selection process failed: {e}")
+        # 既にRuntimeErrorの場合はそのまま再発生
+        if isinstance(e, RuntimeError):
+            raise
+        # その他の例外はRuntimeErrorに変換
+        raise RuntimeError(f"画像取得処理でエラーが発生しました: {e}")
 
 
 def download_image_from_s3(image_key: str) -> str:
@@ -1197,10 +1244,12 @@ def build_video_with_subtitles(
                     break
 
             if not part_images:
-                print(f"[DEBUG] No images found for segment {i}, using background only")
-                image_schedule.append({"start": current_time, "duration": duration, "path": None})
-                current_time += duration
-                continue
+                print(f"[ERROR] No images found for segment {i}, keyword: {search_keyword}")
+                raise RuntimeError(f"セグメント {i+1} で画像が取得できませんでした。キーワード: {search_keyword}")
+
+            # 画像が1枚でも取得できた場合は続行
+            print(f"[DEBUG] Found {len(part_images)} images for segment {i}")
+            current_time += duration
 
             if duration <= 4 or len(part_images) == 1:
                 image_schedule.append({"start": current_time, "duration": duration, "path": part_images[0]})
@@ -1228,6 +1277,14 @@ def build_video_with_subtitles(
                 "duration": total_duration - current_time,
                 "path": None,
             })
+
+        # 画像スケジュール作成完了後のチェック
+        valid_images = [item for item in image_schedule if item["path"] is not None]
+        if not valid_images:
+            print("[ERROR] No images were collected for the entire video")
+            raise RuntimeError("動画全体で画像が1枚も取得できませんでした。ネットワーク接続または画像ソースを確認してください。")
+        
+        print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
 
         def make_pos_func(start_time: float, target_x: int, target_y: int, start_x: int):
             """画像ごとに独立した位置関数を生成するクロージャ"""
