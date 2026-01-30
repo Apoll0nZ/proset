@@ -1213,7 +1213,8 @@ def build_video_with_subtitles(
             part_images = []
 
             for keyword in keywords:
-                if total_images_collected >= 50 and part_images:
+                if total_images_collected >= 60 and part_images:
+                    print(f"[INFO] 画像収集が60枚に達したため、セグメント {i} の検索を終了します")
                     break
                 search_keyword = f"{keyword} IT テクノロジー"
                 print(f"[DEBUG] Segment {i} search keyword: {search_keyword}")
@@ -1231,10 +1232,30 @@ def build_video_with_subtitles(
                             f"segment={i}, segment_images={len(part_images)}"
                         )
                         print(f"現在、有効な画像リストには計{total_images_collected}枚の画像が格納されています")
-                        if total_images_collected >= 50 and len(part_images) >= 2:
+                        if total_images_collected >= 60 and len(part_images) >= 2:
+                            print(f"[INFO] 画像収集上限（60枚）に達しました")
                             break
-                if total_images_collected >= 50 and part_images:
+                if total_images_collected >= 60 and part_images:
                     break
+
+            # 60枚に達した場合でも、既存画像を使い回す
+            if total_images_collected >= 60 and not part_images:
+                # 既にダウンロード済みの画像からランダムに選択
+                all_collected_images = []
+                for prev_item in image_schedule:
+                    if prev_item.get("path"):
+                        all_collected_images.append(prev_item["path"])
+                
+                if all_collected_images:
+                    import random
+                    selected_image = random.choice(all_collected_images)
+                    part_images.append(selected_image)
+                    print(f"[INFO] セグメント {i} に既存画像を再利用: {os.path.basename(selected_image)}")
+                else:
+                    print(f"[WARNING] セグメント {i} に画像を割り当てられません（背景のみ）")
+                    image_schedule.append({"start": current_time, "duration": duration, "path": None})
+                    current_time += duration
+                    continue
 
             if not part_images:
                 print(f"[ERROR] No images found for segment {i}, keyword: {search_keyword}")
@@ -1260,6 +1281,13 @@ def build_video_with_subtitles(
                     })
 
             current_time += duration
+
+            # 60枚に達した場合は残りのセグメント処理をスキップして動画合成へ
+            if total_images_collected >= 60:
+                remaining_segments = len(script_parts) - i - 1
+                if remaining_segments > 0:
+                    print(f"[INFO] 画像収集完了（60枚）。残り{remaining_segments}セグメントの処理をスキップして動画合成を開始します")
+                    break
 
         if not image_schedule:
             print("Using gradient background as image fallback")
