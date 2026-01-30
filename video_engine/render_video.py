@@ -1389,8 +1389,8 @@ def build_video_with_subtitles(
         # Layer 3: 左上セグメント表示 - 1920x1080用に調整
         try:
             segment_clip = TextClip(
-                "概要",
-                fontsize=28,  # 少し大きく
+                text="概要",
+                font_size=28,  # 少し大きく
                 color="white",
                 font=font_path,
                 bg_color="red",
@@ -1422,8 +1422,8 @@ def build_video_with_subtitles(
                     chunk_duration = subtitle_duration / max(len(chunks), 1)
                     for chunk_idx, chunk in enumerate(chunks):
                         txt_clip = TextClip(
-                            chunk,
-                            fontsize=48,  # 大きくして読みやすく
+                            text=chunk,
+                            font_size=48,  # 大きくして読みやすく
                             color="black",
                             font=font_path,
                             method="caption",
