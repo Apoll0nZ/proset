@@ -209,7 +209,7 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             print(f"Background video trimmed to {total_duration:.2f}s")
         
         # 1920x1080に引き伸ばして画面いっぱいに
-        bg_clip = bg_clip.resize(newsize=(1920, 1080))
+        bg_clip = bg_clip.resized(newsize=(1920, 1080))
         print("Resized to 1920x1080 (intelligent stretch)")
         
         # 画像処理を適用して引き伸ばしの粗さを隠す
@@ -1339,7 +1339,7 @@ def build_video_with_subtitles(
                 target_width = int(clip_w * scale)
                 target_height = int(clip_h * scale)
 
-            clip = clip.resize(width=target_width)
+            clip = clip.resized(width=target_width)
             clip_w, clip_h = clip.w, clip.h
 
             # 配置: 横は中央固定、縦は42%〜50%でランダム
