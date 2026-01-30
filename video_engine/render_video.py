@@ -167,7 +167,6 @@ def download_random_background_video() -> str:
             return None
         
         # ランダムに1つ選択
-        import random
         selected_key = random.choice(mp4_files)
         print(f"Selected background video: {selected_key}")
         
@@ -254,8 +253,6 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
     # 代替画像ソース（Picsum + キーワードベース）
     fallback_images = []
     try:
-        import random
-        
         # キーワードに基づいてシード値を生成
         seed = abs(hash(keyword)) % 1000
         
@@ -1247,7 +1244,6 @@ def build_video_with_subtitles(
                         all_collected_images.append(prev_item["path"])
                 
                 if all_collected_images:
-                    import random
                     selected_image = random.choice(all_collected_images)
                     part_images.append(selected_image)
                     print(f"[INFO] セグメント {i} に既存画像を再利用: {os.path.basename(selected_image)}")
