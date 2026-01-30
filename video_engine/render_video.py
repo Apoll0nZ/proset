@@ -11,18 +11,11 @@ import google.genai as genai
 # GitHub Actions (Linux) 環境向けに ImageMagick のパスを明示
 if os.name != 'nt':
     os.environ["IMAGEMAGICK_BINARY"] = "/usr/bin/convert"
-    # ImageMagickセキュリティポリシーを修正（エラーを無視）
-    import subprocess
-    try:
-        subprocess.run(['sudo', 'sed', '-i', 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/g', '/etc/ImageMagick-6/policy.xml'], 
-                      check=True, capture_output=True)
-        print("[DEBUG] ImageMagick security policy updated")
-    except subprocess.CalledProcessError as e:
-        print(f"[WARNING] Failed to update ImageMagick policy: {e}")
-    except Exception as e:
-        print(f"[WARNING] ImageMagick policy update failed: {e}")
-    except FileNotFoundError:
-        print("[WARNING] ImageMagick not found or sudo not available, skipping policy update")
+    # ImageMagickセキュリティポリシーの自動更新は無効化
+    # 理由: sudoコマンドによるパスワード入力要求を回避するため
+    # 必要な場合は手動で設定してください:
+    # sudo sed -i 's/rights="none" pattern="@\\*"/rights="read|write" pattern="@*"/g' /etc/ImageMagick-6/policy.xml
+    print("[INFO] ImageMagick policy auto-update disabled (sudo requirement avoided)")
 
 import boto3
 import numpy as np
@@ -225,9 +218,9 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         
         # 音声の長さに合わせてループ（DEBUG_MODEなら60秒で固定）
         if DEBUG_MODE:
-            bg_clip = bg_clip.loop(duration=60).set_duration(60)
+            bg_clip = bg_clip.loop(duration=60).with_duration(60)
         else:
-            bg_clip = bg_clip.loop(duration=total_duration).set_duration(total_duration)
+            bg_clip = bg_clip.loop(duration=total_duration).with_duration(total_duration)
         print(f"Looped to match duration: {60 if DEBUG_MODE else total_duration:.2f}s")
         
         return bg_clip
@@ -1158,8 +1151,8 @@ def build_video_with_subtitles(
                 # BGMを動画長に合わせてループまたはトリミング
                 if bgm_clip.duration < total_duration:
                     # BGMが短い場合はループ
-                    from moviepy.audio.fx.audio_loop import audio_loop
-                    bgm_clip = audio_loop(bgm_clip, duration=total_duration)
+                    from moviepy.video.fx.all import loop
+                    bgm_clip = loop(bgm_clip, duration=total_duration)
                     print("BGM looped to match video duration")
                 elif bgm_clip.duration > total_duration:
                     # BGMが長い場合はトリミング
@@ -1200,7 +1193,7 @@ def build_video_with_subtitles(
             print("Creating gradient background fallback")
             # グラデーション背景を生成（1920x1080対応）
             gradient_array = create_gradient_background(VIDEO_WIDTH, VIDEO_HEIGHT)
-            bg_clip = ImageClip(gradient_array).set_duration(total_duration)
+            bg_clip = ImageClip(gradient_array).with_duration(total_duration)
             print(f"Created gradient background: {VIDEO_WIDTH}x{VIDEO_HEIGHT}")
 
         # Layer 2: 画像スライド（セグメント連動）
@@ -1330,7 +1323,7 @@ def build_video_with_subtitles(
             else:
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
-            clip = ImageClip(image_array).set_start(start_time).set_duration(image_duration)
+            clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration)
             clip_w, clip_h = clip.w, clip.h
 
             # 画像サイズ: 画面幅の58%〜72%でランダム
@@ -1366,7 +1359,7 @@ def build_video_with_subtitles(
 
             # クロージャで位置関数を生成
             pos_func = make_pos_func(start_time, target_x, target_y, start_x)
-            clip = clip.set_position(pos_func)
+            clip = clip.with_position(pos_func)
             image_clips.append(clip)
 
         # Layer 3: 左上セグメント表示 - 1920x1080用に調整
@@ -1378,7 +1371,7 @@ def build_video_with_subtitles(
                 font=font_path,
                 bg_color="red",
                 size=(250, 60)  # 少し大きく
-            ).set_position((80, 60)).set_duration(total_duration)
+            ).with_position((80, 60)).with_duration(total_duration)
         except Exception as e:
             print(f"Warning: Failed to create segment text: {e}")
             print("Continuing without segment text...")
@@ -1414,7 +1407,7 @@ def build_video_with_subtitles(
                             bg_color="white"
                         )
                         clip_start = current_time + chunk_idx * chunk_duration
-                        txt_clip = txt_clip.set_position((150, VIDEO_HEIGHT - 300)).set_start(clip_start).set_duration(chunk_duration)
+                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 300)).with_start(clip_start).with_duration(chunk_duration)
                         text_clips.append(txt_clip)
                 except Exception as e:
                     print(f"Warning: Failed to create subtitle for part {i}: {e}")
@@ -1458,7 +1451,7 @@ def build_video_with_subtitles(
             print("Using main audio only (no BGM)")
         
         # 最終音声を動画に設定
-        video = video.set_audio(final_audio)
+        video = video.with_audio(final_audio)
         
         if DEBUG_MODE:
             debug_duration = min(60, video.duration)
