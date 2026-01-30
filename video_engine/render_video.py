@@ -1390,6 +1390,15 @@ def build_video_with_subtitles(
             # クロージャで位置関数を生成
             pos_func = make_pos_func(start_time, target_x, target_y, start_x)
             clip = clip.with_position(pos_func)
+            
+            # 画像クリップ生存確認（作成直後）
+            if hasattr(clip, 'size') and clip.size == (0, 0):
+                print(f"[TRACE] ❌ 画像クリップ作成直後にサイズ(0,0)を検出: セグメント{i}")
+            elif hasattr(clip, 'size'):
+                print(f"[TRACE] ✅ 画像クリップ作成成功: セグメント{i}, サイズ={clip.size}")
+            else:
+                print(f"[TRACE] ❌ 画像クリップにサイズ属性なし: セグメント{i}")
+            
             image_clips.append(clip)
 
         # Layer 3: 左上セグメント表示 - 1920x1080用に調整
@@ -1467,6 +1476,49 @@ def build_video_with_subtitles(
         if image_clips:
             first_img = image_clips[0]
             print(f"[DEBUG] First image clip: start={first_img.start}s, duration={first_img.duration}s, size={first_img.size}")
+        
+        # 1. 合成リストの全クリップ検査
+        print("[TRACE] === 合成クリップ詳細検査 ===")
+        for i, c in enumerate(all_clips):
+            clip_type = type(c).__name__
+            clip_size = getattr(c, 'size', 'N/A')
+            clip_start = getattr(c, 'start', 'N/A')
+            clip_duration = getattr(c, 'duration', 'N/A')
+            clip_opacity = getattr(c, 'opacity', 'N/A')
+            print(f"[TRACE] Layer {i}: Type={clip_type}, Size={clip_size}, Start={clip_start}, Duration={clip_duration}, Opacity={clip_opacity}")
+        
+        # 2. 背景動画の絶対確認
+        print("[TRACE] === 背景動画確認 ===")
+        bg_clip_index = 0  # 背景は必ず最初の要素
+        bg_clip = all_clips[bg_clip_index] if len(all_clips) > 0 else None
+        if bg_clip:
+            print(f"[TRACE] 背景動画位置: リストの{bg_clip_index}番目")
+            print(f"[TRACE] 背景動画サイズ: {bg_clip.size}")
+            print(f"[TRACE] ターゲットサイズ: ({VIDEO_WIDTH}, {VIDEO_HEIGHT})")
+            print(f"[TRACE] サイズ一致: {bg_clip.size == (VIDEO_WIDTH, VIDEO_HEIGHT)}")
+        else:
+            print("[TRACE] ❌ 背景動画が存在しません！")
+        
+        # 3. 画像の生存確認
+        print("[TRACE] === 画像クリップ生存確認 ===")
+        for i, img_clip in enumerate(image_clips):
+            img_size = getattr(img_clip, 'size', None)
+            if img_size == (0, 0):
+                print(f"[TRACE] ❌ 画像クリップ{i}: サイズが(0,0)です - 破損の可能性")
+            elif img_size is None:
+                print(f"[TRACE] ❌ 画像クリップ{i}: サイズ属性がありません")
+            else:
+                print(f"[TRACE] ✅ 画像クリップ{i}: サイズ={img_size} - 正常")
+        
+        # 4. ターゲット設定の出力
+        print("[TRACE] === 最終出力設定 ===")
+        target_fps = 30
+        target_width = VIDEO_WIDTH
+        target_height = VIDEO_HEIGHT
+        print(f"[TRACE] 目標FPS: {target_fps}")
+        print(f"[TRACE] 目標幅: {target_width}")
+        print(f"[TRACE] 目標高さ: {target_height}")
+        print(f"[TRACE] 目標サイズ: ({target_width}, {target_height})")
         
         video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
         
