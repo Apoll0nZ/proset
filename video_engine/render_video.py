@@ -1347,14 +1347,20 @@ def build_video_with_subtitles(
             else:
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
-            clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration)
+            clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             clip_w, clip_h = clip.w, clip.h
 
-            # 画像サイズ: 画面幅の58%〜72%でランダム
+            # 画像サイズ: 画面幅の58%〜72%でランダム（最大1280x720に制限）
             width_ratio = random.uniform(0.58, 0.72)
-            target_width = int(VIDEO_WIDTH * width_ratio)
+            target_width = min(int(VIDEO_WIDTH * width_ratio), 1280)
             scale = target_width / max(clip_w, 1)
             target_height = int(clip_h * scale)
+            
+            # 高さが720pxを超えないように制限
+            if target_height > 720:
+                scale = 720 / max(clip_h, 1)
+                target_width = int(clip_w * scale)
+                target_height = 720
 
             # 高さが画面を圧迫しないように制限
             max_height = int(VIDEO_HEIGHT * 0.72)  # 上8%〜下80%の範囲
@@ -1395,7 +1401,7 @@ def build_video_with_subtitles(
                 font=font_path,
                 bg_color="red",
                 size=(250, 60)  # 少し大きく
-            ).with_position((80, 60)).with_duration(total_duration)
+            ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
         except Exception as e:
             print(f"[ERROR] Failed to create segment text: {e}")
             print(f"[DEBUG] Font path: {font_path}")
@@ -1433,7 +1439,7 @@ def build_video_with_subtitles(
                             bg_color="white"
                         )
                         clip_start = current_time + chunk_idx * chunk_duration
-                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 300)).with_start(clip_start).with_duration(chunk_duration)
+                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 300)).with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
                         text_clips.append(txt_clip)
                 except Exception as e:
                     print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
@@ -1455,6 +1461,13 @@ def build_video_with_subtitles(
         if segment_clip:
             all_clips.append(segment_clip)
         all_clips.extend(text_clips)
+        
+        # デバッグ用中間保存ログ
+        print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + セグメント{1 if segment_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
+        if image_clips:
+            first_img = image_clips[0]
+            print(f"[DEBUG] First image clip: start={first_img.start}s, duration={first_img.duration}s, size={first_img.size}")
+        
         video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
         
         # 音声トラックを結合（メイン音声 + BGM）
