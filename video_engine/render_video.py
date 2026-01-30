@@ -201,10 +201,10 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         
         # DEBUG_MODEなら60秒にカット（処理対象を大幅削減）
         if DEBUG_MODE:
-            bg_clip = bg_clip.subclip(0, 60)
+            bg_clip = bg_clip.subclipped(0, 60)
             print("DEBUG_MODE: Background video trimmed to 60s")
         else:
-            bg_clip = bg_clip.subclip(0, total_duration)
+            bg_clip = bg_clip.subclipped(0, total_duration)
             print(f"Background video trimmed to {total_duration:.2f}s")
         
         # 1920x1080に引き伸ばして画面いっぱいに
@@ -1153,7 +1153,7 @@ def build_video_with_subtitles(
                     print("BGM looped to match video duration")
                 elif bgm_clip.duration > total_duration:
                     # BGMが長い場合はトリミング
-                    bgm_clip = bgm_clip.subclip(0, total_duration)
+                    bgm_clip = bgm_clip.subclipped(0, total_duration)
                     print("BGM trimmed to match video duration")
                 
                 # 音量を10%に下げてナレーションを主役に
@@ -1397,7 +1397,9 @@ def build_video_with_subtitles(
                 size=(250, 60)  # 少し大きく
             ).with_position((80, 60)).with_duration(total_duration)
         except Exception as e:
-            print(f"Warning: Failed to create segment text: {e}")
+            print(f"[ERROR] Failed to create segment text: {e}")
+            print(f"[DEBUG] Font path: {font_path}")
+            print(f"[DEBUG] Error type: {type(e).__name__}")
             print("Continuing without segment text...")
             segment_clip = None  # セグメントテキストなしで続行
 
@@ -1434,8 +1436,10 @@ def build_video_with_subtitles(
                         txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 300)).with_start(clip_start).with_duration(chunk_duration)
                         text_clips.append(txt_clip)
                 except Exception as e:
-                    print(f"Warning: Failed to create subtitle for part {i}: {e}")
-                    print(f"[DEBUG] Subtitle error detail: {repr(e)}")
+                    print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
+                    print(f"[DEBUG] Text: {text[:50]}...")
+                    print(f"[DEBUG] Font path: {font_path}")
+                    print(f"[DEBUG] Error type: {type(e).__name__}")
                     print("Continuing without subtitle for this part...")
                     # 字幕なしで続行（審査用動画として優先）
                 
@@ -1457,8 +1461,8 @@ def build_video_with_subtitles(
         if bgm_clip:
             # DEBUG_MODEなら音声も60秒にカット
             if DEBUG_MODE:
-                audio_clip = audio_clip.subclip(0, 60)
-                bgm_clip = bgm_clip.subclip(0, 60)
+                audio_clip = audio_clip.subclipped(0, 60)
+                bgm_clip = bgm_clip.subclipped(0, 60)
                 print("DEBUG_MODE: Audio clips trimmed to 60s")
             
             # CompositeAudioClipでメイン音声とBGMをミックス
@@ -1467,7 +1471,7 @@ def build_video_with_subtitles(
         else:
             # DEBUG_MODEならメイン音声も60秒にカット
             if DEBUG_MODE:
-                audio_clip = audio_clip.subclip(0, 60)
+                audio_clip = audio_clip.subclipped(0, 60)
                 print("DEBUG_MODE: Main audio trimmed to 60s")
             
             # BGMがない場合はメイン音声のみ
@@ -1480,7 +1484,7 @@ def build_video_with_subtitles(
         if DEBUG_MODE:
             debug_duration = min(60, video.duration)
             print(f"DEBUG_MODE enabled: trimming video to {debug_duration}s")
-            video = video.subclip(0, debug_duration)
+            video = video.subclipped(0, debug_duration)
 
         print(f"Writing video to: {out_video_path}")
         video.write_videofile(
