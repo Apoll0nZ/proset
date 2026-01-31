@@ -266,8 +266,26 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
     try:
         print(f"Processing background video for HD: {bg_path}")
         
+        # ファイル存在確認
+        if not os.path.exists(bg_path):
+            raise RuntimeError(f"背景動画ファイルが存在しません: {bg_path}")
+        
+        # 動画ファイルであることを確認
+        if not bg_path.lower().endswith(('.mp4', '.mov', '.avi', '.mkv', '.webm')):
+            raise RuntimeError(f"背景動画が動画ファイルではありません: {bg_path}")
+        
         # 動画を読み込み（低解像度素材を想定、デコード時から解像度を固定）
+        print(f"[DEBUG] VideoFileClipを生成します: {bg_path}")
         bg_clip = VideoFileClip(bg_path, audio=False, target_resolution=(1920, 1080))
+        
+        # VideoFileClipであることを確認
+        from moviepy.video.io.VideoFileClip import VideoFileClip as VFCCheck
+        if not isinstance(bg_clip, VFCCheck):
+            raise RuntimeError(f"背景動画がVideoFileClipではありません: {type(bg_clip)}")
+        
+        print(f"[SUCCESS] VideoFileClip生成成功: {type(bg_clip)}")
+        print(f"[DEBUG] Duration: {bg_clip.duration}s, Size: {bg_clip.size}")
+        
         bg_clip = bg_clip.with_start(0).with_opacity(1.0)  # 映像信号を強制的にアクティブに
         original_width, original_height = bg_clip.size
         print(f"Original video size: {original_width}x{original_height}")
@@ -1430,11 +1448,13 @@ def build_video_with_subtitles(
                 print("Failed to process background video, falling back to gradient")
         
         if bg_clip is None:
-            print("Creating gradient background fallback")
-            # グラデーション背景を生成（1920x1080対応）
-            gradient_array = create_gradient_background(VIDEO_WIDTH, VIDEO_HEIGHT)
-            bg_clip = ImageClip(gradient_array).with_duration(total_duration)
-            print(f"Created gradient background: {VIDEO_WIDTH}x{VIDEO_HEIGHT}")
+            print("Creating RED background fallback for debugging")
+            # 赤い背景動画を生成（デバッグ用）
+            from moviepy import ColorClip
+            bg_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(255, 0, 0), duration=total_duration)
+            bg_clip = bg_clip.with_start(0).with_opacity(1.0)
+            print(f"[DEBUG] Created RED background: {VIDEO_WIDTH}x{VIDEO_HEIGHT} for {total_duration}s")
+            print("[DEBUG] This indicates background video loading failed!")
 
         # Layer 2: 画像スライド（セグメント連動）
         image_clips = []
@@ -1769,7 +1789,7 @@ def build_video_with_subtitles(
                 continue
 
         # すべてのレイヤーを合成（厳格な順序: 背景動画 -> 画像 -> セグメントテキスト -> 字幕）
-        # bg_clip が最背面、text_clips が最前面になるように厳格化
+        # bg_clip が最背面（インデックス0）、text_clips が最前面になるように厳格化
         all_clips = [bg_clip] + image_clips
         if segment_clip:
             all_clips.append(segment_clip)
@@ -1780,10 +1800,6 @@ def build_video_with_subtitles(
         if image_clips:
             first_img = image_clips[0]
             print(f"[DEBUG] First image clip: start={first_img.start}s, duration={first_img.duration}s, size={first_img.size}")
-        
-        # デバッグ: 背景動画のみでテスト（画像と字幕をスキップ）
-        print("[DEBUG] デバッグ: 背景動画のみで合成をテストします")
-        all_clips = [bg_clip]  # 背景動画のみ
         
         # 1. 合成リストの全クリップ検査
         print("[TRACE] === 合成クリップ詳細検査 ===")
