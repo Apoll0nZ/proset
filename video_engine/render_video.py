@@ -410,16 +410,21 @@ def download_background_music() -> str:
 
 
 def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """画像検索（Google Playwrightのみ、失敗時はエラー）"""
+    """画像検索（Google Playwrightのみ、失敗時はリトライ）"""
+    
+    import time
     
     # Google Playwrightのみ使用
-    try:
-        from playwright.sync_api import sync_playwright
-        
-        print(f"Searching Google images for: {keyword}")
-        
-        with sync_playwright() as p:
-            try:
+    max_retries = 3
+    retry_delay = 2  # 秒
+    
+    for attempt in range(max_retries):
+        try:
+            from playwright.sync_api import sync_playwright
+            
+            print(f"Searching Google images for: {keyword} (attempt {attempt + 1}/{max_retries})")
+            
+            with sync_playwright() as p:
                 # ヘッドレスブラウザ検出回避のための設定
                 browser = p.chromium.launch(
                     headless=True,
@@ -508,21 +513,28 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                     print(f"[ERROR] No valid Google images found for '{keyword}'")
                     raise RuntimeError(f"Google画像検索でキーワード '{keyword}' に一致する画像が見つかりませんでした")
                     
-            except Exception as e:
-                print(f"[ERROR] Google Playwright search failed: {e}")
-                try:
-                    browser.close()
-                except:
-                    pass
-                raise RuntimeError(f"Google画像検索に失敗しました: {e}")
-        
-    except ImportError:
-        print("[ERROR] Playwright not available")
-        raise RuntimeError("Playwrightがインストールされていません")
+        except ImportError:
+            print("[ERROR] Playwright not available")
+            raise RuntimeError("Playwrightがインストールされていません")
+            
+        except Exception as e:
+            # HTTPエラー（503, 429など）の場合はリトライ
+            error_msg = str(e).lower()
+            if any(code in error_msg for code in ['503', '429', 'timeout', 'connection']):
+                if attempt < max_retries - 1:
+                    print(f"[RETRY] HTTP error detected, retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    print(f"[ERROR] Max retries reached for '{keyword}'")
+                    raise RuntimeError(f"画像検索で最大リトライ回数に達しました: {e}")
+            else:
+                # その他のエラーは即時失敗
+                print(f"[ERROR] Non-retryable error in image search: {e}")
+                raise RuntimeError(f"画像検索でエラーが発生しました: {e}")
     
-    except Exception as e:
-        print(f"[ERROR] Image search failed: {e}")
-        raise RuntimeError(f"画像検索でエラーが発生しました: {e}")
+    # すべてのリトライが失敗した場合
+    raise RuntimeError(f"画像検索がすべて失敗しました: {keyword}")
 
 
 def get_youtube_credentials_from_env():
@@ -820,71 +832,94 @@ def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List
 
 
 def download_image_from_url(image_url: str, filename: str = None) -> str:
-    """URLから画像をダウンロードしてtempフォルダに保存し、S3にもアップロード"""
-    try:
-        if not image_url or image_url.lower().endswith(".svg"):
-            print(f"[DEBUG] Skipping unsupported image URL: {image_url}")
-            return None
-
-        if not filename:
-            # URLからファイル名を生成
-            import hashlib
-            url_hash = hashlib.md5(image_url.encode()).hexdigest()[:8]
-            ext = os.path.splitext(image_url.split("?")[0])[1].lower()
-            if ext not in [".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"]:
-                ext = ".jpg"
-            filename = f"ai_image_{url_hash}{ext}"
-        
-        local_path = os.path.join(LOCAL_TEMP_DIR, filename)
-        
-        print(f"[DEBUG] Downloading image from URL: {image_url}")
-        
-        # User-Agentを設定してブロック回避
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        response = requests.get(image_url, timeout=30, headers=headers)
-        print(f"[DEBUG] HTTP Status: {response.status_code}")
-        print(f"[DEBUG] Content-Type: {response.headers.get('Content-Type', 'Unknown')}")
-        print(f"[DEBUG] Content-Length: {response.headers.get('Content-Length', 'Unknown')} bytes")
-        
-        response.raise_for_status()
-        
-        # 画像をローカルに保存
-        with open(local_path, 'wb') as f:
-            f.write(response.content)
-
-        file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
-        print(f"[DEBUG] Saved image: path={local_path}, size={file_size} bytes, ext={os.path.splitext(local_path)[1]}")
-        print(f"[DEBUG] Image exists after save: {os.path.exists(local_path)}")
-
-        # 画像のフォーマット検証
+    """URLから画像をダウンロードしてtempフォルダに保存し、S3にもアップロード（リトライ付き）"""
+    
+    import time
+    
+    max_retries = 3
+    retry_delay = 1  # 秒
+    
+    for attempt in range(max_retries):
         try:
-            with Image.open(local_path) as img:
-                img.verify()
-                print(f"[DEBUG] Image decode success: format={img.format}, mode={img.mode}")
-        except UnidentifiedImageError as e:
-            print(f"[DEBUG] Image decode failed (UnidentifiedImageError): {e}")
-            return None
+            if not image_url or image_url.lower().endswith(".svg"):
+                print(f"[DEBUG] Skipping unsupported image URL: {image_url}")
+                return None
+
+            if not filename:
+                # URLからファイル名を生成
+                import hashlib
+                url_hash = hashlib.md5(image_url.encode()).hexdigest()[:8]
+                ext = os.path.splitext(image_url.split("?")[0])[1].lower()
+                if ext not in [".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"]:
+                    ext = ".jpg"
+                filename = f"ai_image_{url_hash}{ext}"
+            
+            local_path = os.path.join(LOCAL_TEMP_DIR, filename)
+            
+            print(f"[DEBUG] Downloading image from URL: {image_url} (attempt {attempt + 1}/{max_retries})")
+            
+            # User-Agentを設定してブロック回避
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(image_url, timeout=30, headers=headers)
+            print(f"[DEBUG] HTTP Status: {response.status_code}")
+            print(f"[DEBUG] Content-Type: {response.headers.get('Content-Type', 'Unknown')}")
+            print(f"[DEBUG] Content-Length: {response.headers.get('Content-Length', 'Unknown')} bytes")
+            
+            response.raise_for_status()
+            
+            # 画像をローカルに保存
+            with open(local_path, 'wb') as f:
+                f.write(response.content)
+
+            file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+            print(f"[DEBUG] Saved image: path={local_path}, size={file_size} bytes, ext={os.path.splitext(local_path)[1]}")
+            print(f"[DEBUG] Image exists after save: {os.path.exists(local_path)}")
+
+            # 画像のフォーマット検証
+            try:
+                with Image.open(local_path) as img:
+                    img.verify()
+                    print(f"[DEBUG] Image decode success: format={img.format}, mode={img.mode}")
+            except UnidentifiedImageError as e:
+                print(f"[DEBUG] Image decode failed (UnidentifiedImageError): {e}")
+                return None
+            except Exception as e:
+                print(f"[DEBUG] Image decode failed: {e}")
+                return None
+            
+            # S3のtempフォルダにもアップロード
+            try:
+                s3_key = f"temp/{filename}"
+                s3_client.upload_file(local_path, S3_BUCKET, s3_key)
+                print(f"Uploaded image to S3: s3://{S3_BUCKET}/{s3_key}")
+            except Exception as e:
+                print(f"Failed to upload image to S3: {e}")
+            
+            print(f"[SUCCESS] Image downloaded successfully: {local_path}")
+            return local_path
+            
         except Exception as e:
-            print(f"[DEBUG] Image decode failed: {e}")
-            return None
-        
-        # S3のtempフォルダにもアップロード
-        try:
-            s3_key = f"temp/{filename}"
-            s3_client.upload_file(local_path, S3_BUCKET, s3_key)
-            print(f"Uploaded image to S3: s3://{S3_BUCKET}/{s3_key}")
-        except Exception as e:
-            print(f"Failed to upload image to S3: {e}")
-        
-        print(f"Successfully downloaded image to: {local_path}")
-        return local_path
-        
-    except Exception as e:
-        print(f"Failed to download image from URL {image_url}: {e}")
-        return None
+            # HTTPエラー（503, 429など）の場合はリトライ
+            error_msg = str(e).lower()
+            if any(code in error_msg for code in ['503', '429', 'timeout', 'connection']):
+                if attempt < max_retries - 1:
+                    print(f"[RETRY] HTTP error detected, retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    print(f"[ERROR] Max retries reached for image download: {image_url}")
+                    return None
+            else:
+                # その他のエラーは即時失敗
+                print(f"[ERROR] Non-retryable error in image download: {e}")
+                return None
+    
+    # すべてのリトライが失敗した場合
+    print(f"[ERROR] Image download failed after all retries: {image_url}")
+    return None
 
 
 def split_subtitle_text(text: str, max_chars: int = 100) -> List[str]:
