@@ -2143,7 +2143,11 @@ def main() -> None:
 
             # 5. YouTube へアップロード
             if DEBUG_MODE:
-                print(f"[INFO] Artifacts 用にファイルを保持します: {video_path}")
+                print(f"[DEBUG_MODE] YouTubeアップロードをスキップします。Artifactsに保存済みです。")
+                print(f"[DEBUG_MODE] 動画ファイル: {video_path}")
+                print(f"[DEBUG_MODE] サムネイルファイル: {thumbnail_path}")
+                return  # DEBUG_MODEはここで終了
+            
             print("Uploading to YouTube...")
             youtube_client = build_youtube_client()
             # 5. 動画品質チェック（アップロード前）
