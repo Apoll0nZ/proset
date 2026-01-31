@@ -278,11 +278,25 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             bg_clip = bg_clip.subclipped(0, total_duration)
             print(f"Background video trimmed to {total_duration:.2f}s")
         
-        # 1920x1080に引き伸ばして画面いっぱいに（動画として維持）
-        bg_clip = bg_clip.resized(height=1080)  # 高さ基準でリサイズ
+        # 1920x1080にリサイズ（動画として維持）
+        # MoviePy v2.0互換のリサイズ方法
+        from moviepy.video.fx import resize
+        
+        # リサイズ効果を直接適用（VideoFileClipを維持）
+        bg_clip = resize(bg_clip, height=1080)
+        print("Resized to height=1080 (video resize method)")
+        
         # 中央配置でクロップ（動画として維持）
-        bg_clip = vfx.crop(bg_clip, x_center=bg_clip.w/2, y_center=bg_clip.h/2, width=1920, height=1080)
-        print("Resized to 1920x1080 (video crop method)")
+        if bg_clip.w > 1920:
+            crop_x = (bg_clip.w - 1920) // 2
+            crop_y = (bg_clip.h - 1080) // 2 if bg_clip.h > 1080 else 0
+            bg_clip = vfx.crop(bg_clip, x1=crop_x, y1=crop_y, width=1920, height=1080)
+            print(f"Cropped to 1920x1080 from position ({crop_x}, {crop_y})")
+        elif bg_clip.h < 1080:
+            # 高さが足りない場合のみリサイズ
+            scale_factor = 1080 / bg_clip.h
+            bg_clip = resize(bg_clip, width=int(bg_clip.w * scale_factor), height=1080)
+            print(f"Scaled up by factor {scale_factor:.2f} to reach height=1080")
         
         # 画像処理を適用して引き伸ばしの粗さを隠す
         bg_clip = bg_clip.fx(vfx.colorx, 0.8)  # 少し暗くして引き伸ばしの粗さを目立たなくする
@@ -291,6 +305,7 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         # 動画タイプであることを確認
         print(f"[DEBUG] Background clip type after processing: {type(bg_clip)}")
         print(f"[DEBUG] Background clip is VideoFileClip: {isinstance(bg_clip, VideoFileClip)}")
+        print(f"[DEBUG] Background clip size: {bg_clip.size} (should be 1920x1080)")
         
         # 音声の長さに合わせてループ（DEBUG_MODEなら60秒で固定）
         if DEBUG_MODE:
@@ -335,50 +350,83 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
         
         with sync_playwright() as p:
             try:
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context()
+                # ヘッドレスブラウザ検出回避のための設定
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--no-sandbox',
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-dev-shm-usage',
+                        '--disable-gpu',
+                        '--remote-debugging-port=9222'
+                    ]
+                )
+                context = browser.new_context(
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='ja-JP'
+                )
                 page = context.new_page()
+                
+                # 検出回避スクリプト
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined,
+                    });
+                """)
                 
                 # Google画像検索
                 search_url = f"https://www.google.com/search?q={keyword}&tbm=isch"
+                print(f"[DEBUG] Navigating to: {search_url}")
                 page.goto(search_url)
-                page.wait_for_load_state('networkidle', timeout=5000)
-                page.wait_for_timeout(2000)
+                page.wait_for_load_state('networkidle', timeout=10000)
+                page.wait_for_timeout(3000)  # 待機時間を延長
                 
                 # 画像URLを収集
                 images = []
                 image_elements = page.query_selector_all('img[src]')
+                print(f"[DEBUG] Found {len(image_elements)} image elements")
                 
-                for i, img in enumerate(image_elements[:max_results * 2]):
+                for i, img in enumerate(image_elements[:max_results * 3]):  # 候補を増やす
                     try:
                         src = img.get_attribute('src')
                         alt = img.get_attribute('alt') or ''
                         
-                        # 製品関連フィルタリング
-                        is_product_related = True
-                        exclude_keywords = ['風景', 'landscape', 'nature', 'sky', 'cloud', 'mountain', 'sea', 'ocean', 'forest', 'tree']
-                        
-                        for exclude_word in exclude_keywords:
-                            if exclude_word.lower() in alt.lower():
-                                is_product_related = False
-                                break
-                        
-                        if src and src.startswith('http') and 'base64' not in src and is_product_related:
-                            is_google_thumbnail = 'encrypted-tbn0.gstatic.com' in src
-                            is_valid = 'encrypted' not in src or is_google_thumbnail
+                        # 緩和したフィルタリング条件
+                        if src and src.startswith('http') and 'base64' not in src:
+                            # サイズフィルタリングを緩和 - 小さすぎる画像のみ除外
+                            if 'encrypted-tbn0.gstatic.com' in src:
+                                # Googleサムネイルは許可
+                                is_valid = True
+                            elif 'googleusercontent.com' in src:
+                                # Googleユーザーコンテンツも許可
+                                is_valid = True
+                            else:
+                                # その他のソースも許可（製品関連の可能性）
+                                is_valid = True
                             
-                            if is_valid:
+                            # 製品関連フィルタリングを緩和 - 明らかな風景のみ除外
+                            is_product_related = True
+                            strict_exclude_keywords = ['風景写真', 'landscape photography', 'nature photography']
+                            
+                            for exclude_word in strict_exclude_keywords:
+                                if exclude_word.lower() in alt.lower():
+                                    is_product_related = False
+                                    break
+                            
+                            if is_valid and is_product_related:
                                 images.append({
                                     'url': src,
                                     'title': f'Google image {i+1} for {keyword}',
                                     'thumbnail': src,
                                     'alt': alt,
-                                    'is_google_thumbnail': is_google_thumbnail
+                                    'is_google_thumbnail': 'encrypted-tbn0.gstatic.com' in src
                                 })
                                 
                                 if len(images) >= max_results:
                                     break
-                    except:
+                    except Exception as e:
+                        print(f"[DEBUG] Error processing image {i}: {e}")
                         continue
                 
                 browser.close()
@@ -1273,35 +1321,38 @@ def build_video_with_subtitles(
                     print(f"[INFO] 画像収集が60枚に達したため、セグメント {i} の検索を終了します")
                     break
                 
-                # 固有名詞（型番・製品名）を最優先で使用
-                if keyword and any(char.isdigit() for char in keyword):
-                    # 型番やモデル番号を含む場合はそのまま使用
-                    search_keyword = f"{keyword} 製品 実機"
-                elif keyword and len(keyword) > 10:
-                    # 長い固有名詞の場合はそのまま使用
-                    search_keyword = f"{keyword} 製品 実機"
-                else:
-                    # 短いキーワードの場合のみ補足
-                    search_keyword = f"{keyword} 製品 実機"
+                # Geminiが抽出したキーワードを完全に維持して使用
+                # 数字や記号を削除せず、そのまま検索クエリに使用
+                search_keyword = f"{keyword} 製品 実機"
                 
                 print(f"[DEBUG] Segment {i} search keyword: {search_keyword}")
-                images = search_images_with_playwright(search_keyword, max_results=6)
-                for image in images:
-                    image_url = image.get("url")
-                    if not image_url or image_url.lower().endswith(".svg"):
-                        continue
-                    image_path = download_image_from_url(image_url)
-                    if image_path and os.path.exists(image_path):
-                        part_images.append(image_path)
-                        total_images_collected += 1
-                        print(
-                            f"[DEBUG] Image list updated: total={total_images_collected}, "
-                            f"segment={i}, segment_images={len(part_images)}"
-                        )
-                        print(f"現在、有効な画像リストには計{total_images_collected}枚の画像が格納されています")
-                        if total_images_collected >= 60 and len(part_images) >= 2:
-                            print(f"[INFO] 画像収集上限（60枚）に達しました")
-                            break
+                print(f"[DEBUG] Original keyword: '{keyword}' (length: {len(keyword)})")
+                
+                try:
+                    images = search_images_with_playwright(search_keyword, max_results=6)
+                    print(f"[DEBUG] Found {len(images)} images for keyword: '{keyword}'")
+                    
+                    for image in images:
+                        image_url = image.get("url")
+                        if not image_url or image_url.lower().endswith(".svg"):
+                            continue
+                        image_path = download_image_from_url(image_url)
+                        if image_path and os.path.exists(image_path):
+                            part_images.append(image_path)
+                            total_images_collected += 1
+                            print(
+                                f"[DEBUG] Image list updated: total={total_images_collected}, "
+                                f"segment={i}, segment_images={len(part_images)}, keyword='{keyword}'"
+                            )
+                            print(f"現在、有効な画像リストには計{total_images_collected}枚の画像が格納されています")
+                            if total_images_collected >= 60 and len(part_images) >= 2:
+                                print(f"[INFO] 画像収集上限（60枚）に達しました")
+                                break
+                except Exception as e:
+                    print(f"[WARNING] Failed to search images for keyword '{keyword}': {e}")
+                    # 1つのキーワードで失敗しても次のキーワードを試す
+                    continue
+                    
                 if total_images_collected >= 60 and part_images:
                     break
 
@@ -1331,24 +1382,43 @@ def build_video_with_subtitles(
             print(f"[DEBUG] Found {len(part_images)} images for segment {i}")
 
             if duration <= 4 or len(part_images) == 1:
-                image_schedule.append({"start": current_time, "duration": duration, "path": part_images[0]})
+                # 単一画像または短いセグメントの場合
+                clip_duration = max(3.0, duration)  # 最低3秒を保証
+                image_schedule.append({"start": current_time, "duration": clip_duration, "path": part_images[0]})
+                print(f"[DEBUG] Single image scheduled: duration={clip_duration}s, start={current_time}s")
             else:
+                # 複数画像の場合、セグメント時間を等分して最低3秒を保証
                 base_start_time = 3.0 if i == 0 else current_time
-                switch_interval = max(3.0, duration / max(len(part_images), 1))  # 最小3秒間隔
+                num_images = len(part_images)
+                
+                # 各画像に最低3秒を割り当て、合計がdurationを超えないように調整
+                min_per_image = 3.0
+                total_min_time = num_images * min_per_image
+                
+                if total_min_time > duration:
+                    # 全部の画像を表示する時間がない場合、均等割り当て
+                    switch_interval = duration / num_images
+                    print(f"[DEBUG] Adjusted switch_interval to {switch_interval:.2f}s to fit in duration")
+                else:
+                    # 十分な時間がある場合、最低3秒を保証して均等割り当て
+                    switch_interval = max(min_per_image, duration / num_images)
+                    print(f"[DEBUG] Using switch_interval: {switch_interval:.2f}s (min: {min_per_image}s)")
                 
                 for idx, image_path in enumerate(part_images):
                     start_time = base_start_time + idx * switch_interval
-                    remaining = duration - idx * switch_interval
-                    clip_duration = min(switch_interval, remaining)
                     
-                    # 負の持続時間を防ぐ
+                    # 最後の画像は残り時間をすべて使用
+                    if idx == num_images - 1:
+                        clip_duration = max(min_per_image, duration - idx * switch_interval)
+                    else:
+                        clip_duration = max(min_per_image, switch_interval)
+                    
+                    # 負の持続時間を絶対に防ぐ
                     if clip_duration <= 0:
-                        print(f"[DEBUG] Skipping image {idx} due to negative duration: {clip_duration}")
+                        print(f"[DEBUG] Skipping image {idx} due to non-positive duration: {clip_duration}")
                         continue
                     
-                    # フェードイン・アウトのため0.5秒オーバーラップ
-                    if idx < len(part_images) - 1:  # 最後の画像以外
-                        clip_duration += 0.5  # 次の画像とのオーバーラップ分
+                    print(f"[DEBUG] Scheduling image {idx}: start={start_time:.2f}s, duration={clip_duration:.2f}s")
                     
                     image_schedule.append({
                         "start": start_time,
