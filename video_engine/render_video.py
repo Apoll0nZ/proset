@@ -325,13 +325,13 @@ def download_background_music() -> str:
 
 
 def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """画像検索（Google Playwrightを優先、Picsumを最終フォールバック）"""
+    """画像検索（Google Playwrightのみ、失敗時はエラー）"""
     
-    # まずGoogle Playwrightを試す（優先）
+    # Google Playwrightのみ使用
     try:
         from playwright.sync_api import sync_playwright
         
-        print("Trying Google Playwright search first...")
+        print(f"Searching Google images for: {keyword}")
         
         with sync_playwright() as p:
             try:
@@ -387,45 +387,24 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                     print(f"Successfully found {len(images)} Google images for '{keyword}'")
                     return images
                 else:
-                    print("No valid Google images found, trying fallback...")
+                    print(f"[ERROR] No valid Google images found for '{keyword}'")
+                    raise RuntimeError(f"Google画像検索でキーワード '{keyword}' に一致する画像が見つかりませんでした")
                     
             except Exception as e:
-                print(f"Google Playwright search failed: {e}")
+                print(f"[ERROR] Google Playwright search failed: {e}")
                 try:
                     browser.close()
                 except:
                     pass
+                raise RuntimeError(f"Google画像検索に失敗しました: {e}")
         
     except ImportError:
-        print("Playwright not available, using fallback only")
+        print("[ERROR] Playwright not available")
+        raise RuntimeError("Playwrightがインストールされていません")
     
-    # 最終フォールバック：Picsum Photos（Google検索失敗時のみ）
-    print(f"Using Picsum Photos as final fallback for: {keyword}")
-    fallback_images = []
-    try:
-        # キーワードに基づいてシード値を生成
-        seed = abs(hash(keyword)) % 1000
-        
-        for i in range(max_results):
-            # Picsum Photosを使用（シード値で同じ画像を取得）
-            width = 800 + random.randint(0, 400)
-            height = 600 + random.randint(0, 300)
-            url = f"https://picsum.photos/seed/{seed}_{i}/{width}/{height}.jpg"
-            
-            fallback_images.append({
-                'url': url,
-                'title': f'Fallback image {i+1} for {keyword}',
-                'thumbnail': url,
-                'alt': f'Fallback image for {keyword}',
-                'is_fallback': True
-            })
-        
-        print(f"Generated {len(fallback_images)} fallback images (Picsum)")
-        return fallback_images
-        
     except Exception as e:
-        print(f"Fallback image generation failed: {e}")
-        return []
+        print(f"[ERROR] Image search failed: {e}")
+        raise RuntimeError(f"画像検索でエラーが発生しました: {e}")
 
 
 def get_youtube_credentials_from_env():
