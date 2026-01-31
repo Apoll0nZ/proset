@@ -283,33 +283,21 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             bg_clip = bg_clip.subclipped(0, total_duration)
             print(f"Background video trimmed to {total_duration:.2f}s")
         
-        # 1920x1080にリサイズ（単純化）
-        print(f"Resizing background video...")
+        # 1920x1080に引き伸ばして画面いっぱいに（成功時のシンプルな設定）
+        bg_clip = bg_clip.resize(newsize=(1920, 1080))
+        print("Resized to 1920x1080 (intelligent stretch)")
         
-        # 高さを1080にリサイズ（fxなしのメソッド）
-        if bg_clip.h != 1080:
-            scale_factor = 1080 / bg_clip.h
-            new_width = int(bg_clip.w * scale_factor)
-            bg_clip = bg_clip.resized(new_width, 1080)
-            print(f"Resized to {new_width}x1080 (scale factor: {scale_factor:.2f})")
+        # ガウスぼかしを適用して引き伸ばしの粗さを隠す
+        bg_clip = bg_clip.fx(vfx.gaussian_blur, sigma=5)
+        print("Applied gaussian blur (sigma=5) to hide stretching artifacts")
         
-        # 幅が1920を超える場合のみクロップ
-        if bg_clip.w > 1920:
-            crop_x = (bg_clip.w - 1920) // 2
-            crop_y = 0
-            bg_clip = bg_clip.cropped(x=crop_x, y=crop_y, width=1920, height=1080)
-            print(f"Cropped to 1920x1080 from position ({crop_x}, {crop_y})")
-        
-        # vfx.colorx を削除（映像が黒くなる原因を排除）
-        print("Skipping colorx effect to prevent video darkening")
-        
-        # ループ処理を簡略化（with_durationのみ）
+        # 音声の長さに合わせてループ（成功時のシンプルな設定）
         if DEBUG_MODE:
-            bg_clip = bg_clip.with_duration(30)
+            bg_clip = bg_clip.loop(duration=30).set_duration(30)
         else:
-            bg_clip = bg_clip.with_duration(total_duration)
+            bg_clip = bg_clip.loop(duration=total_duration).set_duration(total_duration)
         
-        print(f"Background video duration set to: {30 if DEBUG_MODE else total_duration:.2f}s")
+        print(f"Background video looped to duration: {30 if DEBUG_MODE else total_duration:.2f}s")
         
         # 型チェックを緩和：hasattrで映像機能を判定
         if hasattr(bg_clip, 'get_frame'):
@@ -318,7 +306,6 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             raise RuntimeError(f"背景動画が映像として機能しません: {type(bg_clip)}")
         
         print(f"[DEBUG] Background clip size: {bg_clip.size} (should be 1920x1080)")
-        print(f"Looped to match duration: {30 if DEBUG_MODE else total_duration:.2f}s")
         
         # 背景動画のデバッグ情報を出力
         debug_background_video(bg_clip, total_duration)
