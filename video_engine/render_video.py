@@ -1596,6 +1596,106 @@ def build_video_with_subtitles(
                 print(f"Failed to cleanup temporary BGM file: {e}")
 
 
+def check_video_quality(video_path="video.mp4", min_size_mb=1, min_brightness=10):
+    """
+    動画品質を自動チェックする関数
+    ファイルサイズとフレーム輝度を検証
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        print("[WARNING] OpenCVがインストールされていません。品質チェックをスキップします。")
+        print("インストール: pip install opencv-python")
+        return True
+    
+    print("\n=== 動画品質自動チェック ===")
+    print(f"[INFO] チェック対象: {video_path}")
+    
+    # ファイル存在確認
+    if not os.path.exists(video_path):
+        print(f"[ERROR] 動画ファイルが存在しません: {video_path}")
+        return False
+    
+    # 1. ファイルサイズチェック
+    try:
+        file_size = os.path.getsize(video_path)
+        file_size_mb = file_size / (1024 * 1024)
+        
+        print(f"[TEST] ファイルサイズ: {file_size_mb:.2f} MB")
+        
+        if file_size_mb < min_size_mb:
+            print(f"[ERROR] ファイルサイズが小さすぎます: {file_size_mb:.2f} MB < {min_size_mb} MB")
+            return False
+        
+        print(f"[PASS] ファイルサイズが正常です: {file_size_mb:.2f} MB")
+        
+    except Exception as e:
+        print(f"[ERROR] ファイルサイズチェック失敗: {e}")
+        return False
+    
+    # 2. フレーム輝度チェック
+    try:
+        cap = cv2.VideoCapture(video_path)
+        
+        if not cap.isOpened():
+            print(f"[ERROR] 動画ファイルを開けません: {video_path}")
+            return False
+        
+        # 動画情報を取得
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = total_frames / fps
+        
+        print(f"[TEST] 動画情報: FPS={fps}, 総フレーム数={total_frames}, 長さ={duration:.2f}s")
+        
+        test_times = [3, 10, 30]
+        all_passed = True
+        
+        for time_sec in test_times:
+            if time_sec > duration:
+                print(f"[SKIP] {time_sec}秒 > 動画長({duration:.2f}s)、チェックをスキップ")
+                continue
+            
+            # 指定時間のフレーム番号を計算
+            frame_number = int(time_sec * fps)
+            
+            # フレームをシーク
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            ret, frame = cap.read()
+            
+            if not ret:
+                print(f"[ERROR] {time_sec}秒のフレームを読み込めません")
+                all_passed = False
+                continue
+            
+            # 輝度を計算（グレースケール変換して平均値）
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            brightness = np.mean(gray)
+            print(f"[TEST] Frame at {time_sec}s brightness: {brightness:.1f} / 255")
+            
+            # 輝度チェック
+            if brightness < min_brightness:
+                print(f"[ERROR] {time_sec}秒のフレームが真っ黒です: brightness={brightness:.1f} < {min_brightness}")
+                all_passed = False
+            else:
+                print(f"[PASS] {time_sec}秒のフレームは正常です: brightness={brightness:.1f}")
+        
+        cap.release()
+        
+        if not all_passed:
+            print("[FAIL] フレーム輝度チェックに失敗しました")
+            return False
+        
+    except Exception as e:
+        print(f"[ERROR] フレームチェック失敗: {e}")
+        return False
+    
+    print("\n[PASS] すべての品質チェックに合格しました")
+    print("✅ 動画は正常に生成されています")
+    return True
+
+
 def upload_to_youtube(
     youtube,
     title: str,
@@ -1737,6 +1837,14 @@ def main() -> None:
             # 5. YouTube へアップロード
             print("Uploading to YouTube...")
             youtube_client = build_youtube_client()
+            # 5. 動画品質チェック（アップロード前）
+            print("Performing video quality check before upload...")
+            quality_ok = check_video_quality(video_path)
+            if not quality_ok:
+                print("[ERROR] 動画品質チェックに失敗しました。アップロードを中止します。")
+                sys.exit(1)
+            
+            # 6. YouTube アップロード
             video_id = upload_to_youtube(
                 youtube=youtube_client,
                 title=title,
@@ -1745,7 +1853,7 @@ def main() -> None:
                 thumbnail_path=thumbnail_path,
             )
 
-            # 6. DynamoDB に履歴登録
+            # 7. DynamoDB に履歴登録
             print("Saving to DynamoDB...")
             now = datetime.now(timezone.utc).isoformat()
             
