@@ -163,26 +163,97 @@ def download_random_background_video() -> str:
                 mp4_files.append(key)
         
         if not mp4_files:
-            print("No .mp4 files found in assets/ folder")
+            print("[WARNING] No .mp4 files found in assets/ folder")
+            print("[DEBUG] Available files in assets/:")
+            for obj in contents:
+                print(f"  - {obj['Key']}")
             return None
         
         # ランダムに1つ選択
         selected_key = random.choice(mp4_files)
-        print(f"Selected background video: {selected_key}")
+        print(f"[DEBUG] Selected background video: {selected_key}")
+        print(f"[DEBUG] Available MP4 files: {mp4_files}")
         
         # ダウンロード
         temp_dir = tempfile.mkdtemp()
         filename = os.path.basename(selected_key)
         local_path = os.path.join(temp_dir, filename)
         
-        print(f"Downloading background video from S3: s3://{S3_BUCKET}/{selected_key}")
+        print(f"[DEBUG] Downloading background video from S3: s3://{S3_BUCKET}/{selected_key}")
+        print(f"[DEBUG] Local path: {local_path}")
         s3_client.download_file(S3_BUCKET, selected_key, local_path)
-        print(f"Successfully downloaded to: {local_path}")
+        print(f"[DEBUG] Successfully downloaded to: {local_path}")
+        
+        # ファイルサイズ確認
+        file_size = os.path.getsize(local_path)
+        print(f"[DEBUG] Background video file size: {file_size / (1024*1024):.2f} MB")
+        
+        if file_size < 1024 * 1024:  # 1MB未満
+            print("[WARNING] Background video file is very small (< 1MB)")
+        
         return local_path
         
     except Exception as e:
         print(f"Failed to download background video: {e}")
         return None
+
+
+def debug_background_video(bg_clip, total_duration):
+    """
+    背景動画の詳細なデバッグ情報を出力
+    """
+    print("\n[DEBUG] === 背景動画詳細検査 ===")
+    
+    # 基本情報
+    print(f"[DEBUG] 背景動画サイズ: {bg_clip.size}")
+    print(f"[DEBUG] 背景動画長: {bg_clip.duration}s")
+    print(f"[DEBUG] 背景動画FPS: {bg_clip.fps}")
+    print(f"[DEBUG] 目標長: {total_duration}s")
+    
+    # フレームテストとサムネイル保存
+    try:
+        import cv2
+        import numpy as np
+        
+        test_times = [0, 1, 5, 10, 30]
+        for t in test_times:
+            if t < bg_clip.duration:
+                frame = bg_clip.get_frame(t)
+                brightness = frame.mean()
+                print(f"[DEBUG] Frame at {t}s: brightness={brightness:.1f}, shape={frame.shape}")
+                
+                # サムネイルを保存（視覚的確認用）
+                if t == 1.0:  # 1秒時点のフレームを保存
+                    thumbnail_path = "debug_background_frame.jpg"
+                    # RGBからBGRに変換（OpenCV形式）
+                    frame_bgr = cv2.cvtColor(frame.astype(np.uint8), cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(thumbnail_path, frame_bgr)
+                    print(f"[DEBUG] サムネイル保存: {thumbnail_path}")
+            else:
+                print(f"[DEBUG] Frame at {t}s: 動画長を超えています")
+    except Exception as e:
+        print(f"[ERROR] フレームテスト失敗: {e}")
+    
+    # 色成分分析
+    try:
+        frame = bg_clip.get_frame(1.0)  # 1秒時点
+        r_mean = frame[:,:,0].mean()
+        g_mean = frame[:,:,1].mean()
+        b_mean = frame[:,:,2].mean()
+        print(f"[DEBUG] 色成分 (1s時点): R={r_mean:.1f}, G={g_mean:.1f}, B={b_mean:.1f}")
+        
+        # 真っ黒チェック
+        if r_mean < 5 and g_mean < 5 and b_mean < 5:
+            print("[WARNING] 背景動画が真っ黒に近いです")
+        elif r_mean > 250 and g_mean > 250 and b_mean > 250:
+            print("[WARNING] 背景動画が真っ白に近いです")
+        else:
+            print("[PASS] 背景動画の色成分は正常範囲です")
+            
+    except Exception as e:
+        print(f"[ERROR] 色成分分析失敗: {e}")
+    
+    print("[DEBUG] === 背景動画検査完了 ===\n")
 
 
 def process_background_video_for_hd(bg_path: str, total_duration: float):
@@ -221,6 +292,9 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         else:
             bg_clip = bg_clip.loop(duration=total_duration).with_duration(total_duration)
         print(f"Looped to match duration: {60 if DEBUG_MODE else total_duration:.2f}s")
+        
+        # 背景動画のデバッグ情報を出力
+        debug_background_video(bg_clip, total_duration)
         
         return bg_clip
         
