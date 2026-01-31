@@ -1896,6 +1896,10 @@ def build_video_with_subtitles(
             duration = getattr(img_clip, 'duration', 'N/A')
             print(f"[QUALITY CHECK] Image {i}: start={start_time}s, duration={duration}s")
         
+        bitrate = "800k" if DEBUG_MODE else None
+        if DEBUG_MODE:
+            print(f"DEBUG_MODE: Using low bitrate for preview: {bitrate}")
+
         video.write_videofile(
             out_video_path,
             fps=30,  # 30fps固定
@@ -1903,6 +1907,7 @@ def build_video_with_subtitles(
             preset='ultrafast',  # 最速エンコード
             audio_codec='aac',
             audio_bitrate='256k',  # 音声256kbps
+            bitrate=bitrate,
             temp_audiofile='temp-audio.m4a',
             remove_temp=True,
             threads=4,  # 並列処理を抑制（ローカル環境向け）
@@ -2105,6 +2110,8 @@ def main() -> None:
                 thumbnail_path = None
 
             # 5. YouTube へアップロード
+            if DEBUG_MODE:
+                print(f"[INFO] Artifacts 用にファイルを保持します: {video_path}")
             print("Uploading to YouTube...")
             youtube_client = build_youtube_client()
             # 5. 動画品質チェック（アップロード前）
@@ -2164,27 +2171,30 @@ def main() -> None:
         finally:
             # 一時フォルダ全体を強制的にクリーンアップ
             import shutil
-            try:
-                if tmpdir and os.path.exists(tmpdir):
-                    files = []
-                    for root, _, filenames in os.walk(tmpdir):
-                        for name in filenames:
-                            files.append(os.path.join(root, name))
-                    if files:
-                        print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
-                    shutil.rmtree(tmpdir, ignore_errors=True)
-                    print(f"Cleaned up temporary directory: {tmpdir}")
-            except Exception as e:
-                print(f"Failed to cleanup temporary directory: {e}")
-            try:
-                if os.path.exists(LOCAL_TEMP_DIR):
-                    files = [os.path.join(LOCAL_TEMP_DIR, name) for name in os.listdir(LOCAL_TEMP_DIR)]
-                    if files:
-                        print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
-                    shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
-                    print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
-            except Exception as e:
-                print(f"Failed to cleanup image temp directory: {e}")
+            if DEBUG_MODE:
+                print("[DEBUG] DEBUG_MODE: Artifacts 転送のため一時ファイル削除をスキップします")
+            else:
+                try:
+                    if tmpdir and os.path.exists(tmpdir):
+                        files = []
+                        for root, _, filenames in os.walk(tmpdir):
+                            for name in filenames:
+                                files.append(os.path.join(root, name))
+                        if files:
+                            print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
+                        shutil.rmtree(tmpdir, ignore_errors=True)
+                        print(f"Cleaned up temporary directory: {tmpdir}")
+                except Exception as e:
+                    print(f"Failed to cleanup temporary directory: {e}")
+                try:
+                    if os.path.exists(LOCAL_TEMP_DIR):
+                        files = [os.path.join(LOCAL_TEMP_DIR, name) for name in os.listdir(LOCAL_TEMP_DIR)]
+                        if files:
+                            print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
+                        shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
+                        print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
+                except Exception as e:
+                    print(f"Failed to cleanup image temp directory: {e}")
 
 
 if __name__ == "__main__":
