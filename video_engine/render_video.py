@@ -1264,16 +1264,22 @@ def build_video_with_subtitles(
             if duration <= 4 or len(part_images) == 1:
                 image_schedule.append({"start": current_time, "duration": duration, "path": part_images[0]})
             else:
-                switch_interval = max(2.0, min(4.0, duration / max(1, len(part_images))))
-                slots = max(1, int(duration / switch_interval))
-                for idx in range(slots):
-                    start_time = current_time + idx * switch_interval
+                base_start_time = 3.0 if i == 0 else current_time
+                switch_interval = max(3.0, duration / max(len(part_images), 1))  # 最小3秒間隔
+                
+                for idx, image_path in enumerate(part_images):
+                    start_time = base_start_time + idx * switch_interval
                     remaining = duration - idx * switch_interval
                     clip_duration = min(switch_interval, remaining)
+                    
+                    # フェードイン・アウトのため0.5秒オーバーラップ
+                    if idx < len(part_images) - 1:  # 最後の画像以外
+                        clip_duration += 0.5  # 次の画像とのオーバーラップ分
+                    
                     image_schedule.append({
                         "start": start_time,
                         "duration": clip_duration,
-                        "path": part_images[idx % len(part_images)],
+                        "path": image_path,
                     })
 
             current_time += duration
@@ -1372,25 +1378,12 @@ def build_video_with_subtitles(
             clip = clip.resized(width=target_width)
             clip_w, clip_h = clip.w, clip.h
 
-            # 配置: 横は中央固定、縦は42%〜50%でランダム
-            target_x = int((VIDEO_WIDTH - clip_w) / 2)
-            base_y = random.uniform(0.42, 0.50) * VIDEO_HEIGHT
-            target_y = int(base_y - clip_h / 2)
+            # フェードイン・アウトを追加（一時的にコメントアウト）
+            # clip = clip.crossfadein(0.5).crossfadeout(0.5)
 
-            # 安全制約: 上端8%より上に行かない、下端80%より下に行かない
-            min_top = int(VIDEO_HEIGHT * 0.08)
-            max_bottom = int(VIDEO_HEIGHT * 0.80)
-            if target_y < min_top:
-                target_y = min_top
-            if target_y + clip_h > max_bottom:
-                target_y = max_bottom - clip_h
+            # 座標を中央に固定
+            clip = clip.with_position("center")
 
-            start_x = -clip_w
-
-            # クロージャで位置関数を生成
-            pos_func = make_pos_func(start_time, target_x, target_y, start_x)
-            clip = clip.with_position(pos_func)
-            
             # 画像クリップ生存確認（作成直後）
             if hasattr(clip, 'size') and clip.size == (0, 0):
                 print(f"[TRACE] ❌ 画像クリップ作成直後にサイズ(0,0)を検出: セグメント{i}")
