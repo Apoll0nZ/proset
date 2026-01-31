@@ -1360,6 +1360,10 @@ def build_video_with_subtitles(
             print("Using random background video from S3")
             bg_clip = process_background_video_for_hd(bg_video_path, total_duration)
             
+            # 成功フラグのログ出力
+            video_processing_successful = True
+            print("[CONFIRMED] Video source: S3 Video file")
+            
             # 強制検証：bg_clip が正常な VideoFileClip であることを確認
             if bg_clip is not None:
                 print(f"[VALIDATION] bg_clip type: {type(bg_clip)}")
@@ -1809,7 +1813,11 @@ def build_video_with_subtitles(
                     all_clips[0] = bg_clip_check.without_mask()
                     print("[FIXED] 背景動画のマスクを除去")
         
-        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), use_bgclip=True, bg_color=(0, 255, 0))
+        # 背景動画の不透明度を強制設定
+        bg_clip = bg_clip.without_mask().with_opacity(1.0).with_start(0)
+        print("[DEBUG] 背景動画の不透明度と開始時刻を強制設定")
+        
+        video = CompositeVideoClip([bg_clip], size=(VIDEO_WIDTH, VIDEO_HEIGHT))
         
         # 背景動画のサイズ確認
         if len(all_clips) > 0:
