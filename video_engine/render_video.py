@@ -22,6 +22,7 @@ import boto3
 import numpy as np
 from PIL import Image, UnidentifiedImageError, WebPImagePlugin
 from botocore.client import Config
+import gc  # メモリ解放用
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -265,11 +266,12 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
     try:
         print(f"Processing background video for HD: {bg_path}")
         
-        # 動画を読み込み（低解像度素材を想定）
-        bg_clip = VideoFileClip(bg_path, audio=False)
+        # 動画を読み込み（低解像度素材を想定、デコード時から解像度を固定）
+        bg_clip = VideoFileClip(bg_path, audio=False, target_resolution=(1080, 1920))
         bg_clip = bg_clip.with_start(0).with_opacity(1.0)  # 映像信号を強制的にアクティブに
         original_width, original_height = bg_clip.size
         print(f"Original video size: {original_width}x{original_height}")
+        print(f"Target resolution fixed at decode time: 1080x1920")
         
         # 音声をミュート
         bg_clip = bg_clip.without_audio()
@@ -283,13 +285,39 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             bg_clip = bg_clip.subclipped(0, total_duration)
             print(f"Background video trimmed to {total_duration:.2f}s")
         
-        # 1920x1080に引き伸ばして画面いっぱいに（成功時のシンプルな設定）
-        bg_clip = bg_clip.resize(newsize=(1920, 1080))
-        print("Resized to 1920x1080 (intelligent stretch)")
+        # アスペクト比計算の安全化：cropとpadで再サンプリングを回避
+        current_width, current_height = bg_clip.size
+        target_width, target_height = 1920, 1080
         
-        # ガウスぼかしを適用して引き伸ばしの粗さを隠す
-        bg_clip = bg_clip.fx(vfx.gaussian_blur, sigma=5)
-        print("Applied gaussian blur (sigma=5) to hide stretching artifacts")
+        print(f"Current size: {current_width}x{current_height}, Target: {target_width}x{target_height}")
+        
+        # アスペクト比を維持したままcropまたはpadで調整
+        current_aspect = current_width / current_height
+        target_aspect = target_width / target_height
+        
+        if current_aspect > target_aspect:
+            # 現在の動画が横長すぎる場合：高さを基準にcrop
+            new_height = target_height
+            new_width = int(new_height * current_aspect)
+            bg_clip = bg_clip.resize(newsize=(new_width, new_height))
+            crop_x = (new_width - target_width) // 2
+            bg_clip = bg_clip.cropped(x1=crop_x, y1=0, width=target_width, height=target_height)
+            print(f"Cropped from {new_width}x{new_height} to {target_width}x{target_height}")
+        else:
+            # 現在の動画が縦長すぎる場合：幅を基準にpad
+            new_width = target_width
+            new_height = int(new_width / current_aspect)
+            bg_clip = bg_clip.resize(newsize=(new_width, new_height))
+            pad_y = (target_height - new_height) // 2
+            bg_clip = bg_clip.on_color(size=(target_width, target_height), 
+                                     color=(0, 0, 0), pos=(0, pad_y))
+            print(f"Padded from {new_width}x{new_height} to {target_width}x{target_height}")
+        
+        print(f"Final size: {bg_clip.size}")
+        
+        # ガウスぼかしを適用して引き伸ばしの粗さを隠す（最小限の処理）
+        bg_clip = bg_clip.fx(vfx.gaussian_blur, sigma=2)
+        print("Applied minimal gaussian blur (sigma=2)")
         
         # 音声の長さに合わせてループ（成功時のシンプルな設定）
         if DEBUG_MODE:
@@ -1535,6 +1563,11 @@ def build_video_with_subtitles(
             current_time += duration
             print(f"[DEBUG] Segment {i} completed. Current time after update: {current_time:.2f}s")
 
+            # メモリ解放：各セグメント処理後にクリーンアップ
+            del part_images
+            gc.collect()
+            print(f"[MEMORY] Cleaned up segment {i} data")
+
             # 60枚に達した場合は残りのセグメント処理をスキップして動画合成へ
             if total_images_collected >= 60:
                 remaining_segments = len(script_parts) - i - 1
@@ -1877,6 +1910,7 @@ def build_video_with_subtitles(
             temp_audiofile='temp-audio.m4a',
             remove_temp=True,
             threads=4,  # 並列処理を抑制（ローカル環境向け）
+            ffmpeg_params=['-crf', '28', '-preset', 'ultrafast'],  # メモリ負荷低減
             logger=None  # コンソール書き込みを抑制
         )
         
