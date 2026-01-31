@@ -278,13 +278,19 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             bg_clip = bg_clip.subclipped(0, total_duration)
             print(f"Background video trimmed to {total_duration:.2f}s")
         
-        # 1920x1080に引き伸ばして画面いっぱいに
-        bg_clip = bg_clip.resized(newsize=(1920, 1080))
-        print("Resized to 1920x1080 (intelligent stretch)")
+        # 1920x1080に引き伸ばして画面いっぱいに（動画として維持）
+        bg_clip = bg_clip.resized(height=1080)  # 高さ基準でリサイズ
+        # 中央配置でクロップ（動画として維持）
+        bg_clip = vfx.crop(bg_clip, x_center=bg_clip.w/2, y_center=bg_clip.h/2, width=1920, height=1080)
+        print("Resized to 1920x1080 (video crop method)")
         
         # 画像処理を適用して引き伸ばしの粗さを隠す
         bg_clip = bg_clip.fx(vfx.colorx, 0.8)  # 少し暗くして引き伸ばしの粗さを目立たなくする
         print("Applied colorx effect (0.8) to hide stretching artifacts")
+        
+        # 動画タイプであることを確認
+        print(f"[DEBUG] Background clip type after processing: {type(bg_clip)}")
+        print(f"[DEBUG] Background clip is VideoFileClip: {isinstance(bg_clip, VideoFileClip)}")
         
         # 音声の長さに合わせてループ（DEBUG_MODEなら60秒で固定）
         if DEBUG_MODE:
@@ -377,7 +383,18 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                     for i, img in enumerate(image_elements[:max_results * 2]):
                         try:
                             src = img.get_attribute('src')
-                            if src and src.startswith('http') and 'base64' not in src:
+                            alt = img.get_attribute('alt') or ''
+                            
+                            # 製品関連フィルタリング
+                            is_product_related = True
+                            exclude_keywords = ['風景', 'landscape', 'nature', 'sky', 'cloud', 'mountain', 'sea', 'ocean', 'forest', 'tree']
+                            
+                            for exclude_word in exclude_keywords:
+                                if exclude_word.lower() in alt.lower():
+                                    is_product_related = False
+                                    break
+                            
+                            if src and src.startswith('http') and 'base64' not in src and is_product_related:
                                 is_google_thumbnail = 'encrypted-tbn0.gstatic.com' in src
                                 is_valid = 'encrypted' not in src or is_google_thumbnail
                                 
@@ -386,7 +403,7 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                                         'url': src,
                                         'title': f'Google image {i+1} for {keyword}',
                                         'thumbnail': src,
-                                        'alt': img.get_attribute('alt') or '',
+                                        'alt': alt,
                                         'is_google_thumbnail': is_google_thumbnail
                                     })
                                     
@@ -1287,7 +1304,18 @@ def build_video_with_subtitles(
                 if total_images_collected >= 60 and part_images:
                     print(f"[INFO] 画像収集が60枚に達したため、セグメント {i} の検索を終了します")
                     break
-                search_keyword = f"{keyword} IT テクノロジー"
+                
+                # 固有名詞（型番・製品名）を最優先で使用
+                if keyword and any(char.isdigit() for char in keyword):
+                    # 型番やモデル番号を含む場合はそのまま使用
+                    search_keyword = f"{keyword} 製品 実機"
+                elif keyword and len(keyword) > 10:
+                    # 長い固有名詞の場合はそのまま使用
+                    search_keyword = f"{keyword} 製品 実機"
+                else:
+                    # 短いキーワードの場合のみ補足
+                    search_keyword = f"{keyword} 製品 実機"
+                
                 print(f"[DEBUG] Segment {i} search keyword: {search_keyword}")
                 images = search_images_with_playwright(search_keyword, max_results=6)
                 for image in images:
