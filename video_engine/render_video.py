@@ -141,7 +141,7 @@ FPS = int(os.environ.get("FPS", "30"))
 DEBUG_MODE = True
 
 # デバッグモードでの処理制限
-DEBUG_MAX_PARTS = 3 if DEBUG_MODE else None  # 最初の3パーツのみ処理
+DEBUG_MAX_PARTS = 2 if DEBUG_MODE else None  # 最初の2パーツのみ処理
 
 
 s3_client = boto3.client("s3", region_name=AWS_REGION, config=Config(signature_version="s3v4"))
@@ -1452,7 +1452,7 @@ def build_video_with_subtitles(
                 print(f"[DEBUG] Original keyword: '{keyword}' (length: {len(keyword)})")
                 
                 try:
-                    images = search_images_with_playwright(search_keyword, max_results=6)
+                    images = search_images_with_playwright(search_keyword, max_results=2)
                     print(f"[DEBUG] Found {len(images)} images for keyword: '{keyword}'")
                     
                     for image in images:
@@ -1889,7 +1889,7 @@ def build_video_with_subtitles(
             audio_bitrate='256k',  # 音声256kbps
             temp_audiofile='temp-audio.m4a',
             remove_temp=True,
-            threads=8,  # 並列処理を明示
+            threads=4,  # 並列処理を抑制（ローカル環境向け）
             logger=None  # コンソール書き込みを抑制
         )
         
