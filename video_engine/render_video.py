@@ -325,12 +325,82 @@ def download_background_music() -> str:
 
 
 def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """画像検索（Google Playwrightまたは代替ソース）"""
+    """画像検索（Google Playwrightを優先、Picsumを最終フォールバック）"""
     
-    # まず代替ソースを試す
-    print(f"Searching images for: {keyword}")
+    # まずGoogle Playwrightを試す（優先）
+    try:
+        from playwright.sync_api import sync_playwright
+        
+        print("Trying Google Playwright search first...")
+        
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+                
+                # Google画像検索
+                search_url = f"https://www.google.com/search?q={keyword}&tbm=isch"
+                page.goto(search_url)
+                page.wait_for_load_state('networkidle', timeout=5000)
+                page.wait_for_timeout(2000)
+                
+                # 画像URLを収集
+                images = []
+                image_elements = page.query_selector_all('img[src]')
+                
+                for i, img in enumerate(image_elements[:max_results * 2]):
+                    try:
+                        src = img.get_attribute('src')
+                        alt = img.get_attribute('alt') or ''
+                        
+                        # 製品関連フィルタリング
+                        is_product_related = True
+                        exclude_keywords = ['風景', 'landscape', 'nature', 'sky', 'cloud', 'mountain', 'sea', 'ocean', 'forest', 'tree']
+                        
+                        for exclude_word in exclude_keywords:
+                            if exclude_word.lower() in alt.lower():
+                                is_product_related = False
+                                break
+                        
+                        if src and src.startswith('http') and 'base64' not in src and is_product_related:
+                            is_google_thumbnail = 'encrypted-tbn0.gstatic.com' in src
+                            is_valid = 'encrypted' not in src or is_google_thumbnail
+                            
+                            if is_valid:
+                                images.append({
+                                    'url': src,
+                                    'title': f'Google image {i+1} for {keyword}',
+                                    'thumbnail': src,
+                                    'alt': alt,
+                                    'is_google_thumbnail': is_google_thumbnail
+                                })
+                                
+                                if len(images) >= max_results:
+                                    break
+                    except:
+                        continue
+                
+                browser.close()
+                
+                if images:
+                    print(f"Successfully found {len(images)} Google images for '{keyword}'")
+                    return images
+                else:
+                    print("No valid Google images found, trying fallback...")
+                    
+            except Exception as e:
+                print(f"Google Playwright search failed: {e}")
+                try:
+                    browser.close()
+                except:
+                    pass
+        
+    except ImportError:
+        print("Playwright not available, using fallback only")
     
-    # 代替画像ソース（Picsum + キーワードベース）
+    # 最終フォールバック：Picsum Photos（Google検索失敗時のみ）
+    print(f"Using Picsum Photos as final fallback for: {keyword}")
     fallback_images = []
     try:
         # キーワードに基づいてシード値を生成
@@ -344,99 +414,18 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
             
             fallback_images.append({
                 'url': url,
-                'title': f'Generated image {i+1} for {keyword}',
+                'title': f'Fallback image {i+1} for {keyword}',
                 'thumbnail': url,
-                'alt': f'Generated image for {keyword}',
+                'alt': f'Fallback image for {keyword}',
                 'is_fallback': True
             })
         
-        print(f"Generated {len(fallback_images)} fallback images")
+        print(f"Generated {len(fallback_images)} fallback images (Picsum)")
         return fallback_images
         
     except Exception as e:
         print(f"Fallback image generation failed: {e}")
-    
-    # Google Playwrightを試す（フォールバック）
-    try:
-        from playwright.sync_api import sync_playwright
-        
-        print("Trying Playwright Google search...")
-        
-        with sync_playwright() as p:
-            try:
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context()
-                page = context.new_page()
-                
-                # タイムアウトを短く設定
-                search_url = f"https://www.google.com/search?q={keyword}&tbm=isch"
-                
-                try:
-                    page.goto(search_url, timeout=10000)
-                    page.wait_for_load_state('networkidle', timeout=5000)
-                    page.wait_for_timeout(2000)
-                    
-                    # 画像URLを収集
-                    images = []
-                    image_elements = page.query_selector_all('img[src]')
-                    
-                    for i, img in enumerate(image_elements[:max_results * 2]):
-                        try:
-                            src = img.get_attribute('src')
-                            alt = img.get_attribute('alt') or ''
-                            
-                            # 製品関連フィルタリング
-                            is_product_related = True
-                            exclude_keywords = ['風景', 'landscape', 'nature', 'sky', 'cloud', 'mountain', 'sea', 'ocean', 'forest', 'tree']
-                            
-                            for exclude_word in exclude_keywords:
-                                if exclude_word.lower() in alt.lower():
-                                    is_product_related = False
-                                    break
-                            
-                            if src and src.startswith('http') and 'base64' not in src and is_product_related:
-                                is_google_thumbnail = 'encrypted-tbn0.gstatic.com' in src
-                                is_valid = 'encrypted' not in src or is_google_thumbnail
-                                
-                                if is_valid:
-                                    images.append({
-                                        'url': src,
-                                        'title': f'Google image {i+1} for {keyword}',
-                                        'thumbnail': src,
-                                        'alt': alt,
-                                        'is_google_thumbnail': is_google_thumbnail
-                                    })
-                                    
-                                    if len(images) >= max_results:
-                                        break
-                        except:
-                            continue
-                    
-                    browser.close()
-                    
-                    if images:
-                        print(f"Found {len(images)} Google images")
-                        return images
-                    
-                except Exception as e:
-                    print(f"Google search failed: {e}")
-                    browser.close()
-                    
-            except Exception as e:
-                print(f"Browser setup failed: {e}")
-                try:
-                    browser.close()
-                except:
-                    pass
-            
-    except ImportError:
-        print("Playwright not available")
-    except Exception as e:
-        print(f"Playwright error: {e}")
-    
-    # すべて失敗した場合は空リストを返す
-    print("All image search methods failed, using gradient background")
-    return []
+        return []
 
 
 def get_youtube_credentials_from_env():
