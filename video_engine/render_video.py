@@ -1360,6 +1360,46 @@ def build_video_with_subtitles(
             print("Using random background video from S3")
             bg_clip = process_background_video_for_hd(bg_video_path, total_duration)
             
+            # 強制検証：bg_clip が正常な VideoFileClip であることを確認
+            if bg_clip is not None:
+                print(f"[VALIDATION] bg_clip type: {type(bg_clip)}")
+                print(f"[VALIDATION] bg_clip is VideoFileClip: {isinstance(bg_clip, VideoFileClip)}")
+                
+                try:
+                    # フレームテスト
+                    test_frame = bg_clip.get_frame(0)
+                    print(f"[VALIDATION] Frame shape: {test_frame.shape}")
+                    print(f"[VALIDATION] Frame dtype: {test_frame.dtype}")
+                    print(f"[VALIDATION] Frame brightness: {test_frame.mean():.1f}")
+                    
+                    # 単色チェック（グレーダミー検出）
+                    unique_colors = len(np.unique(test_frame.reshape(-1, 3), axis=0))
+                    print(f"[VALIDATION] Unique colors in frame: {unique_colors}")
+                    
+                    if unique_colors < 10:
+                        print("[WARNING] 背景動画が単色またはグレーダミーに差し替わっています！")
+                        print("[ACTION] MoviePy v2.0 仕様に変更します")
+                        
+                        # MoviePy v2.0 仕様で再処理
+                        from moviepy.video.fx import resize
+                        bg_clip_raw = VideoFileClip(bg_video_path).without_audio()
+                        if DEBUG_MODE:
+                            bg_clip_raw = bg_clip_raw.subclipped(0, 60)
+                        else:
+                            bg_clip_raw = bg_clip_raw.subclipped(0, total_duration)
+                        
+                        # target_resolution を使用（MoviePy v2.0 仕様）
+                        bg_clip_raw.target_resolution = (1080, 1920)
+                        bg_clip = bg_clip_raw
+                        print("[RECOVERY] target_resolution 方式で再処理しました")
+                    else:
+                        print("[PASS] 背景動画は正常な画像配列を保持しています")
+                        
+                except Exception as e:
+                    print(f"[ERROR] フレーム検証に失敗: {e}")
+                    print("[ACTION] bg_clip を None に設定してフォールバックへ")
+                    bg_clip = None
+            
             if bg_clip is None:
                 print("Failed to process background video, falling back to gradient")
         
@@ -1750,7 +1790,22 @@ def build_video_with_subtitles(
         print(f"[TRACE] 目標高さ: {target_height}")
         print(f"[TRACE] 目標サイズ: ({target_width}, {target_height})")
         
-        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), use_bgclip=True)
+        # 背景動画のマスク状態を確認・修正
+        if len(all_clips) > 0:
+            bg_clip_check = all_clips[0]
+            print(f"[DEBUG] Background clip type: {type(bg_clip_check)}")
+            print(f"[DEBUG] Background clip is_mask: {getattr(bg_clip_check, 'is_mask', 'N/A')}")
+            
+            # 背景動画がマスクとして扱われないように明示的に設定
+            if hasattr(bg_clip_check, 'with_is_mask'):
+                all_clips[0] = bg_clip_check.with_is_mask(False)
+                print("[FIXED] 背景動画の is_mask を False に設定")
+            elif hasattr(bg_clip_check, 'mask'):
+                if bg_clip_check.mask is not None:
+                    all_clips[0] = bg_clip_check.without_mask()
+                    print("[FIXED] 背景動画のマスクを除去")
+        
+        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), use_bgclip=True, bg_color=(0, 255, 0))
         
         # 背景動画のサイズ確認
         if len(all_clips) > 0:
