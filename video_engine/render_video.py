@@ -292,8 +292,8 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         print(f"[DEBUG] Background clip is VideoFileClip before resize: {isinstance(bg_clip, VideoFileClip)}")
         
         # リサイズ効果をfx形式で適用（VideoFileClipを維持）
-        bg_clip = bg_clip.fx(resize, height=1080)
-        print("Resized to height=1080 (video resize method)")
+        bg_clip = bg_clip.without_mask().fx(resize, height=1080)  # マスクを除去してフリーズ防止
+        print("Resized to height=1080 (video resize method with mask removal)")
         
         print(f"[DEBUG] Background clip type after resize: {type(bg_clip)}")
         print(f"[DEBUG] Background clip is VideoFileClip after resize: {isinstance(bg_clip, VideoFileClip)}")
@@ -1356,21 +1356,25 @@ def build_video_with_subtitles(
         # Layer 1: 背景動画の準備（インテリジェント・リサイズ）
         bg_video_path = download_random_background_video()
         bg_clip = None
+        video_processing_successful = False
         
         if bg_video_path and os.path.exists(bg_video_path):
             print("Using random background video from S3")
             bg_clip = process_background_video_for_hd(bg_video_path, total_duration)
             
             # 厳密な成功確認：VideoFileClipであることを保証
-            if bg_clip is not None:
+            if bg_clip is not None and isinstance(bg_clip, VideoFileClip):
+                video_processing_successful = True
                 print(f"[SUCCESS] Background video processed successfully")
                 print(f"[DEBUG] Background clip type: {type(bg_clip)}")
                 print(f"[DEBUG] Background clip is VideoFileClip: {isinstance(bg_clip, VideoFileClip)}")
+                print(f"[DEBUG] Background clip duration: {getattr(bg_clip, 'duration', 'N/A')}s")
             else:
-                print("[ERROR] process_background_video_for_hd returned None")
+                print("[ERROR] process_background_video_for_hd returned None or invalid type")
+                bg_clip = None  # 明示的にNoneに戻す
         
-        # S3からの動画取得が失敗した場合のみグラデーションを使用
-        if bg_clip is None:
+        # S3からの動画取得が失敗した場合のみグラデーションを使用（厳格なガード）
+        if not video_processing_successful and bg_clip is None:
             print("Creating gradient background fallback (no video available)")
             # グラデーション背景を生成（1920x1080対応）
             gradient_array = create_gradient_background(VIDEO_WIDTH, VIDEO_HEIGHT)
@@ -1378,6 +1382,8 @@ def build_video_with_subtitles(
             print(f"[WARNING] Using gradient background: {VIDEO_WIDTH}x{VIDEO_HEIGHT}")
             print(f"[DEBUG] Background clip type: {type(bg_clip)}")
             print(f"[DEBUG] Background clip is VideoFileClip: {isinstance(bg_clip, VideoFileClip)}")
+        elif video_processing_successful:
+            print("[CONFIRMED] Using S3 background video - gradient fallback skipped")
 
         # 合成直前の最終確認
         print(f"[FINAL CHECK] Background clip before composition:")
@@ -1638,7 +1644,7 @@ def build_video_with_subtitles(
             # clip = clip.crossfadein(0.5).crossfadeout(0.5)
 
             # 座標を中央に固定
-            clip = clip.with_position("center")
+            clip = clip.with_position("center").with_zindex(1)  # 画像はZ-Index 1
 
             # 画像クリップ生存確認（作成直後）
             if hasattr(clip, 'size') and clip.size == (0, 0):
@@ -1657,9 +1663,11 @@ def build_video_with_subtitles(
                 font_size=28,  # 少し大きく
                 color="white",
                 font=font_path,
-                bg_color="red",
+                bg_color=None,  # 透明背景
+                stroke_color="black",  # 文字の輪郭で視認性確保
+                stroke_width=2,
                 size=(250, 60)  # 少し大きく
-            ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
+            ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0).with_zindex(2)
         except Exception as e:
             print(f"[ERROR] Failed to create segment text: {e}")
             print(f"[DEBUG] Font path: {font_path}")
@@ -1688,16 +1696,16 @@ def build_video_with_subtitles(
                         txt_clip = TextClip(
                             text=chunk,
                             font_size=48,  # 大きくして読みやすく
-                            color="black",
+                            color="white",  # 白文字に変更
                             font=font_path,
                             method="caption",
                             size=(1700, None),
-                            stroke_color="yellowgreen",
-                            stroke_width=1,
-                            bg_color="white"
+                            stroke_color="black",  # 黒い輪郭で視認性確保
+                            stroke_width=3,
+                            bg_color=None  # 透明背景
                         )
                         clip_start = current_time + chunk_idx * chunk_duration
-                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 300)).with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
+                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 300)).with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0).with_zindex(2)
                         text_clips.append(txt_clip)
                 except Exception as e:
                     print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
@@ -1768,6 +1776,12 @@ def build_video_with_subtitles(
         print(f"[TRACE] 目標幅: {target_width}")
         print(f"[TRACE] 目標高さ: {target_height}")
         print(f"[TRACE] 目標サイズ: ({target_width}, {target_height})")
+        
+        # 合成直前の最終デバッグ
+        print(f"[DEBUG] Final bg_clip type: {type(bg_clip)}, duration: {getattr(bg_clip, 'duration', 'N/A')}s")
+        
+        # 背景動画にZ-Index 0を設定（一番下）
+        bg_clip = bg_clip.with_zindex(0)
         
         video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), use_bgclip=True)
         
