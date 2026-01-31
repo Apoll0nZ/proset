@@ -141,7 +141,7 @@ FPS = int(os.environ.get("FPS", "30"))
 DEBUG_MODE = True
 
 # デバッグモードでの処理制限
-DEBUG_MAX_PARTS = 5 if DEBUG_MODE else None  # 最初の5パーツのみ処理
+DEBUG_MAX_PARTS = 3 if DEBUG_MODE else None  # 最初の3パーツのみ処理
 
 
 s3_client = boto3.client("s3", region_name=AWS_REGION, config=Config(signature_version="s3v4"))
@@ -275,10 +275,10 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         bg_clip = bg_clip.without_audio()
         print("Background video audio muted")
         
-        # DEBUG_MODEなら60秒にカット（処理対象を大幅削減）
+        # DEBUG_MODEなら30秒にカット（さらに短縮）
         if DEBUG_MODE:
-            bg_clip = bg_clip.subclipped(0, 60)
-            print("DEBUG_MODE: Background video trimmed to 60s")
+            bg_clip = bg_clip.subclipped(0, 30)
+            print("DEBUG_MODE: Background video trimmed to 30s")
         else:
             bg_clip = bg_clip.subclipped(0, total_duration)
             print(f"Background video trimmed to {total_duration:.2f}s")
@@ -305,11 +305,11 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         
         # ループ処理を簡略化（with_durationのみ）
         if DEBUG_MODE:
-            bg_clip = bg_clip.with_duration(60)
+            bg_clip = bg_clip.with_duration(30)
         else:
             bg_clip = bg_clip.with_duration(total_duration)
         
-        print(f"Background video duration set to: {60 if DEBUG_MODE else total_duration:.2f}s")
+        print(f"Background video duration set to: {30 if DEBUG_MODE else total_duration:.2f}s")
         
         # 型チェックを緩和：hasattrで映像機能を判定
         if hasattr(bg_clip, 'get_frame'):
@@ -318,7 +318,7 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             raise RuntimeError(f"背景動画が映像として機能しません: {type(bg_clip)}")
         
         print(f"[DEBUG] Background clip size: {bg_clip.size} (should be 1920x1080)")
-        print(f"Looped to match duration: {60 if DEBUG_MODE else total_duration:.2f}s")
+        print(f"Looped to match duration: {30 if DEBUG_MODE else total_duration:.2f}s")
         
         # 背景動画のデバッグ情報を出力
         debug_background_video(bg_clip, total_duration)
@@ -1844,20 +1844,20 @@ def build_video_with_subtitles(
         
         # 音声トラックを結合（メイン音声 + BGM）
         if bgm_clip:
-            # DEBUG_MODEなら音声も60秒にカット
+            # DEBUG_MODEなら音声も30秒にカット
             if DEBUG_MODE:
-                audio_clip = audio_clip.subclipped(0, 60)
-                bgm_clip = bgm_clip.subclipped(0, 60)
-                print("DEBUG_MODE: Audio clips trimmed to 60s")
+                audio_clip = audio_clip.subclipped(0, 30)
+                bgm_clip = bgm_clip.subclipped(0, 30)
+                print("DEBUG_MODE: Audio clips trimmed to 30s")
             
             # CompositeAudioClipでメイン音声とBGMをミックス
             final_audio = CompositeAudioClip([audio_clip, bgm_clip])
             print("Mixed main audio with BGM")
         else:
-            # DEBUG_MODEならメイン音声も60秒にカット
+            # DEBUG_MODEならメイン音声も30秒にカット
             if DEBUG_MODE:
-                audio_clip = audio_clip.subclipped(0, 60)
-                print("DEBUG_MODE: Main audio trimmed to 60s")
+                audio_clip = audio_clip.subclipped(0, 30)
+                print("DEBUG_MODE: Main audio trimmed to 30s")
             
             # BGMがない場合はメイン音声のみ
             final_audio = audio_clip
@@ -1867,8 +1867,8 @@ def build_video_with_subtitles(
         video = video.with_audio(final_audio)
         
         if DEBUG_MODE:
-            debug_duration = min(60, video.duration)
-            print(f"DEBUG_MODE enabled: trimming video to {debug_duration}s")
+            debug_duration = min(30, video.duration)
+            print(f"DEBUG_MODE: Writing {debug_duration:.1f}s of video")
             video = video.subclipped(0, debug_duration)
 
         print(f"Writing video to: {out_video_path}")
