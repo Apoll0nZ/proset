@@ -1451,47 +1451,41 @@ def build_video_with_subtitles(
             # 画像が1枚でも取得できた場合は続行
             print(f"[DEBUG] Found {len(part_images)} images for segment {i}")
 
-            if duration <= 4 or len(part_images) == 1:
-                # 単一画像または短いセグメントの場合
-                clip_duration = max(10.0, duration)  # 最低10秒を保証
-                image_schedule.append({"start": current_time, "duration": clip_duration, "path": part_images[0]})
-                print(f"[DEBUG] Single image scheduled: duration={clip_duration}s, start={current_time}s")
-            else:
-                # 1枚あたり10秒固定で配置（全枚数使い切る計算を廃止）
-                fixed_duration_per_image = 10.0  # 1枚あたり10秒固定
-                base_start_time = 3.0 if i == 0 else current_time
-                num_images = len(part_images)
+            # 1枚あたり10秒固定で配置（簡素化ロジック）
+            fixed_duration = 10.0  # 1枚あたり10秒固定
+            seg_start = 3.0 if i == 0 else current_time  # セグメント開始時間
+            seg_end = seg_start + duration  # セグメント終了時間
+            num_images = len(part_images)
+            
+            print(f"[DEBUG] Segment {i}: start={seg_start}s, end={seg_end}s, duration={duration}s")
+            print(f"[DEBUG] Available images: {num_images}")
+            
+            # 各画像を10秒固定で配置、セグメント終了時間を超える場合は配置しない
+            images_scheduled = 0
+            for img_idx in range(num_images):
+                img_start = seg_start + img_idx * fixed_duration
+                img_end = img_start + fixed_duration
                 
-                # セグメント時間内に収まる画像数を計算（時間が足りなければ残りは捨てる）
-                max_images_in_segment = int(duration / fixed_duration_per_image)
-                images_to_use = min(num_images, max_images_in_segment)
+                # 画像がセグメント終了時間を超える場合は配置しない
+                if img_start >= seg_end:
+                    print(f"[DEBUG] Image {img_idx} skipped: start={img_start}s >= seg_end={seg_end}s")
+                    break
                 
-                print(f"[DEBUG] Segment duration: {duration}s, Fixed per image: {fixed_duration_per_image}s")
-                print(f"[DEBUG] Available images: {num_images}, Will use: {images_to_use}")
+                # 最後の画像がセグメントを超える場合も配置しない
+                if img_end > seg_end:
+                    print(f"[DEBUG] Image {img_idx} skipped: end={img_end}s > seg_end={seg_end}s")
+                    break
                 
-                # 1枚につき10秒固定で配置
-                for idx in range(images_to_use):
-                    image_path = part_images[idx]
-                    start_time = base_start_time + idx * fixed_duration_per_image
-                    
-                    # 最後の画像のみ、セグメント終わりまで表示
-                    if idx == images_to_use - 1:
-                        remaining_time = duration - idx * fixed_duration_per_image
-                        clip_duration = max(fixed_duration_per_image, remaining_time)
-                    else:
-                        clip_duration = fixed_duration_per_image
-                    
-                    print(f"[DEBUG] Scheduling image {idx}: start={start_time:.2f}s, duration={clip_duration:.2f}s")
-                    
-                    image_schedule.append({
-                        "start": start_time,
-                        "duration": clip_duration,
-                        "path": image_path,
-                    })
-                
-                # 使用しなかった画像についてログ
-                if images_to_use < num_images:
-                    print(f"[DEBUG] {num_images - images_to_use} images discarded due to segment time constraint")
+                image_path = part_images[img_idx]
+                image_schedule.append({
+                    "start": img_start,
+                    "duration": fixed_duration,
+                    "path": image_path,
+                })
+                images_scheduled += 1
+                print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={fixed_duration}s")
+            
+            print(f"[DEBUG] Scheduled {images_scheduled} images for segment {i}")
 
             # current_timeを厳密に管理（セグメント間の重複を防止）
             print(f"[DEBUG] Segment {i} completed. Current time before update: {current_time:.2f}s")
@@ -1758,7 +1752,18 @@ def build_video_with_subtitles(
         print(f"[TRACE] 目標高さ: {target_height}")
         print(f"[TRACE] 目標サイズ: ({target_width}, {target_height})")
         
-        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), use_bgclip=True)
+        
+        # 背景動画のサイズ確認
+        if len(all_clips) > 0:
+            bg_clip_check = all_clips[0]
+            bg_size = getattr(bg_clip_check, 'size', None)
+            print(f"[DEBUG] Background clip size: {bg_size}")
+            print(f"[DEBUG] Target size: ({VIDEO_WIDTH}, {VIDEO_HEIGHT})")
+            if bg_size != (VIDEO_WIDTH, VIDEO_HEIGHT):
+                print(f"[WARNING] Background clip size mismatch! Expected: ({VIDEO_WIDTH}, {VIDEO_HEIGHT}), Got: {bg_size}")
+            else:
+                print(f"[SUCCESS] Background clip size matches target")
         
         # 音声トラックを結合（メイン音声 + BGM）
         if bgm_clip:
@@ -1790,6 +1795,14 @@ def build_video_with_subtitles(
             video = video.subclipped(0, debug_duration)
 
         print(f"Writing video to: {out_video_path}")
+        
+        # 品質チェック用ログ：画像クリップの数と開始時間
+        print(f"[QUALITY CHECK] Total image clips: {len(image_clips)}")
+        for i, img_clip in enumerate(image_clips):
+            start_time = getattr(img_clip, 'start', 'N/A')
+            duration = getattr(img_clip, 'duration', 'N/A')
+            print(f"[QUALITY CHECK] Image {i}: start={start_time}s, duration={duration}s")
+        
         video.write_videofile(
             out_video_path,
             fps=30,  # 30fps固定
