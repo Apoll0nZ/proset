@@ -267,11 +267,11 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         print(f"Processing background video for HD: {bg_path}")
         
         # 動画を読み込み（低解像度素材を想定、デコード時から解像度を固定）
-        bg_clip = VideoFileClip(bg_path, audio=False, target_resolution=(1080, 1920))
+        bg_clip = VideoFileClip(bg_path, audio=False, target_resolution=(1920, 1080))
         bg_clip = bg_clip.with_start(0).with_opacity(1.0)  # 映像信号を強制的にアクティブに
         original_width, original_height = bg_clip.size
         print(f"Original video size: {original_width}x{original_height}")
-        print(f"Target resolution fixed at decode time: 1080x1920")
+        print(f"Target resolution fixed at decode time: 1920x1080")
         
         # 音声をミュート
         bg_clip = bg_clip.without_audio()
@@ -317,9 +317,11 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         
         # 音声の長さに合わせてループ（成功時のシンプルな設定）
         if DEBUG_MODE:
-            bg_clip = bg_clip.loop(duration=30).set_duration(30)
+            bg_clip = bg_clip.with_duration(30)
+            bg_clip = vfx.Loop(bg_clip, duration=30)
         else:
-            bg_clip = bg_clip.loop(duration=total_duration).set_duration(total_duration)
+            bg_clip = bg_clip.with_duration(total_duration)
+            bg_clip = vfx.Loop(bg_clip, duration=total_duration)
         
         print(f"Background video looped to duration: {30 if DEBUG_MODE else total_duration:.2f}s")
         
@@ -1413,7 +1415,7 @@ def build_video_with_subtitles(
                             bg_clip_raw = bg_clip_raw.subclipped(0, total_duration)
                         
                         # target_resolution を使用（MoviePy v2.0 仕様）
-                        bg_clip_raw.target_resolution = (1080, 1920)
+                        bg_clip_raw = VideoFileClip(bg_path, audio=False, target_resolution=(1920, 1080))
                         bg_clip = bg_clip_raw
                         print("[RECOVERY] target_resolution 方式で再処理しました")
                     else:
@@ -1845,7 +1847,9 @@ def build_video_with_subtitles(
         bg_clip = bg_clip.without_mask().with_opacity(1.0).with_start(0)
         print("[DEBUG] 背景動画の不透明度と開始時刻を強制設定")
         
-        video = CompositeVideoClip([bg_clip], size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        # 主要な合成（背景がインデックス0であることを確認）
+        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(255, 0, 0))
+        print(f"[DEBUG] CompositeVideoClip created with {len(all_clips)} layers, bg_color=(255, 0, 0) for debugging")
         
         # 背景動画のサイズ確認
         if len(all_clips) > 0:
