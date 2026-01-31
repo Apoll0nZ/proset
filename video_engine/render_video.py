@@ -315,10 +315,6 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         
         print(f"Final size: {bg_clip.size}")
         
-        # ガウスぼかしを適用して引き伸ばしの粗さを隠す（最小限の処理）
-        bg_clip = bg_clip.fx(vfx.gaussian_blur, sigma=2)
-        print("Applied minimal gaussian blur (sigma=2)")
-        
         # 音声の長さに合わせてループ（成功時のシンプルな設定）
         if DEBUG_MODE:
             bg_clip = bg_clip.loop(duration=30).set_duration(30)
