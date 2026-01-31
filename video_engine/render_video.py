@@ -642,7 +642,7 @@ def build_youtube_client_from_env():
 
 
 def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
-    """台本から画像検索キーワードを抽出"""
+    """台本から画像検索キーワードを抽出（固有名詞中心）"""
     try:
         title = script_data.get("title", "")
         content = script_data.get("content", {})
@@ -654,27 +654,65 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
         for part in script_parts:
             all_text += f" {part.get('text', '')}"
         
-        # 重要キーワードを抽出（簡易的な実装）
-        # 技術関連のキーワードを優先
-        tech_keywords = ["AI", "人工知能", "機械学習", "データサイエンス", "プログラミング", 
-                        "ソフトウェア", "テクノロジー", "コンピュータ", "デジタル", "イノベーション"]
+        # 固有名詞・重要キーワードリスト（優先順位順）
+        # 企業名・ブランド名
+        company_keywords = [
+            "ドコモ", "NTT", "KDDI", "ソフトバンク", "楽天", "Google", "Apple", "Microsoft", 
+            "Amazon", "Meta", "Tesla", "Sony", "Panasonic", "Sharp", "富士通", "NEC", "日立",
+            "東芝", "三菱", "住友", "三井", "VAIO", "富士通", "IBM", "Oracle", "Cisco", "Intel",
+            "AMD", "NVIDIA", "Qualcomm", "Samsung", "LG", "Huawei", "Xiaomi"
+        ]
         
-        # テキストからキーワードを検索
+        # 製品名・サービス名
+        product_keywords = [
+            "iPhone", "Android", "Windows", "Mac", "iPad", "Galaxy", "Pixel", "Surface",
+            "PlayStation", "Xbox", "Switch", "ChatGPT", "Gemini", "Copilot", "Siri", "Alexa",
+            "YouTube", "TikTok", "Instagram", "Twitter", "Facebook", "LINE", "Zoom", "Teams",
+            "Slack", "Dropbox", "GitHub", "AWS", "Azure", "GCP", "Firebase"
+        ]
+        
+        # 技術・IT用語
+        tech_keywords = [
+            "AI", "人工知能", "機械学習", "ディープラーニング", "データサイエンス", "プログラミング",
+            "ソフトウェア", "テクノロジー", "コンピュータ", "デジタル", "イノベーション", "5G", "6G",
+            "IoT", "ブロックチェーン", "クラウド", "サイバーセキュリティ", "VR", "AR", "メタバース",
+            "SaaS", "PaaS", "IaaS", "API", "SDK", "フレームワーク", "アルゴリズム", "データベース"
+        ]
+        
+        # 優先順位でキーワードを検索
+        all_keywords = company_keywords + product_keywords + tech_keywords
         found_keywords = []
-        for keyword in tech_keywords:
+        
+        for keyword in all_keywords:
             if keyword in all_text:
                 found_keywords.append(keyword)
+                print(f"[DEBUG] Found keyword: {keyword}")
         
-        # キーワードが見つからない場合はタイトルから重要単語を抽出
+        # キーワードが見つからない場合はカタカナ語や英単語を抽出
         if not found_keywords:
-            # 簡易的に名詞っぽい単語を抽出（文字数が3文字以上）
-            words = title.split()
-            found_keywords = [word for word in words if len(word) >= 3]
+            import re
+            
+            # カタカナ語（3文字以上）を抽出
+            katakana_pattern = r'[ァ-ヶー]{3,}'
+            katakana_words = re.findall(katakana_pattern, all_text)
+            found_keywords.extend(katakana_words)
+            
+            # 英単語（3文字以上）を抽出
+            english_pattern = r'[A-Za-z]{3,}'
+            english_words = re.findall(english_pattern, all_text)
+            found_keywords.extend(english_words)
+            
+            # 一般的な日本語名詞（3文字以上）を抽出
+            japanese_words = [word for word in all_text.split() if len(word) >= 3 and word.isalpha()]
+            found_keywords.extend(japanese_words)
         
-        # 最初のキーワードを使用
+        # 重複を除去して最初のキーワードを使用
         if found_keywords:
-            selected_keyword = found_keywords[0]
+            # 重複除去
+            unique_keywords = list(dict.fromkeys(found_keywords))
+            selected_keyword = unique_keywords[0]
             print(f"Extracted keyword: {selected_keyword}")
+            print(f"[DEBUG] All found keywords: {unique_keywords[:5]}")  # 最初の5つを表示
             return selected_keyword
         else:
             # フォールバックキーワード
@@ -1489,8 +1527,11 @@ def build_video_with_subtitles(
                     continue
 
             if not part_images:
-                print(f"[ERROR] No images found for segment {i}, keyword: {search_keyword}")
-                raise RuntimeError(f"セグメント {i+1} で画像が取得できませんでした。キーワード: {search_keyword}")
+                print(f"[WARNING] No images found for segment {i}, keyword: {search_keyword}")
+                print(f"[INFO] セグメント {i} は背景のみで続行します")
+                image_schedule.append({"start": current_time, "duration": duration, "path": None})
+                current_time += duration
+                continue
 
             # 画像が1枚でも取得できた場合は続行
             print(f"[DEBUG] Found {len(part_images)} images for segment {i}")
