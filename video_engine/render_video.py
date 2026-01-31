@@ -150,10 +150,10 @@ dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 
 
 def download_random_background_video() -> str:
-    """S3からassets/フォルダの.mp4ファイルをランダムに1つ選択してダウンロード"""
+    """S3のassetsフォルダからs*.mp4形式の背景動画をランダムに1つ選択してダウンロード"""
     try:
-        # assets/フォルダから.mp4ファイルをリストアップ
-        print(f"Listing .mp4 files in s3://{S3_BUCKET}/assets/")
+        # assets/フォルダからs*.mp4ファイルをリストアップ
+        print(f"Listing s*.mp4 files in s3://{S3_BUCKET}/assets/")
         resp = s3_client.list_objects_v2(
             Bucket=S3_BUCKET,
             Prefix="assets/",
@@ -164,20 +164,24 @@ def download_random_background_video() -> str:
         contents = resp.get("Contents", [])
         for obj in contents:
             key = obj["Key"]
-            if key.lower().endswith(".mp4"):
+            # s*.mp4パターンに一致するファイルのみを対象
+            filename = os.path.basename(key)
+            if filename.startswith("s") and filename.lower().endswith(".mp4"):
                 mp4_files.append(key)
         
         if not mp4_files:
-            print("[WARNING] No .mp4 files found in assets/ folder")
+            print("[WARNING] No s*.mp4 files found in assets/ folder")
             print("[DEBUG] Available files in assets/:")
             for obj in contents:
-                print(f"  - {obj['Key']}")
+                filename = os.path.basename(obj["Key"])
+                if filename.lower().endswith(".mp4"):
+                    print(f"  - {obj['Key']} (filename: {filename})")
             return None
         
         # ランダムに1つ選択
         selected_key = random.choice(mp4_files)
         print(f"[DEBUG] Selected background video: {selected_key}")
-        print(f"[DEBUG] Available MP4 files: {mp4_files}")
+        print(f"[DEBUG] Available s*.mp4 files: {mp4_files}")
         
         # ダウンロード
         temp_dir = tempfile.mkdtemp()
@@ -262,9 +266,9 @@ def debug_background_video(bg_clip, total_duration):
 
 
 def process_background_video_for_hd(bg_path: str, total_duration: float):
-    """背景動画を1920x1080フルHDにインテリジェント・リサイズ（簡素化版）"""
+    """背景動画をシンプルに読み込んで中央配置（リサイズなし）"""
     try:
-        print(f"Processing background video for HD: {bg_path}")
+        print(f"Processing background video: {bg_path}")
         
         # ファイル存在確認
         if not os.path.exists(bg_path):
@@ -274,9 +278,9 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         if not bg_path.lower().endswith(('.mp4', '.mov', '.avi', '.mkv', '.webm')):
             raise RuntimeError(f"背景動画が動画ファイルではありません: {bg_path}")
         
-        # 動画を読み込み（低解像度素材を想定、デコード時から解像度を固定）
+        # 動画を元の解像度で読み込み（リサイズなし）
         print(f"[DEBUG] VideoFileClipを生成します: {bg_path}")
-        bg_clip = VideoFileClip(bg_path, audio=False, target_resolution=(1920, 1080))
+        bg_clip = VideoFileClip(bg_path, audio=False)
         
         # VideoFileClipであることを確認
         from moviepy.video.io.VideoFileClip import VideoFileClip as VFCCheck
@@ -284,18 +288,13 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             raise RuntimeError(f"背景動画がVideoFileClipではありません: {type(bg_clip)}")
         
         print(f"[SUCCESS] VideoFileClip生成成功: {type(bg_clip)}")
-        print(f"[DEBUG] Duration: {bg_clip.duration}s, Size: {bg_clip.size}")
-        
-        bg_clip = bg_clip.with_start(0).with_opacity(1.0)  # 映像信号を強制的にアクティブに
-        original_width, original_height = bg_clip.size
-        print(f"Original video size: {original_width}x{original_height}")
-        print(f"Target resolution fixed at decode time: 1920x1080")
+        print(f"[DEBUG] Duration: {bg_clip.duration}s, Original Size: {bg_clip.size}")
         
         # 音声をミュート
         bg_clip = bg_clip.without_audio()
         print("Background video audio muted")
         
-        # DEBUG_MODEなら30秒にカット（さらに短縮）
+        # DEBUG_MODEなら30秒にカット
         if DEBUG_MODE:
             bg_clip = bg_clip.subclipped(0, 30)
             print("DEBUG_MODE: Background video trimmed to 30s")
@@ -303,45 +302,9 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             bg_clip = bg_clip.subclipped(0, total_duration)
             print(f"Background video trimmed to {total_duration:.2f}s")
         
-        # アスペクト比計算の安全化：cropとpadで再サンプリングを回避
-        current_width, current_height = bg_clip.size
-        target_width, target_height = 1920, 1080
-        
-        print(f"Current size: {current_width}x{current_height}, Target: {target_width}x{target_height}")
-        
-        # アスペクト比を維持したままcropまたはpadで調整
-        current_aspect = current_width / current_height
-        target_aspect = target_width / target_height
-        
-        if current_aspect > target_aspect:
-            # 現在の動画が横長すぎる場合：高さを基準にcrop
-            new_height = target_height
-            new_width = int(new_height * current_aspect)
-            bg_clip = bg_clip.resize(newsize=(new_width, new_height))
-            crop_x = (new_width - target_width) // 2
-            bg_clip = bg_clip.cropped(x1=crop_x, y1=0, width=target_width, height=target_height)
-            print(f"Cropped from {new_width}x{new_height} to {target_width}x{target_height}")
-        else:
-            # 現在の動画が縦長すぎる場合：幅を基準にpad
-            new_width = target_width
-            new_height = int(new_width / current_aspect)
-            bg_clip = bg_clip.resize(newsize=(new_width, new_height))
-            pad_y = (target_height - new_height) // 2
-            bg_clip = bg_clip.on_color(size=(target_width, target_height), 
-                                     color=(0, 0, 0), pos=(0, pad_y))
-            print(f"Padded from {new_width}x{new_height} to {target_width}x{target_height}")
-        
-        print(f"Final size: {bg_clip.size}")
-        
-        # 音声の長さに合わせてループ（成功時のシンプルな設定）
-        if DEBUG_MODE:
-            bg_clip = bg_clip.with_duration(30)
-            bg_clip = vfx.Loop(bg_clip, duration=30)
-        else:
-            bg_clip = bg_clip.with_duration(total_duration)
-            bg_clip = vfx.Loop(bg_clip, duration=total_duration)
-        
-        print(f"Background video looped to duration: {30 if DEBUG_MODE else total_duration:.2f}s")
+        # 中央配置設定（1920x1080キャンバスの中央に）
+        bg_clip = bg_clip.with_position("center").with_start(0).with_opacity(1.0)
+        print(f"[DEBUG] Background positioned at center, start=0, opacity=1.0")
         
         # 型チェックを緩和：hasattrで映像機能を判定
         if hasattr(bg_clip, 'get_frame'):
@@ -349,16 +312,14 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         else:
             raise RuntimeError(f"背景動画が映像として機能しません: {type(bg_clip)}")
         
-        print(f"[DEBUG] Background clip size: {bg_clip.size} (should be 1920x1080)")
-        
-        # 背景動画のデバッグ情報を出力
-        debug_background_video(bg_clip, total_duration)
+        print(f"[DEBUG] Background clip final size: {bg_clip.size}")
+        print(f"[DEBUG] Background will be centered in 1920x1080 canvas")
         
         return bg_clip
         
     except Exception as e:
-        print(f"Failed to process background video: {e}")
-        return None
+        print(f"[ERROR] 背景動画処理に失敗: {e}")
+        raise
 
 
 def download_background_music() -> str:
@@ -1448,13 +1409,12 @@ def build_video_with_subtitles(
                 print("Failed to process background video, falling back to gradient")
         
         if bg_clip is None:
-            print("Creating RED background fallback for debugging")
-            # 赤い背景動画を生成（デバッグ用）
+            print("Creating BLACK background fallback")
+            # 黒い背景動画を生成
             from moviepy import ColorClip
-            bg_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(255, 0, 0), duration=total_duration)
+            bg_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=total_duration)
             bg_clip = bg_clip.with_start(0).with_opacity(1.0)
-            print(f"[DEBUG] Created RED background: {VIDEO_WIDTH}x{VIDEO_HEIGHT} for {total_duration}s")
-            print("[DEBUG] This indicates background video loading failed!")
+            print(f"[DEBUG] Created BLACK background: {VIDEO_WIDTH}x{VIDEO_HEIGHT} for {total_duration}s")
 
         # Layer 2: 画像スライド（セグメント連動）
         image_clips = []
@@ -1864,8 +1824,8 @@ def build_video_with_subtitles(
         print("[DEBUG] 背景動画の不透明度と開始時刻を強制設定")
         
         # 主要な合成（背景がインデックス0であることを確認）
-        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(255, 0, 0))
-        print(f"[DEBUG] CompositeVideoClip created with {len(all_clips)} layers, bg_color=(255, 0, 0) for debugging")
+        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
+        print(f"[DEBUG] CompositeVideoClip created with {len(all_clips)} layers, size=(1920, 1080)")
         
         # 背景動画のサイズ確認
         if len(all_clips) > 0:
