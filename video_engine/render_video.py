@@ -1259,7 +1259,6 @@ def build_video_with_subtitles(
 
             # 画像が1枚でも取得できた場合は続行
             print(f"[DEBUG] Found {len(part_images)} images for segment {i}")
-            current_time += duration
 
             if duration <= 4 or len(part_images) == 1:
                 image_schedule.append({"start": current_time, "duration": duration, "path": part_images[0]})
@@ -1271,6 +1270,11 @@ def build_video_with_subtitles(
                     start_time = base_start_time + idx * switch_interval
                     remaining = duration - idx * switch_interval
                     clip_duration = min(switch_interval, remaining)
+                    
+                    # 負の持続時間を防ぐ
+                    if clip_duration <= 0:
+                        print(f"[DEBUG] Skipping image {idx} due to negative duration: {clip_duration}")
+                        continue
                     
                     # フェードイン・アウトのため0.5秒オーバーラップ
                     if idx < len(part_images) - 1:  # 最後の画像以外
@@ -1289,6 +1293,10 @@ def build_video_with_subtitles(
                 remaining_segments = len(script_parts) - i - 1
                 if remaining_segments > 0:
                     print(f"[INFO] 画像収集完了（60枚）。残り{remaining_segments}セグメントの処理をスキップして動画合成を開始します")
+                    # 残りのセグメントの時間分をcurrent_timeに加算して時間の飛びを防ぐ
+                    for j in range(i + 1, len(script_parts)):
+                        if j < len(part_durations):
+                            current_time += part_durations[j]
                     break
 
         if not image_schedule:
