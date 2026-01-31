@@ -20,10 +20,12 @@ dist/
 build/
 lambda/
 
+# Lambda functions (private)
+lambda_selector/
+lambda_writer/
+
 # OS / editor specific
 .DS_Store
 
 # Documentation
 README.md
-
-lambda/
