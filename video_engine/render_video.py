@@ -140,6 +140,9 @@ FPS = int(os.environ.get("FPS", "30"))
 # デバッグモード（Trueの時は最初の60秒のみ書き出し）
 DEBUG_MODE = True
 
+# デバッグモードでの処理制限
+DEBUG_MAX_PARTS = 5 if DEBUG_MODE else None  # 最初の5パーツのみ処理
+
 
 s3_client = boto3.client("s3", region_name=AWS_REGION, config=Config(signature_version="s3v4"))
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
@@ -1370,10 +1373,10 @@ def build_video_with_subtitles(
             video_processing_successful = True
             print("[CONFIRMED] Video source: S3 Video file")
             
-            # 強制検証：bg_clip が映像として機能することを確認
+            # 強制検証：bg_clip が正常な VideoFileClip であることを確認
             if bg_clip is not None:
                 print(f"[VALIDATION] bg_clip type: {type(bg_clip)}")
-                print(f"[VALIDATION] bg_clip has get_frame: {hasattr(bg_clip, 'get_frame')}")
+                print(f"[VALIDATION] bg_clip is VideoFileClip: {isinstance(bg_clip, VideoFileClip)}")
                 
                 try:
                     # フレームテスト
@@ -2044,6 +2047,12 @@ def main() -> None:
                 "speaker_id": 3
             }
             script_parts = [title_part] + script_parts
+            
+            # DEBUG_MODE の場合は処理数を制限
+            if DEBUG_MODE and DEBUG_MAX_PARTS:
+                script_parts = script_parts[:DEBUG_MAX_PARTS]
+                print(f"DEBUG_MODE: Limited to {len(script_parts)} script parts")
+            
             print(f"Processing {len(script_parts)} script parts (title included)...")
 
             # 2. VOICEVOX で音声生成（複数セリフ対応）
