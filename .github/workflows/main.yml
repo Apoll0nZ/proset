@@ -2,7 +2,9 @@ name: Generate and upload PC news video
 
 on:
   repository_dispatch:
-    types: [generate_video]
+    types: generate_video
+  push:
+    branches: [main]
 
 jobs:
   render-and-upload:
