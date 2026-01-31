@@ -271,6 +271,9 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         print("Background video audio muted")
         
         # DEBUG_MODEなら60秒にカット（処理対象を大幅削減）
+        print(f"[DEBUG] Background clip type before trimming: {type(bg_clip)}")
+        print(f"[DEBUG] Background clip is VideoFileClip before trimming: {isinstance(bg_clip, VideoFileClip)}")
+        
         if DEBUG_MODE:
             bg_clip = bg_clip.subclipped(0, 60)
             print("DEBUG_MODE: Background video trimmed to 60s")
@@ -278,40 +281,75 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             bg_clip = bg_clip.subclipped(0, total_duration)
             print(f"Background video trimmed to {total_duration:.2f}s")
         
+        print(f"[DEBUG] Background clip type after trimming: {type(bg_clip)}")
+        print(f"[DEBUG] Background clip is VideoFileClip after trimming: {isinstance(bg_clip, VideoFileClip)}")
+        
         # 1920x1080にリサイズ（動画として維持）
         # MoviePy v2.0互換のリサイズ方法
         from moviepy.video.fx import resize
+        
+        print(f"[DEBUG] Background clip type before resize: {type(bg_clip)}")
+        print(f"[DEBUG] Background clip is VideoFileClip before resize: {isinstance(bg_clip, VideoFileClip)}")
         
         # リサイズ効果を直接適用（VideoFileClipを維持）
         bg_clip = resize(bg_clip, height=1080)
         print("Resized to height=1080 (video resize method)")
         
+        print(f"[DEBUG] Background clip type after resize: {type(bg_clip)}")
+        print(f"[DEBUG] Background clip is VideoFileClip after resize: {isinstance(bg_clip, VideoFileClip)}")
+        
         # 中央配置でクロップ（動画として維持）
         if bg_clip.w > 1920:
+            print(f"[DEBUG] Background clip type before crop: {type(bg_clip)}")
+            print(f"[DEBUG] Background clip is VideoFileClip before crop: {isinstance(bg_clip, VideoFileClip)}")
+            
             crop_x = (bg_clip.w - 1920) // 2
             crop_y = (bg_clip.h - 1080) // 2 if bg_clip.h > 1080 else 0
             bg_clip = vfx.crop(bg_clip, x1=crop_x, y1=crop_y, width=1920, height=1080)
             print(f"Cropped to 1920x1080 from position ({crop_x}, {crop_y})")
+            
+            print(f"[DEBUG] Background clip type after crop: {type(bg_clip)}")
+            print(f"[DEBUG] Background clip is VideoFileClip after crop: {isinstance(bg_clip, VideoFileClip)}")
         elif bg_clip.h < 1080:
+            print(f"[DEBUG] Background clip type before scale: {type(bg_clip)}")
+            print(f"[DEBUG] Background clip is VideoFileClip before scale: {isinstance(bg_clip, VideoFileClip)}")
+            
             # 高さが足りない場合のみリサイズ
             scale_factor = 1080 / bg_clip.h
             bg_clip = resize(bg_clip, width=int(bg_clip.w * scale_factor), height=1080)
             print(f"Scaled up by factor {scale_factor:.2f} to reach height=1080")
+            
+            print(f"[DEBUG] Background clip type after scale: {type(bg_clip)}")
+            print(f"[DEBUG] Background clip is VideoFileClip after scale: {isinstance(bg_clip, VideoFileClip)}")
         
         # 画像処理を適用して引き伸ばしの粗さを隠す
+        print(f"[DEBUG] Background clip type before colorx: {type(bg_clip)}")
+        print(f"[DEBUG] Background clip is VideoFileClip before colorx: {isinstance(bg_clip, VideoFileClip)}")
+        
         bg_clip = bg_clip.fx(vfx.colorx, 0.8)  # 少し暗くして引き伸ばしの粗さを目立たなくする
         print("Applied colorx effect (0.8) to hide stretching artifacts")
         
-        # 動画タイプであることを確認
-        print(f"[DEBUG] Background clip type after processing: {type(bg_clip)}")
-        print(f"[DEBUG] Background clip is VideoFileClip: {isinstance(bg_clip, VideoFileClip)}")
-        print(f"[DEBUG] Background clip size: {bg_clip.size} (should be 1920x1080)")
+        print(f"[DEBUG] Background clip type after colorx: {type(bg_clip)}")
+        print(f"[DEBUG] Background clip is VideoFileClip after colorx: {isinstance(bg_clip, VideoFileClip)}")
         
         # 音声の長さに合わせてループ（DEBUG_MODEなら60秒で固定）
+        print(f"[DEBUG] Background clip type before loop: {type(bg_clip)}")
+        print(f"[DEBUG] Background clip is VideoFileClip before loop: {isinstance(bg_clip, VideoFileClip)}")
+        
         if DEBUG_MODE:
             bg_clip = bg_clip.loop(duration=60).with_duration(60)
         else:
             bg_clip = bg_clip.loop(duration=total_duration).with_duration(total_duration)
+        
+        print(f"[DEBUG] Background clip type after loop: {type(bg_clip)}")
+        print(f"[DEBUG] Background clip is VideoFileClip after loop: {isinstance(bg_clip, VideoFileClip)}")
+        print(f"[DEBUG] Background clip size: {bg_clip.size} (should be 1920x1080)")
+        
+        # 最終確認：VideoFileClipであることを保証
+        if not isinstance(bg_clip, VideoFileClip):
+            raise RuntimeError(f"背景動画がVideoFileClipではありません: {type(bg_clip)}")
+        
+        print(f"[SUCCESS] Background video confirmed as VideoFileClip: {type(bg_clip)}")
         print(f"Looped to match duration: {60 if DEBUG_MODE else total_duration:.2f}s")
         
         # 背景動画のデバッグ情報を出力
@@ -1383,40 +1421,32 @@ def build_video_with_subtitles(
 
             if duration <= 4 or len(part_images) == 1:
                 # 単一画像または短いセグメントの場合
-                clip_duration = max(3.0, duration)  # 最低3秒を保証
+                clip_duration = max(10.0, duration)  # 最低10秒を保証
                 image_schedule.append({"start": current_time, "duration": clip_duration, "path": part_images[0]})
                 print(f"[DEBUG] Single image scheduled: duration={clip_duration}s, start={current_time}s")
             else:
-                # 複数画像の場合、セグメント時間を等分して最低3秒を保証
+                # 1枚あたり10秒固定で配置（枚数に依存しない）
+                fixed_duration_per_image = 10.0  # 1枚あたり10秒固定
                 base_start_time = 3.0 if i == 0 else current_time
                 num_images = len(part_images)
                 
-                # 各画像に最低3秒を割り当て、合計がdurationを超えないように調整
-                min_per_image = 3.0
-                total_min_time = num_images * min_per_image
+                # セグメント時間内に収まる画像数を計算
+                max_images_in_segment = int(duration / fixed_duration_per_image)
+                images_to_use = min(num_images, max_images_in_segment)
                 
-                if total_min_time > duration:
-                    # 全部の画像を表示する時間がない場合、均等割り当て
-                    switch_interval = duration / num_images
-                    print(f"[DEBUG] Adjusted switch_interval to {switch_interval:.2f}s to fit in duration")
-                else:
-                    # 十分な時間がある場合、最低3秒を保証して均等割り当て
-                    switch_interval = max(min_per_image, duration / num_images)
-                    print(f"[DEBUG] Using switch_interval: {switch_interval:.2f}s (min: {min_per_image}s)")
+                print(f"[DEBUG] Segment duration: {duration}s, Fixed per image: {fixed_duration_per_image}s")
+                print(f"[DEBUG] Available images: {num_images}, Will use: {images_to_use}")
                 
-                for idx, image_path in enumerate(part_images):
-                    start_time = base_start_time + idx * switch_interval
+                for idx in range(images_to_use):
+                    image_path = part_images[idx]
+                    start_time = base_start_time + idx * fixed_duration_per_image
                     
-                    # 最後の画像は残り時間をすべて使用
-                    if idx == num_images - 1:
-                        clip_duration = max(min_per_image, duration - idx * switch_interval)
+                    # 最後の画像はセグメント終わりまで表示
+                    if idx == images_to_use - 1:
+                        remaining_time = duration - idx * fixed_duration_per_image
+                        clip_duration = max(fixed_duration_per_image, remaining_time)
                     else:
-                        clip_duration = max(min_per_image, switch_interval)
-                    
-                    # 負の持続時間を絶対に防ぐ
-                    if clip_duration <= 0:
-                        print(f"[DEBUG] Skipping image {idx} due to non-positive duration: {clip_duration}")
-                        continue
+                        clip_duration = fixed_duration_per_image
                     
                     print(f"[DEBUG] Scheduling image {idx}: start={start_time:.2f}s, duration={clip_duration:.2f}s")
                     
@@ -1425,8 +1455,15 @@ def build_video_with_subtitles(
                         "duration": clip_duration,
                         "path": image_path,
                     })
+                
+                # 使用しなかった画像についてログ
+                if images_to_use < num_images:
+                    print(f"[DEBUG] {num_images - images_to_use} images not used due to segment time constraint")
 
+            # current_timeを厳密に管理（セグメント間の重複を防止）
+            print(f"[DEBUG] Segment {i} completed. Current time before update: {current_time:.2f}s")
             current_time += duration
+            print(f"[DEBUG] Segment {i} completed. Current time after update: {current_time:.2f}s")
 
             # 60枚に達した場合は残りのセグメント処理をスキップして動画合成へ
             if total_images_collected >= 60:
@@ -1442,7 +1479,34 @@ def build_video_with_subtitles(
         if not image_schedule:
             print("Using gradient background as image fallback")
             image_schedule.append({"start": 0.0, "duration": total_duration, "path": None})
-        elif current_time < total_duration:
+        else:
+            # 画像スケジュールの検証とソート
+            print(f"[DEBUG] Validating image schedule with {len(image_schedule)} items")
+            
+            # start_timeの昇順でソート
+            image_schedule.sort(key=lambda x: x["start"])
+            
+            # 時間の整合性を検証
+            for idx, item in enumerate(image_schedule):
+                start_time = item["start"]
+                duration = item["duration"]
+                path = item.get("path")
+                
+                # 負の持続時間をチェック
+                if duration <= 0:
+                    print(f"[WARNING] Item {idx} has non-positive duration: {duration}s")
+                    continue
+                
+                # 時間の重複をチェック
+                if idx > 0:
+                    prev_item = image_schedule[idx - 1]
+                    prev_end = prev_item["start"] + prev_item["duration"]
+                    if start_time < prev_end:
+                        print(f"[WARNING] Item {idx} overlaps with previous item: start={start_time}s < prev_end={prev_end}s")
+                
+                print(f"[DEBUG] Item {idx}: start={start_time:.2f}s, duration={duration:.2f}s, path={'None' if not path else os.path.basename(path)}")
+            
+            print(f"[DEBUG] Image schedule validation completed")
             image_schedule.append({
                 "start": current_time,
                 "duration": total_duration - current_time,
