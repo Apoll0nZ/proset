@@ -2114,17 +2114,21 @@ def main() -> None:
             try:
                 import shutil
                 
-                # 動画ファイルをカレントディレクトリ直下にコピー
-                video_dest = "./video.mp4"
+                # GitHub Actionsのワークスペースルートを取得（なければカレントディレクトリ）
+                workspace_root = os.environ.get('GITHUB_WORKSPACE', '.')
+                print(f"[INFO] Workspace root: {workspace_root}")
+                
+                # 動画ファイルをプロジェクトルートにコピー
+                video_dest = os.path.join(workspace_root, "video.mp4")
                 if os.path.exists(video_path):
                     shutil.copy2(video_path, video_dest)
                     print(f"[INFO] Copied video to: {video_dest}")
                 else:
                     print(f"[WARNING] Video file not found: {video_path}")
                 
-                # サムネイルファイルをカレントディレクトリ直下にコピー
+                # サムネイルファイルをプロジェクトルートにコピー
                 if thumbnail_path and os.path.exists(thumbnail_path):
-                    thumbnail_dest = "./thumbnail.png"
+                    thumbnail_dest = os.path.join(workspace_root, "thumbnail.png")
                     shutil.copy2(thumbnail_path, thumbnail_dest)
                     print(f"[INFO] Copied thumbnail to: {thumbnail_dest}")
                 else:
