@@ -106,14 +106,14 @@ jobs:
             --s3-bucket "${{ github.event.client_payload.s3_bucket }}" \
             --content-hash "${{ github.event.client_payload.content_hash }}"
 
-      - name: Upload debug video artifacts
-        if: always()
+      - name: Upload Video Artifact
+        if: always()  # エラーが起きても実行
         uses: actions/upload-artifact@v4
         with:
           name: debug-video-artifacts
           path: |
-            /tmp/tmp*/video.mp4
-            /tmp/tmp*/thumbnail.png
+            video.mp4
+            thumbnail.png
           retention-days: 1
 
       - name: Cleanup VOICEVOX container

@@ -2113,19 +2113,18 @@ def main() -> None:
             print("Copying artifacts to current directory for GitHub Actions...")
             try:
                 import shutil
-                current_dir = os.getcwd()
                 
-                # 動画ファイルをコピー
-                video_dest = os.path.join(current_dir, "video.mp4")
+                # 動画ファイルをカレントディレクトリ直下にコピー
+                video_dest = "./video.mp4"
                 if os.path.exists(video_path):
                     shutil.copy2(video_path, video_dest)
                     print(f"[INFO] Copied video to: {video_dest}")
                 else:
                     print(f"[WARNING] Video file not found: {video_path}")
                 
-                # サムネイルファイルをコピー
+                # サムネイルファイルをカレントディレクトリ直下にコピー
                 if thumbnail_path and os.path.exists(thumbnail_path):
-                    thumbnail_dest = os.path.join(current_dir, "thumbnail.png")
+                    thumbnail_dest = "./thumbnail.png"
                     shutil.copy2(thumbnail_path, thumbnail_dest)
                     print(f"[INFO] Copied thumbnail to: {thumbnail_dest}")
                 else:
