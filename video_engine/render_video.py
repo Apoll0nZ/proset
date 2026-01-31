@@ -2109,6 +2109,31 @@ def main() -> None:
                 print(f"サムネイル生成に失敗しましたが、処理を続行します: {e}")
                 thumbnail_path = None
 
+            # 4.5. 成果物をカレントディレクトリにコピー（GitHub Actions用）
+            print("Copying artifacts to current directory for GitHub Actions...")
+            try:
+                import shutil
+                current_dir = os.getcwd()
+                
+                # 動画ファイルをコピー
+                video_dest = os.path.join(current_dir, "video.mp4")
+                if os.path.exists(video_path):
+                    shutil.copy2(video_path, video_dest)
+                    print(f"[INFO] Copied video to: {video_dest}")
+                else:
+                    print(f"[WARNING] Video file not found: {video_path}")
+                
+                # サムネイルファイルをコピー
+                if thumbnail_path and os.path.exists(thumbnail_path):
+                    thumbnail_dest = os.path.join(current_dir, "thumbnail.png")
+                    shutil.copy2(thumbnail_path, thumbnail_dest)
+                    print(f"[INFO] Copied thumbnail to: {thumbnail_dest}")
+                else:
+                    print("[WARNING] Thumbnail file not found")
+                    
+            except Exception as e:
+                print(f"[ERROR] Failed to copy artifacts: {e}")
+
             # 5. YouTube へアップロード
             if DEBUG_MODE:
                 print(f"[INFO] Artifacts 用にファイルを保持します: {video_path}")
