@@ -1661,7 +1661,7 @@ def build_video_with_subtitles(
             # clip = clip.crossfadein(0.5).crossfadeout(0.5)
 
             # 座標を中央に固定
-            clip = clip.with_position("center").with_zindex(1)  # 画像はZ-Index 1
+            clip = clip.with_position("center")  # 画像は中央配置
 
             # 画像クリップ生存確認（作成直後）
             if hasattr(clip, 'size') and clip.size == (0, 0):
@@ -1682,7 +1682,7 @@ def build_video_with_subtitles(
                 font=font_path,
                 bg_color="white",  # 白背景
                 size=(250, 60)  # 少し大きく
-            ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0).with_zindex(2)
+            ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
         except Exception as e:
             print(f"[ERROR] Failed to create segment text: {e}")
             print(f"[DEBUG] Font path: {font_path}")
@@ -1718,7 +1718,7 @@ def build_video_with_subtitles(
                             bg_color="white"  # 白背景
                         )
                         clip_start = current_time + chunk_idx * chunk_duration
-                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 300)).with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0).with_zindex(2)
+                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 300)).with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
                         text_clips.append(txt_clip)
                 except Exception as e:
                     print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
@@ -1734,9 +1734,9 @@ def build_video_with_subtitles(
                 print(f"Error creating subtitle for part {i}: {e}")
                 continue
 
-        # すべてのレイヤーを合成（背景動画 -> 背景画像 -> 字幕）
-        all_clips = [bg_clip]
-        all_clips.extend(image_clips)
+        # すべてのレイヤーを合成（厳格な順序: 背景動画 -> 画像 -> セグメントテキスト -> 字幕）
+        # bg_clip が最背面、text_clips が最前面になるように厳格化
+        all_clips = [bg_clip] + image_clips
         if segment_clip:
             all_clips.append(segment_clip)
         all_clips.extend(text_clips)
@@ -1746,6 +1746,10 @@ def build_video_with_subtitles(
         if image_clips:
             first_img = image_clips[0]
             print(f"[DEBUG] First image clip: start={first_img.start}s, duration={first_img.duration}s, size={first_img.size}")
+        
+        # 引き算デバッグ: 画像と字幕を完全に除外して bg_clip のみでテスト
+        print("[DEBUG] 引き算デバッグ: bg_clip のみで合成をテストします")
+        all_clips = [bg_clip]  # 背景動画のみ
         
         # 1. 合成リストの全クリップ検査
         print("[TRACE] === 合成クリップ詳細検査 ===")
