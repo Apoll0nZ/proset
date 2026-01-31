@@ -112,8 +112,8 @@ jobs:
         with:
           name: debug-video-artifacts
           path: |
-            /tmp/**/*.mp4
-            /tmp/**/*.png
+            /tmp/tmp*/video.mp4
+            /tmp/tmp*/thumbnail.png
           retention-days: 1
 
       - name: Cleanup VOICEVOX container
