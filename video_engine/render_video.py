@@ -1355,20 +1355,37 @@ def build_video_with_subtitles(
 
         # Layer 1: 背景動画の準備（インテリジェント・リサイズ）
         bg_video_path = download_random_background_video()
+        bg_clip = None
         
         if bg_video_path and os.path.exists(bg_video_path):
             print("Using random background video from S3")
             bg_clip = process_background_video_for_hd(bg_video_path, total_duration)
             
-            if bg_clip is None:
-                print("Failed to process background video, falling back to gradient")
+            # 厳密な成功確認：VideoFileClipであることを保証
+            if bg_clip is not None:
+                print(f"[SUCCESS] Background video processed successfully")
+                print(f"[DEBUG] Background clip type: {type(bg_clip)}")
+                print(f"[DEBUG] Background clip is VideoFileClip: {isinstance(bg_clip, VideoFileClip)}")
+            else:
+                print("[ERROR] process_background_video_for_hd returned None")
         
+        # S3からの動画取得が失敗した場合のみグラデーションを使用
         if bg_clip is None:
-            print("Creating gradient background fallback")
+            print("Creating gradient background fallback (no video available)")
             # グラデーション背景を生成（1920x1080対応）
             gradient_array = create_gradient_background(VIDEO_WIDTH, VIDEO_HEIGHT)
             bg_clip = ImageClip(gradient_array).with_duration(total_duration)
-            print(f"Created gradient background: {VIDEO_WIDTH}x{VIDEO_HEIGHT}")
+            print(f"[WARNING] Using gradient background: {VIDEO_WIDTH}x{VIDEO_HEIGHT}")
+            print(f"[DEBUG] Background clip type: {type(bg_clip)}")
+            print(f"[DEBUG] Background clip is VideoFileClip: {isinstance(bg_clip, VideoFileClip)}")
+
+        # 合成直前の最終確認
+        print(f"[FINAL CHECK] Background clip before composition:")
+        print(f"  - Type: {type(bg_clip)}")
+        print(f"  - Is VideoFileClip: {isinstance(bg_clip, VideoFileClip)}")
+        print(f"  - Is ImageClip: {isinstance(bg_clip, ImageClip)}")
+        print(f"  - Size: {getattr(bg_clip, 'size', 'N/A')}")
+        print(f"  - Duration: {getattr(bg_clip, 'duration', 'N/A')}")
 
         # Layer 2: 画像スライド（セグメント連動）
         image_clips = []
