@@ -322,6 +322,21 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         raise
 
 
+def download_heading_image() -> str:
+    """S3からヘッダー画像（assets/heading.png）をダウンロード"""
+    heading_key = "assets/heading.png"
+    local_path = os.path.join(LOCAL_TEMP_DIR, "heading.png")
+    
+    try:
+        print(f"Downloading heading image from S3: s3://{S3_BUCKET}/{heading_key}")
+        s3_client.download_file(S3_BUCKET, heading_key, local_path)
+        print(f"Successfully downloaded heading image to: {local_path}")
+        return local_path
+    except Exception as e:
+        print(f"Failed to download heading image: {e}")
+        return None
+
+
 def download_background_music() -> str:
     """S3からBGM（assets/bgm.mp3）をダウンロード"""
     bgm_key = "assets/bgm.mp3"
@@ -850,27 +865,68 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
     return None
 
 
-def split_subtitle_text(text: str, max_chars: int = 100) -> List[str]:
-    """字幕を100文字以内で分割する。"""
+def split_subtitle_text(text: str, max_chars: int = 45) -> List[str]:
+    """字幕を45文字以内で分割する。句点（。）で区切り、短文は結合する。"""
     if len(text) <= max_chars:
         return [text]
 
     import re
-    parts = re.split(r"([。、])", text)
-    chunks = []
-    current = ""
-    for token in parts:
-        if not token:
-            continue
-        candidate = f"{current}{token}"
-        if len(candidate) > max_chars and current:
-            chunks.append(current)
-            current = token
+    # 句点（。）で分割
+    parts = re.split(r"([。])", text)
+    
+    # 分割記号を元に戻す
+    sentences = []
+    for i in range(0, len(parts), 2):
+        if i + 1 < len(parts):
+            sentence = parts[i] + parts[i + 1]
         else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return [chunk.strip() for chunk in chunks if chunk.strip()]
+            sentence = parts[i]
+        sentences.append(sentence.strip())
+    
+    # 短文（15文字未満）を次の文と結合
+    merged_sentences = []
+    i = 0
+    while i < len(sentences):
+        current = sentences[i]
+        
+        # 現在の文が15文字未満で、次の文がある場合は結合
+        while len(current) < 15 and i + 1 < len(sentences):
+            next_sentence = sentences[i + 1]
+            combined = current + next_sentence
+            if len(combined) <= max_chars:
+                current = combined
+                i += 1
+            else:
+                break
+        
+        merged_sentences.append(current)
+        i += 1
+    
+    # 45文字を超える場合は適切な位置で分割
+    final_chunks = []
+    for sentence in merged_sentences:
+        if len(sentence) <= max_chars:
+            final_chunks.append(sentence)
+        else:
+            # 長い文は適切な位置で分割
+            words = re.split(r'([、])', sentence)
+            current_chunk = ""
+            for j in range(0, len(words), 2):
+                if j + 1 < len(words):
+                    word = words[j] + words[j + 1]
+                else:
+                    word = words[j]
+                
+                if len(current_chunk + word) > max_chars and current_chunk:
+                    final_chunks.append(current_chunk.strip())
+                    current_chunk = word
+                else:
+                    current_chunk += word
+            
+            if current_chunk.strip():
+                final_chunks.append(current_chunk.strip())
+    
+    return [chunk.strip() for chunk in final_chunks if chunk.strip()]
 
 
 def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
@@ -1306,7 +1362,6 @@ def build_video_with_subtitles(
     bg_clip = None
     bgm_clip = None
     text_clips = []
-    segment_clips = []
     video = None
     
     try:
@@ -1649,26 +1704,23 @@ def build_video_with_subtitles(
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             clip_w, clip_h = clip.w, clip.h
 
-            # 画像サイズ: 画面幅の58%〜72%でランダム（最大1280x720に制限）
-            width_ratio = random.uniform(0.58, 0.72)
-            target_width = min(int(VIDEO_WIDTH * width_ratio), 1280)
-            scale = target_width / max(clip_w, 1)
+            # 画像サイズ: アスペクト比を維持して最大幅1400px・高さ800pxに収める
+            clip_w, clip_h = clip.w, clip.h
+            
+            # アスペクト比を維持したまま最大サイズに収める
+            max_width = 1400
+            max_height = 800
+            
+            # スケール計算（アスペクト比維持）
+            scale_w = max_width / clip_w
+            scale_h = max_height / clip_h
+            scale = min(scale_w, scale_h, 1.0)  # 拡大はしない（1.0を上限）
+            
+            target_width = int(clip_w * scale)
             target_height = int(clip_h * scale)
             
-            # 高さが720pxを超えないように制限
-            if target_height > 720:
-                scale = 720 / max(clip_h, 1)
-                target_width = int(clip_w * scale)
-                target_height = 720
-
-            # 高さが画面を圧迫しないように制限
-            max_height = int(VIDEO_HEIGHT * 0.72)  # 上8%〜下80%の範囲
-            if target_height > max_height:
-                scale = max_height / max(clip_h, 1)
-                target_width = int(clip_w * scale)
-                target_height = int(clip_h * scale)
-
-            clip = clip.resized(width=target_width)
+            # lanczos補間で高品質にリサイズ
+            clip = clip.resized(width=target_width, height=target_height, interp='lanczos')
             clip_w, clip_h = clip.w, clip.h
 
             # フェードイン・アウトを追加（一時的にコメントアウト）
@@ -1687,22 +1739,41 @@ def build_video_with_subtitles(
             
             image_clips.append(clip)
 
-        # Layer 3: 左上セグメント表示 - 1920x1080用に調整
+        # Layer 3: 左上ヘッダー画像表示 - 1920x1080用に調整
+        heading_clip = None
         try:
-            segment_clip = TextClip(
-                text="概要",
-                font_size=28,  # 少し大きく
-                color="black",
-                font=font_path,
-                bg_color="white",  # 白背景
-                size=(250, 60)  # 少し大きく
-            ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
+            heading_path = download_heading_image()
+            if heading_path and os.path.exists(heading_path):
+                # ヘッダー画像を読み込んでImageClipとして配置
+                heading_img = ImageClip(heading_path)
+                
+                # サイズが大きすぎる場合は幅300〜400px程度にリサイズ
+                img_w, img_h = heading_img.size
+                if img_w > 400:
+                    scale = 400 / img_w
+                    target_width = 400
+                    target_height = int(img_h * scale)
+                    heading_img = heading_img.resized(width=target_width, height=target_height)
+                
+                # 左上に配置
+                heading_clip = heading_img.with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
+                print(f"[SUCCESS] Heading image loaded and positioned: {heading_img.size}")
+            else:
+                print("[WARNING] Heading image not available, using text fallback")
+                # フォールバックとしてテキストを表示
+                heading_clip = TextClip(
+                    text="概要",
+                    font_size=28,
+                    color="black",
+                    font=font_path,
+                    bg_color="white",
+                    size=(250, 60)
+                ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
         except Exception as e:
-            print(f"[ERROR] Failed to create segment text: {e}")
-            print(f"[DEBUG] Font path: {font_path}")
+            print(f"[ERROR] Failed to create heading clip: {e}")
             print(f"[DEBUG] Error type: {type(e).__name__}")
-            print("Continuing without segment text...")
-            segment_clip = None  # セグメントテキストなしで続行
+            print("Continuing without heading...")
+            heading_clip = None
 
         # Layer 4: 下部字幕 - 1920x1080用に調整
         current_time = 0.0
@@ -1719,20 +1790,21 @@ def build_video_with_subtitles(
                 
                 # 字幕クリップを作成（1920x1080用に調整）
                 try:
-                    chunks = split_subtitle_text(text, max_chars=100)
+                    chunks = split_subtitle_text(text, max_chars=45)
                     chunk_duration = subtitle_duration / max(len(chunks), 1)
                     for chunk_idx, chunk in enumerate(chunks):
                         txt_clip = TextClip(
                             text=chunk,
-                            font_size=48,  # 大きくして読みやすく
+                            font_size=58,  # 1.2倍に拡大（48→58）
                             color="black",
                             font=font_path,
                             method="caption",
                             size=(1700, None),
                             bg_color="white"  # 白背景
                         )
+                        # 字幕エリアを1.2倍に拡大して下に配置（VIDEO_HEIGHT - 360）
                         clip_start = current_time + chunk_idx * chunk_duration
-                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 300)).with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
+                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 360)).with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
                         text_clips.append(txt_clip)
                 except Exception as e:
                     print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
@@ -1748,15 +1820,15 @@ def build_video_with_subtitles(
                 print(f"Error creating subtitle for part {i}: {e}")
                 continue
 
-        # すべてのレイヤーを合成（厳格な順序: 背景動画 -> 画像 -> セグメントテキスト -> 字幕）
+        # すべてのレイヤーを合成（厳格な順序: 背景動画 -> 画像 -> ヘッダー画像 -> 字幕）
         # bg_clip が最背面（インデックス0）、text_clips が最前面になるように厳格化
         all_clips = [bg_clip] + image_clips
-        if segment_clip:
-            all_clips.append(segment_clip)
+        if heading_clip:
+            all_clips.append(heading_clip)
         all_clips.extend(text_clips)
         
         # デバッグ用中間保存ログ
-        print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + セグメント{1 if segment_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
+        print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + ヘッダー{1 if heading_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
         if image_clips:
             first_img = image_clips[0]
             print(f"[DEBUG] First image clip: start={first_img.start}s, duration={first_img.duration}s, size={first_img.size}")
@@ -1911,7 +1983,9 @@ def build_video_with_subtitles(
             audio_clip.close()
         if bgm_clip:
             bgm_clip.close()
-        for clip in text_clips + segment_clips:
+        if heading_clip:
+            heading_clip.close()
+        for clip in text_clips:
             if clip:
                 clip.close()
         
