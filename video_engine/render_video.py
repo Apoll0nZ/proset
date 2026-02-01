@@ -1914,7 +1914,7 @@ async def build_video_with_subtitles(
         topic_summary = content.get("topic_summary", "")
         image_schedule = []
         total_images_collected = 0
-        current_time = 0.0  # 最初のタイトルから画像を開始
+        current_time = 1.0  # 画像を1秒後に開始
 
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
@@ -2013,7 +2013,7 @@ async def build_video_with_subtitles(
 
             # 1枚あたり10秒固定で配置（簡素化ロジック）
             fixed_duration = 10.0  # 1枚あたり10秒固定
-            seg_start = 3.0 if i == 0 else current_time  # セグメント開始時間
+            seg_start = current_time  # セグメント開始時間（3秒固定を廃止）
             seg_end = seg_start + duration  # セグメント終了時間
             num_images = len(part_images)
             
@@ -2232,9 +2232,9 @@ async def build_video_with_subtitles(
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             
             # Pillowで事前リサイズ済みのため、MoviePyでのリサイズは不要
-            # 0.5秒でスライドイン、終了時に0.5秒でスライドアウト
-            clip = slide_in_right(clip, 0.5)
-            clip = slide_out_left(clip, 0.5)
+            # 1秒後から0.5秒フェードイン、0.5秒スライドイン、クロスフェード用に0.5秒延長
+            clip = crossfadein(clip, 0.5)  # 0.5秒フェードイン
+            clip = slide_in_right(clip, 0.5)  # 0.5秒スライドイン
 
             # 座標を中央に固定
             clip = clip.with_position("center")  # 画像は中央配置
@@ -2265,8 +2265,9 @@ async def build_video_with_subtitles(
                     target_height = int(img_h * scale)
                     heading_img = heading_img.resized(width=target_width, height=target_height)
                 
-                # 独立した最前面レイヤーとして左上に固定（x=50, y=50）
+                # 独立した最前面レイヤーとして左上に固定し、0.5秒でスライドイン
                 heading_clip = heading_img.with_position((50, 50)).with_start(0.0).with_duration(total_duration).with_opacity(1.0)
+                heading_clip = slide_in_right(heading_clip, 0.5)  # 0.5秒でスライドイン
                 print(f"[SUCCESS] Heading image loaded as top layer: {heading_img.size}")
             else:
                 print("[WARNING] Heading image not available, using text fallback")
