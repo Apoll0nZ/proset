@@ -1914,7 +1914,7 @@ async def build_video_with_subtitles(
         topic_summary = content.get("topic_summary", "")
         image_schedule = []
         total_images_collected = 0
-        current_time = 1.0  # 最初の画像を1秒後に表示
+        current_time = 0.0  # 最初のタイトルから画像を開始
 
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
@@ -2064,17 +2064,12 @@ async def build_video_with_subtitles(
                     print(f"[DEBUG] Image {img_idx} skipped: invalid duration {actual_duration}s")
                     continue
                 
-                # 画像スケジュールに追加（0.5秒のオーバーラップでクロスフェード）
-                img_start = current_time
-                actual_duration = duration + 0.5  # 0.5秒延長して次の画像とオーバーラップ
-                
                 image_schedule.append({
                     "start": img_start,
                     "duration": actual_duration,
                     "path": image_path,
                 })
-                
-                current_time += duration  # 次の画像は通常時間で開始（オーバーラップでクロスフェード）
+                images_scheduled += 1
                 print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={actual_duration}s")
             
             print(f"[DEBUG] Scheduled {images_scheduled} images for segment {i}")
@@ -2237,9 +2232,9 @@ async def build_video_with_subtitles(
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             
             # Pillowで事前リサイズ済みのため、MoviePyでのリサイズは不要
-            # 1秒後から0.5秒でフェードイン開始
-            clip = crossfadein(clip, 0.5)
-            # 画像間は0.5秒のクロスフェードで同時切替（次の画像が来るときに自動的に適用）
+            # 0.5秒でスライドイン、終了時に0.5秒でスライドアウト
+            clip = slide_in_right(clip, 0.5)
+            clip = slide_out_left(clip, 0.5)
 
             # 座標を中央に固定
             clip = clip.with_position("center")  # 画像は中央配置
@@ -2270,10 +2265,9 @@ async def build_video_with_subtitles(
                     target_height = int(img_h * scale)
                     heading_img = heading_img.resized(width=target_width, height=target_height)
                 
-                # 左上に配置し、同時開始で1/5縮小、0.5秒で高速スライドイン
-                heading_clip = heading_img.with_position((20, 20)).with_start(0.0).with_duration(total_duration).with_opacity(1.0)
-                heading_clip = slide_in_right(heading_clip, 0.5)  # 0.5秒でスライドイン
-                print(f"[SUCCESS] Heading image loaded and positioned: {heading_img.size}")
+                # 独立した最前面レイヤーとして左上に固定（x=50, y=50）
+                heading_clip = heading_img.with_position((50, 50)).with_start(0.0).with_duration(total_duration).with_opacity(1.0)
+                print(f"[SUCCESS] Heading image loaded as top layer: {heading_img.size}")
             else:
                 print("[WARNING] Heading image not available, using text fallback")
                 # フォールバックとしてテキストを表示
