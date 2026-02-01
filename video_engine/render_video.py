@@ -72,6 +72,102 @@ def slide_out_left(clip, duration=0.5):
         w, h = clip.size
         return clip.set_position(lambda t: (-VIDEO_WIDTH * max(0, min(1, t/duration)), 'center'))
 
+# 拡大縮小アニメーション関数（95%-100%）
+def scale_animation_95_100(clip):
+    """95%-100%の間で常に拡大縮小するアニメーション"""
+    def rescale(t):
+        # 4秒周期で95%-100%を往復
+        cycle = (t % 4) / 4  # 0-1の範囲
+        if cycle < 0.5:
+            # 95% -> 100%
+            scale = 0.95 + 0.05 * (cycle * 2)
+        else:
+            # 100% -> 95%
+            scale = 1.0 - 0.05 * ((cycle - 0.5) * 2)
+        return scale
+    
+    try:
+        return clip.with_effects([vfx.Resize(lambda t: rescale(t))])
+    except:
+        # フォールバック：シンプルな拡大縮小
+        return clip.resize(lambda t: 0.975 + 0.025 * math.sin(t * math.pi / 2))
+
+# 画像切り替えアニメーション関数（60%縮小→消去 / 60%→100%拡大）
+def transition_scale_animation(clip, is_fade_out=False):
+    """画像切り替え時のスケールアニメーション"""
+    def rescale(t):
+        duration = 0.5  # 0.5秒でアニメーション完了
+        if t >= duration:
+            return 0.6 if is_fade_out else 1.0  # アニメーション後の最終サイズ
+        
+        progress = t / duration  # 0-1の進捗
+        
+        if is_fade_out:
+            # 100% -> 60% に縮小
+            scale = 1.0 - 0.4 * progress
+        else:
+            # 60% -> 100% に拡大
+            scale = 0.6 + 0.4 * progress
+        
+        return scale
+    
+    try:
+        return clip.with_effects([vfx.Resize(lambda t: rescale(t))])
+    except:
+        # フォールバック：シンプルなスケールアニメーション
+        if is_fade_out:
+            return clip.resize(lambda t: max(0.6, 1.0 - 0.8 * t))
+        else:
+            return clip.resize(lambda t: min(1.0, 0.6 + 0.8 * t))
+
+# 字幕スライドイン・拡大アニメーション関数
+def subtitle_slide_scale_animation(clip):
+    """字幕をY座標-0.5からスライドインしながら90%→100%に拡大"""
+    def animate(t):
+        duration = 0.5  # 0.5秒でアニメーション完了
+        if t >= duration:
+            return (0, 1.0)  # 最終状態：Y座標0、100%サイズ
+        
+        progress = t / duration  # 0-1の進捗
+        
+        # Y座標：-0.5 → 0 へスライド
+        y_offset = -0.5 + 0.5 * progress
+        
+        # サイズ：90% → 100% へ拡大
+        scale = 0.9 + 0.1 * progress
+        
+        return (y_offset, scale)
+    
+    try:
+        # 位置とスケールを同時にアニメーション
+        def position_func(t):
+            y_offset, scale = animate(t)
+            return (150, VIDEO_HEIGHT - 360 + y_offset)
+        
+        def scale_func(t):
+            y_offset, scale = animate(t)
+            return scale
+        
+        clip = clip.with_effects([vfx.Resize(scale_func)])
+        return clip.with_position(position_func)
+    except:
+        # フォールバック：シンプルなアニメーション
+        def position_fallback(t):
+            if t >= 0.5:
+                return (150, VIDEO_HEIGHT - 360)
+            progress = t / 0.5
+            y_offset = -0.5 + 0.5 * progress
+            return (150, VIDEO_HEIGHT - 360 + y_offset)
+        
+        def scale_fallback(t):
+            if t >= 0.5:
+                return 1.0
+            progress = t / 0.5
+            return 0.9 + 0.1 * progress
+        
+        clip = clip.resize(scale_fallback)
+        return clip.with_position(position_fallback)
+
 # loop関数の安全なインポート
 try:
     from moviepy.video.fx import loop
@@ -1914,7 +2010,7 @@ async def build_video_with_subtitles(
         topic_summary = content.get("topic_summary", "")
         image_schedule = []
         total_images_collected = 0
-        current_time = 1.0  # 画像を1秒後に開始
+        current_time = 0.0  # 開始時点から画像を配置
 
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
@@ -2064,12 +2160,17 @@ async def build_video_with_subtitles(
                     print(f"[DEBUG] Image {img_idx} skipped: invalid duration {actual_duration}s")
                     continue
                 
+                # 画像スケジュールに追加（0.5秒オーバーラップで切り替えアニメーション）
+                img_start = current_time
+                actual_duration = fixed_duration + 0.5  # 0.5秒延長して次の画像とオーバーラップ
+                
                 image_schedule.append({
                     "start": img_start,
                     "duration": actual_duration,
                     "path": image_path,
                 })
-                images_scheduled += 1
+                
+                current_time += fixed_duration  # 次の画像は通常時間で開始（オーバーラップで切り替え）
                 print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={actual_duration}s")
             
             print(f"[DEBUG] Scheduled {images_scheduled} images for segment {i}")
@@ -2231,10 +2332,9 @@ async def build_video_with_subtitles(
 
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             
-            # Pillowで事前リサイズ済みのため、MoviePyでのリサイズは不要
-            # 1秒後から0.5秒フェードイン、0.5秒スライドイン、クロスフェード用に0.5秒延長
-            clip = crossfadein(clip, 0.5)  # 0.5秒フェードイン
-            clip = slide_in_right(clip, 0.5)  # 0.5秒スライドイン
+            # 固定位置に配置（スライド・フェードなし）
+            # 60%→100%拡大アニメーションで表示
+            clip = transition_scale_animation(clip, is_fade_out=False)
 
             # 座標を中央に固定
             clip = clip.with_position("center")  # 画像は中央配置
@@ -2265,10 +2365,9 @@ async def build_video_with_subtitles(
                     target_height = int(img_h * scale)
                     heading_img = heading_img.resized(width=target_width, height=target_height)
                 
-                # 独立した最前面レイヤーとして左上に固定し、0.5秒でスライドイン
-                heading_clip = heading_img.with_position((50, 50)).with_start(0.0).with_duration(total_duration).with_opacity(1.0)
-                heading_clip = slide_in_right(heading_clip, 0.5)  # 0.5秒でスライドイン
-                print(f"[SUCCESS] Heading image loaded as top layer: {heading_img.size}")
+                # 左上に固定配置（スライドインなし）
+                heading_clip = heading_img.with_position((20, 20)).with_start(0.0).with_duration(total_duration).with_opacity(1.0)
+                print(f"[SUCCESS] Heading image loaded at top-left: {heading_img.size}")
             else:
                 print("[WARNING] Heading image not available, using text fallback")
                 # フォールバックとしてテキストを表示
@@ -2315,7 +2414,9 @@ async def build_video_with_subtitles(
                         )
                         # 字幕エリアを1.2倍に拡大して下に配置（VIDEO_HEIGHT - 360）
                         clip_start = current_time + chunk_idx * chunk_duration
-                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 360)).with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
+                        txt_clip = txt_clip.with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
+                        # Y座標-0.5からスライドインしながら90%→100%に拡大
+                        txt_clip = subtitle_slide_scale_animation(txt_clip)
                         text_clips.append(txt_clip)
                 except Exception as e:
                     print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
