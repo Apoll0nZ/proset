@@ -20,7 +20,7 @@ if os.name != 'nt':
 
 import boto3
 import numpy as np
-from PIL import Image, UnidentifiedImageError, WebPImagePlugin
+from PIL import Image, UnidentifiedImageError, WebPImagePlugin, ImageFilter
 from botocore.client import Config
 import gc  # メモリ解放用
 from google.oauth2.credentials import Credentials
@@ -137,6 +137,7 @@ YOUTUBE_CLIENT_SECRETS_JSON = os.environ.get("YOUTUBE_CLIENT_SECRETS_JSON", "")
 VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1920"))
 VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1080"))
 FPS = int(os.environ.get("FPS", "30"))
+VIDEO_BITRATE = "8M"  # 高画質設定：8Mbps
 
 # デバッグモード（Trueの時は最初の60秒のみ書き出し）
 DEBUG_MODE = True
@@ -280,7 +281,7 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         
         # 動画を元の解像度で読み込み（リサイズなし）
         print(f"[DEBUG] VideoFileClipを生成します: {bg_path}")
-        bg_clip = VideoFileClip(bg_path, audio=False)
+        bg_clip = VideoFileClip(bg_path)
         
         # VideoFileClipであることを確認
         from moviepy.video.io.VideoFileClip import VideoFileClip as VFCCheck
@@ -322,6 +323,21 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         raise
 
 
+def download_heading_image() -> str:
+    """S3からヘッダー画像（assets/heading.png）をダウンロード"""
+    heading_key = "assets/heading.png"
+    local_path = os.path.join(LOCAL_TEMP_DIR, "heading.png")
+    
+    try:
+        print(f"Downloading heading image from S3: s3://{S3_BUCKET}/{heading_key}")
+        s3_client.download_file(S3_BUCKET, heading_key, local_path)
+        print(f"Successfully downloaded heading image to: {local_path}")
+        return local_path
+    except Exception as e:
+        print(f"Failed to download heading image: {e}")
+        return None
+
+
 def download_background_music() -> str:
     """S3からBGM（assets/bgm.mp3）をダウンロード"""
     bgm_key = "assets/bgm.mp3"
@@ -338,7 +354,7 @@ def download_background_music() -> str:
 
 
 def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """画像検索（Google Playwrightのみ、失敗時はリトライ）"""
+    """Google画像検索からオリジナル画像URLを取得（サムネイル回避）"""
     
     import time
     
@@ -382,68 +398,411 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                 search_url = f"https://www.google.com/search?q={keyword}&tbm=isch"
                 print(f"[DEBUG] Navigating to: {search_url}")
                 page.goto(search_url)
-                page.wait_for_load_state('networkidle', timeout=10000)
-                page.wait_for_timeout(3000)  # 待機時間を延長
+                page.wait_for_load_state('networkidle', timeout=15000)
+                page.wait_for_timeout(5000)  # 画像読み込み待機（延長）
                 
-                # 画像URLを収集
+                # 画像サムネイルをクリックしてオリジナル画像URLを取得
                 images = []
-                image_elements = page.query_selector_all('img[src]')
-                print(f"[DEBUG] Found {len(image_elements)} image elements")
                 
-                for i, img in enumerate(image_elements[:max_results * 3]):  # 候補を増やす
+                # 画像サムネイル要素を取得（2024年のGoogle UIに対応）
+                thumbnail_selectors = [
+                    'div.Q4LuWd',  # Google画像検索のサムネイルコンテナ
+                    'img.Q4LuWd',  # 画像要素
+                    'div.bRMDJf',  # 別の画像コンテナ
+                    'img.rg_i',    # 古い画像要素
+                    'div.fR6bNc',  # 新しい画像コンテナ
+                    'img.YQ4gaf',  # 新しい画像要素
+                    'div.islir',   # 画像リンクコンテナ
+                    'a[jsname="sTFXNd"]',  # 画像リンク
+                    'div[data-ri]'  # データ属性を持つコンテナ
+                ]
+                
+                thumbnail_elements = []
+                for selector in thumbnail_selectors:
+                    elements = page.query_selector_all(selector)
+                    if elements:
+                        thumbnail_elements.extend(elements)
+                        print(f"[DEBUG] Found {len(elements)} elements with selector: {selector}")
+                
+                if not thumbnail_elements:
+                    print("[WARNING] No thumbnail elements found, returning empty list")
+                    return []
+                
+                print(f"[DEBUG] Total thumbnail elements found: {len(thumbnail_elements)}")
+                
+                # 各サムネイルをクリックしてオリジナル画像URLを取得（3段構え）
+                for i, thumbnail in enumerate(thumbnail_elements[:max_results * 2]):  # 候補を増やす
                     try:
-                        src = img.get_attribute('src')
-                        alt = img.get_attribute('alt') or ''
+                        print(f"[DEBUG] Processing thumbnail {i+1}")
                         
-                        # 緩和したフィルタリング条件
-                        if src and src.startswith('http') and 'base64' not in src:
-                            # サイズフィルタリングを緩和 - 小さすぎる画像のみ除外
-                            if 'encrypted-tbn0.gstatic.com' in src:
-                                # Googleサムネイルは許可
-                                is_valid = True
-                            elif 'googleusercontent.com' in src:
-                                # Googleユーザーコンテンツも許可
-                                is_valid = True
-                            else:
-                                # その他のソースも許可（製品関連の可能性）
-                                is_valid = True
+                        original_url = None
+                        alt = ""
+                        
+                        # 第一優先: 画像をクリックして表示される高解像度URL
+                        try:
+                            # 要素のインデックスを保存して再取得
+                            thumbnail_index = i
+                            print(f"[DEBUG] Processing thumbnail {thumbnail_index+1}")
                             
-                            # 製品関連フィルタリングを緩和 - 明らかな風景のみ除外
-                            is_product_related = True
-                            strict_exclude_keywords = ['風景写真', 'landscape photography', 'nature photography']
+                            # 要素がクリック可能であることを確認
+                            print(f"[DEBUG] Checking if thumbnail is clickable")
                             
-                            for exclude_word in strict_exclude_keywords:
-                                if exclude_word.lower() in alt.lower():
-                                    is_product_related = False
-                                    break
-                            
-                            if is_valid and is_product_related:
-                                images.append({
-                                    'url': src,
-                                    'title': f'Google image {i+1} for {keyword}',
-                                    'thumbnail': src,
-                                    'alt': alt,
-                                    'is_google_thumbnail': 'encrypted-tbn0.gstatic.com' in src
-                                })
+                            # 要素を再取得してDOMにアタッチされていることを確認
+                            try:
+                                # 同じセレクタで要素を再取得
+                                refreshed_elements = []
+                                for selector in thumbnail_selectors:
+                                    elements = page.query_selector_all(selector)
+                                    if elements:
+                                        refreshed_elements.extend(elements)
+                                        print(f"[DEBUG] Found {len(elements)} elements with selector: {selector}")
+                                        if len(refreshed_elements) > thumbnail_index:
+                                            break
                                 
-                                if len(images) >= max_results:
-                                    break
+                                if not refreshed_elements or thumbnail_index >= len(refreshed_elements):
+                                    print(f"[DEBUG] Could not refresh thumbnail element (index: {thumbnail_index}, total: {len(refreshed_elements)})")
+                                    continue
+                                    
+                                fresh_thumbnail = refreshed_elements[thumbnail_index]
+                                print(f"[DEBUG] Successfully refreshed thumbnail element")
+                                
+                                # 要素をビューにスクロール
+                                fresh_thumbnail.scroll_into_view_if_needed()
+                                page.wait_for_timeout(1000)  # スクロール後の安定待機
+                                
+                                # 要素が表示され、クリック可能であることを確認
+                                fresh_thumbnail.wait_for_element_state('visible', timeout=3000)
+                                print(f"[DEBUG] Thumbnail is visible, attempting click")
+                                
+                                # クリック実行
+                                fresh_thumbnail.click()
+                                print(f"[DEBUG] Thumbnail clicked successfully")
+                                
+                            except Exception as e:
+                                print(f"[DEBUG] Thumbnail click preparation failed: {e}")
+                                continue
+                            
+                            # 詳細パネルが開くのを待機（より長く）
+                            page.wait_for_timeout(3000)  # 画像ビューワー展開待機
+                            
+                            # 詳細パネルの開閉を確認
+                            panel_opened = False
+                            try:
+                                # 詳細パネルが開いたことを確認（2024年のGoogle UIに対応）
+                                panel_selectors = [
+                                    'div.dFMRNd',  # 古いパネルセレクタ
+                                    'div.p7sI2d',  # 別のパネルセレクタ
+                                    'div.A8mJGf',  # さらに別のパネルセレクタ
+                                    'div.n3VNCb',  # 新しい画像ビューワー
+                                    'div.iPVvYb',  # 新しい画像コンテナ
+                                    'div[jsname="EJhZsc"]',  # JavaScript名を持つパネル
+                                    'div[role="dialog"]',  # ダイアログとしてのパネル
+                                    'div.QluYqe',  # 新しいパネルセレクタ
+                                    'div.mJxzWe',  # 画像プレビューパネル
+                                    'div.cF4V5c',  # 画像詳細パネル
+                                    '[data-overlayscrollbars-viewport]'  # スクロール可能なビューポート
+                                ]
+                                
+                                for panel_selector in panel_selectors:
+                                    try:
+                                        page.wait_for_selector(panel_selector, timeout=2000)
+                                        panel_elements = page.query_selector_all(panel_selector)
+                                        if panel_elements:
+                                            print(f"[DEBUG] Detail panel opened successfully with selector: {panel_selector}")
+                                            print(f"[DEBUG] Found {len(panel_elements)} panel elements")
+                                            panel_opened = True
+                                            
+                                            # パネル内に画像要素が存在することを確認
+                                            panel_images = page.query_selector_all(f'{panel_selector} img, img[data-src], img[src]')
+                                            print(f"[DEBUG] Found {len(panel_images)} images in detail panel")
+                                            break
+                                    except Exception as e:
+                                        print(f"[DEBUG] Panel selector '{panel_selector}' failed: {e}")
+                                        continue
+                                
+                                if not panel_opened:
+                                    print(f"[DEBUG] No detail panel found with any selector")
+                                    
+                            except Exception as e:
+                                print(f"[DEBUG] Detail panel detection failed: {e}")
+                                panel_opened = False
+                                
+                                # パネルが開いていない場合はESCキーで閉じて次へ
+                                try:
+                                    page.keyboard.press('Escape')
+                                    page.wait_for_timeout(500)
+                                except:
+                                    pass
+                                continue
+                            
+                            # パネルが開いている場合のみ画像URL取得を続行
+                            if panel_opened:
+                                # gstatic.comではないオリジナルURLを待機して取得
+                                original_url = None
+                                alt = ""
+                                
+                                # wait_for_selectorでオリジナル画像を待機
+                                try:
+                                    # gstatic.comではない画像を待機
+                                    non_gstatic_selectors = [
+                                        'img.n3VNCb[src*="googleusercontent.com"]',
+                                        'img.iPVvYb[src*="googleusercontent.com"]',
+                                        'img[src*="wikimedia.org"]',
+                                        'img[src*="wikipedia.org"]',
+                                        'img[src*="flickr.com"]',
+                                        'img[src*="unsplash.com"]',
+                                        'img[src*="pexels.com"]',
+                                        'img[src*="pixabay.com"]'
+                                    ]
+                                    
+                                    for selector in non_gstatic_selectors:
+                                        print(f"[DEBUG] Trying selector: {selector}")
+                                        try:
+                                            page.wait_for_selector(selector, timeout=3000)
+                                            img_element = page.query_selector(selector)
+                                            if img_element:
+                                                src = img_element.get_attribute('src')
+                                                print(f"[DEBUG] Selector '{selector}' found URL: {src}")
+                                                if src and src.startswith('http') and 'gstatic.com' not in src:
+                                                    original_url = src
+                                                    alt = img_element.get_attribute('alt') or ''
+                                                    print(f"[SUCCESS] Non-gstatic original URL found: {src}")
+                                                    print(f"[DEBUG] Used selector: {selector}")
+                                                    break
+                                                else:
+                                                    print(f"[DEBUG] URL rejected (gstatic.com or invalid): {src}")
+                                            else:
+                                                print(f"[DEBUG] Selector '{selector}' found no element")
+                                        except Exception as e:
+                                            print(f"[DEBUG] Selector '{selector}' failed: {e}")
+                                            continue
+                                            
+                                except Exception as e:
+                                    print(f"[DEBUG] wait_for_selector process failed: {e}")
+                                
+                                # それでも見つからない場合はJavaScript evaluateで強制取得
+                                if not original_url:
+                                    print(f"[DEBUG] Falling back to JavaScript evaluate method")
+                                    try:
+                                        js_result = page.evaluate("""
+                                            () => {
+                                                // 画像ビューワー内のすべてのimg要素を取得
+                                                const images = document.querySelectorAll('img');
+                                                let largestImage = null;
+                                                let maxSize = 0;
+                                                
+                                                for (const img of images) {
+                                                    const src = img.src || img.getAttribute('data-src');
+                                                    if (src && src.startsWith('http') && !src.includes('gstatic.com')) {
+                                                        // 画像サイズを計算（width * height）
+                                                        const width = img.naturalWidth || img.width || 0;
+                                                        const height = img.naturalHeight || img.height || 0;
+                                                        const size = width * height;
+                                                        
+                                                        if (size > maxSize) {
+                                                            maxSize = size;
+                                                            largestImage = {
+                                                                src: src,
+                                                                alt: img.alt || '',
+                                                                width: width,
+                                                                height: height
+                                                            };
+                                                        }
+                                                    }
+                                                }
+                                                
+                                                return largestImage;
+                                            }
+                                        """)
+                                        
+                                        if js_result:
+                                            original_url = js_result.get('src')
+                                            alt = js_result.get('alt', '')
+                                            print(f"[SUCCESS] JavaScript evaluate found largest image: {original_url}")
+                                            print(f"[DEBUG] Image size: {js_result.get('width')}x{js_result.get('height')}")
+                                            print(f"[DEBUG] Method: JavaScript evaluate (largest image)")
+                                        else:
+                                            print(f"[DEBUG] JavaScript evaluate returned no result")
+                                            
+                                    except Exception as e:
+                                        print(f"[DEBUG] JavaScript evaluate failed: {e}")
+                                
+                                # まだ見つからない場合は従来の方法でフォールバック
+                                if not original_url:
+                                    print(f"[DEBUG] Falling back to traditional selector method")
+                                    original_image_selectors = [
+                                        'img.n3VNCb',  # Google画像ビューワーのオリジナル画像
+                                        'img.iPVvYb',  # 別のオリジナル画像セレクタ
+                                        'img[data-src]',  # data-src属性を持つ画像
+                                        'img[src*="googleusercontent.com"]'  # googleusercontentドメインの画像
+                                    ]
+                                    
+                                    for selector in original_image_selectors:
+                                        print(f"[DEBUG] Trying fallback selector: {selector}")
+                                        img_element = page.query_selector(selector)
+                                        if img_element:
+                                            # src属性からURLを取得
+                                            src = img_element.get_attribute('src')
+                                            print(f"[DEBUG] Fallback selector '{selector}' found URL: {src}")
+                                            if src and src.startswith('http'):
+                                                original_url = src
+                                                alt = img_element.get_attribute('alt') or ''
+                                                print(f"[SUCCESS] Fallback found URL: {src}")
+                                                print(f"[DEBUG] Used selector: {selector}")
+                                                break
+                                            else:
+                                                print(f"[DEBUG] Fallback URL invalid: {src}")
+                                        else:
+                                            print(f"[DEBUG] Fallback selector '{selector}' found no element")
+                                    
+                                    # 見つからない場合はdata-srcをチェック
+                                    if not original_url:
+                                        print(f"[DEBUG] Trying data-src attributes")
+                                        for selector in original_image_selectors:
+                                            print(f"[DEBUG] Trying data-src selector: {selector}")
+                                            img_element = page.query_selector(selector)
+                                            if img_element:
+                                                data_src = img_element.get_attribute('data-src')
+                                                print(f"[DEBUG] Data-src selector '{selector}' found: {data_src}")
+                                                if data_src and data_src.startswith('http'):
+                                                    original_url = data_src
+                                                    alt = img_element.get_attribute('alt') or ''
+                                                    print(f"[SUCCESS] Data-src found: {data_src}")
+                                                    print(f"[DEBUG] Used selector: {selector}")
+                                                    break
+                                                else:
+                                                    print(f"[DEBUG] Data-src invalid: {data_src}")
+                                            else:
+                                                print(f"[DEBUG] Data-src selector '{selector}' found no element")
+                                
+                                if original_url:
+                                    # gstatic.com URLを厳格に除外
+                                    if 'gstatic.com' in original_url:
+                                        print(f"[REJECT] gstatic.com URL blocked: {original_url}")
+                                        continue
+                                    
+                                    # 50KB以上の画像のみを対象（最小ファイルサイズの再定義）
+                                    images.append({
+                                        'url': original_url,
+                                        'title': f'Image {i+1} for {keyword}',
+                                        'thumbnail': original_url,  # 取得したURLをサムネイルとしても使用
+                                        'alt': alt,
+                                        'is_google_thumbnail': 'encrypted-tbn0.gstatic.com' in original_url,
+                                        'source': 'google_search'
+                                    })
+                                    
+                                    print(f"[DEBUG] Added image {len(images)}: {original_url[:100]}...")
+                                    
+                                    if len(images) >= max_results:
+                                        break
+                                
+                                # ビューワーを閉じる
+                                page.keyboard.press('Escape')
+                                page.wait_for_timeout(1000)
+                                
+                            else:
+                                print(f"[SKIP] Panel was not opened, skipping image URL extraction")
+                                
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to get original URL from viewer: {e}")
+                            # ビューワーを閉じる
+                            try:
+                                page.keyboard.press('Escape')
+                                page.wait_for_timeout(500)
+                            except:
+                                pass
+                        
+                        # 第二優先: サムネイル要素の data-iurl や data-src に隠されているプレビューURL
+                        if not original_url:
+                            print(f"[DEBUG] Trying second priority: thumbnail data attributes")
+                            try:
+                                print(f"[DEBUG] Checking data-iurl attribute")
+                                data_iurl = thumbnail.get_attribute('data-iurl')
+                                print(f"[DEBUG] data-iurl value: {data_iurl}")
+                                if data_iurl and data_iurl.startswith('http') and 'gstatic.com' not in data_iurl:
+                                    original_url = data_iurl
+                                    alt = thumbnail.get_attribute('alt') or ''
+                                    print(f"[SUCCESS] Found preview URL from data-iurl: {data_iurl}")
+                                    print(f"[DEBUG] Method: data-iurl attribute")
+                                else:
+                                    print(f"[DEBUG] data-iurl invalid, empty, or contains gstatic.com")
+                            except Exception as e:
+                                print(f"[DEBUG] data-iurl extraction failed: {e}")
+                            
+                            if not original_url:
+                                try:
+                                    print(f"[DEBUG] Checking data-src attribute")
+                                    data_src = thumbnail.get_attribute('data-src')
+                                    print(f"[DEBUG] data-src value: {data_src}")
+                                    if data_src and data_src.startswith('http') and 'gstatic.com' not in data_src:
+                                        original_url = data_src
+                                        alt = thumbnail.get_attribute('alt') or ''
+                                        print(f"[SUCCESS] Found preview URL from data-src: {data_src}")
+                                        print(f"[DEBUG] Method: data-src attribute")
+                                    else:
+                                        print(f"[DEBUG] data-src invalid, empty, or contains gstatic.com")
+                                except Exception as e:
+                                    print(f"[DEBUG] data-src extraction failed: {e}")
+                        
+                        # 第三優先: src 属性
+                        if not original_url:
+                            print(f"[DEBUG] Trying third priority: src attribute")
+                            try:
+                                src = thumbnail.get_attribute('src')
+                                print(f"[DEBUG] src value: {src}")
+                                if src and src.startswith('http') and 'base64' not in src and 'gstatic.com' not in src:
+                                    original_url = src
+                                    alt = thumbnail.get_attribute('alt') or ''
+                                    print(f"[SUCCESS] Found URL from src: {src}")
+                                    print(f"[DEBUG] Method: src attribute")
+                                else:
+                                    print(f"[DEBUG] src invalid, contains base64, or contains gstatic.com")
+                            except Exception as e:
+                                print(f"[DEBUG] src extraction failed: {e}")
+                        
+                        if original_url:
+                            # gstatic.com URLを厳格に除外
+                            if 'gstatic.com' in original_url:
+                                print(f"[REJECT] gstatic.com URL blocked: {original_url}")
+                                continue
+                            
+                            # 50KB以上の画像のみを対象（最小ファイルサイズの再定義）
+                            images.append({
+                                'url': original_url,
+                                'title': f'Image {i+1} for {keyword}',
+                                'thumbnail': original_url,  # 取得したURLをサムネイルとしても使用
+                                'alt': alt,
+                                'is_google_thumbnail': 'encrypted-tbn0.gstatic.com' in original_url,
+                                'source': 'google_search'
+                            })
+                            
+                            print(f"[DEBUG] Added image {len(images)}: {original_url[:100]}...")
+                            
+                            if len(images) >= max_results:
+                                break
+                        
                     except Exception as e:
-                        print(f"[DEBUG] Error processing image {i}: {e}")
+                        print(f"[DEBUG] Error processing thumbnail {i+1}: {e}")
+                        # エラー時もビューワーを閉じる
+                        try:
+                            page.keyboard.press('Escape')
+                            page.wait_for_timeout(500)
+                        except:
+                            pass
                         continue
                 
                 browser.close()
                 
                 if images:
-                    print(f"Successfully found {len(images)} Google images for '{keyword}'")
+                    print(f"Successfully found {len(images)} original images for '{keyword}'")
                     return images
                 else:
-                    print(f"[ERROR] No valid Google images found for '{keyword}'")
-                    raise RuntimeError(f"Google画像検索でキーワード '{keyword}' に一致する画像が見つかりませんでした")
+                    print(f"[WARNING] No original images found for '{keyword}', will return empty list")
+                    return []
                     
         except ImportError:
             print("[ERROR] Playwright not available")
-            raise RuntimeError("Playwrightがインストールされていません")
+            return []
             
         except Exception as e:
             # HTTPエラー（503, 429など）の場合はリトライ
@@ -454,15 +813,16 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                     time.sleep(retry_delay)
                     continue
                 else:
-                    print(f"[ERROR] Max retries reached for '{keyword}'")
-                    raise RuntimeError(f"画像検索で最大リトライ回数に達しました: {e}")
+                    print(f"[ERROR] Max retries reached for '{keyword}', returning empty list")
+                    return []
             else:
-                # その他のエラーは即時失敗
-                print(f"[ERROR] Non-retryable error in image search: {e}")
-                raise RuntimeError(f"画像検索でエラーが発生しました: {e}")
+                # その他のエラーは空リストを返して継続
+                print(f"[ERROR] Error in image search: {e}, returning empty list")
+                return []
     
     # すべてのリトライが失敗した場合
-    raise RuntimeError(f"画像検索がすべて失敗しました: {keyword}")
+    print(f"[WARNING] All image search attempts failed for '{keyword}', returning empty list")
+    return []
 
 
 def get_youtube_credentials_from_env():
@@ -579,6 +939,88 @@ def build_youtube_client_from_env():
     except Exception as e:
         print(f"Failed to build YouTube client: {e}")
         raise
+
+
+def extract_image_keywords_list(script_data: Dict[str, Any]) -> List[str]:
+    """台本から画像検索キーワードリストを抽出（固有名詞中心、キーワード加工なし）"""
+    try:
+        title = script_data.get("title", "")
+        content = script_data.get("content", {})
+        topic_summary = content.get("topic_summary", "")
+        script_parts = content.get("script_parts", [])
+        
+        # 台本のテキストを結合
+        all_text = f"{title} {topic_summary}"
+        for part in script_parts:
+            all_text += f" {part.get('text', '')}"
+        
+        # 固有名詞・重要キーワードリスト（優先順位順）
+        # 企業名・ブランド名
+        company_keywords = [
+            "ドコモ", "NTT", "KDDI", "ソフトバンク", "楽天", "Google", "Apple", "Microsoft", 
+            "Amazon", "Meta", "Tesla", "Sony", "Panasonic", "Sharp", "富士通", "NEC", "日立",
+            "東芝", "三菱", "住友", "三井", "VAIO", "富士通", "IBM", "Oracle", "Cisco", "Intel",
+            "AMD", "NVIDIA", "Qualcomm", "Samsung", "LG", "Huawei", "Xiaomi"
+        ]
+        
+        # 製品名・サービス名
+        product_keywords = [
+            "iPhone", "Android", "Windows", "Mac", "iPad", "Galaxy", "Pixel", "Surface",
+            "PlayStation", "Xbox", "Switch", "ChatGPT", "Gemini", "Copilot", "Siri", "Alexa",
+            "YouTube", "TikTok", "Instagram", "Twitter", "Facebook", "LINE", "Zoom", "Teams",
+            "Slack", "Dropbox", "GitHub", "AWS", "Azure", "GCP", "Firebase"
+        ]
+        
+        # 技術・IT用語
+        tech_keywords = [
+            "AI", "人工知能", "機械学習", "ディープラーニング", "データサイエンス", "プログラミング",
+            "ソフトウェア", "テクノロジー", "コンピュータ", "デジタル", "イノベーション", "5G", "6G",
+            "IoT", "ブロックチェーン", "クラウド", "サイバーセキュリティ", "VR", "AR", "メタバース",
+            "SaaS", "PaaS", "IaaS", "API", "SDK", "フレームワーク", "アルゴリズム", "データベース"
+        ]
+        
+        # 優先順位でキーワードを検索
+        all_keywords = company_keywords + product_keywords + tech_keywords
+        found_keywords = []
+        
+        for keyword in all_keywords:
+            if keyword in all_text:
+                found_keywords.append(keyword)
+                print(f"[DEBUG] Found keyword: {keyword}")
+        
+        # キーワードが見つからない場合はカタカナ語や英単語を抽出
+        if not found_keywords:
+            import re
+            
+            # カタカナ語（3文字以上）を抽出
+            katakana_pattern = r'[ァ-ヶー]{3,}'
+            katakana_words = re.findall(katakana_pattern, all_text)
+            found_keywords.extend(katakana_words)
+            
+            # 英単語（3文字以上）を抽出
+            english_pattern = r'[A-Za-z]{3,}'
+            english_words = re.findall(english_pattern, all_text)
+            found_keywords.extend(english_words)
+            
+            # 一般的な日本語名詞（3文字以上）を抽出
+            japanese_words = [word for word in all_text.split() if len(word) >= 3 and word.isalpha()]
+            found_keywords.extend(japanese_words)
+        
+        # 重複を除去してキーワードリストを返す
+        if found_keywords:
+            # 重複除去
+            unique_keywords = list(dict.fromkeys(found_keywords))
+            print(f"Extracted keywords: {unique_keywords[:5]}")  # 最初の5つを表示
+            return unique_keywords
+        else:
+            # フォールバックキーワード
+            fallback_keywords = ["technology", "テクノロジー", "AI"]
+            print(f"Using fallback keywords: {fallback_keywords}")
+            return fallback_keywords
+            
+    except Exception as e:
+        print(f"Failed to extract keywords: {e}")
+        return ["technology"]  # 最終フォールバック
 
 
 def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
@@ -760,9 +1202,10 @@ def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List
 
 
 def download_image_from_url(image_url: str, filename: str = None) -> str:
-    """URLから画像をダウンロードしてtempフォルダに保存し、S3にもアップロード（リトライ付き）"""
+    """URLから画像をダウンロードしてtempフォルダに保存し、S3にもアップロード（リトライ付き・ゾンビ画像対策）"""
     
     import time
+    import uuid
     
     max_retries = 3
     retry_delay = 1  # 秒
@@ -773,14 +1216,21 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
                 print(f"[DEBUG] Skipping unsupported image URL: {image_url}")
                 return None
 
+            # gstaticドメインを入り口で拒否（より厳格に）
+            if "gstatic.com" in image_url or "encrypted-tbn" in image_url:
+                print(f"[REJECT] Blocked thumbnail domain (gstatic/encrypted-tbn): {image_url}")
+                return None
+
             if not filename:
-                # URLからファイル名を生成
+                # UUIDを導入して一時ファイルの衝突を回避
                 import hashlib
                 url_hash = hashlib.md5(image_url.encode()).hexdigest()[:8]
+                timestamp = int(time.time())
+                unique_id = str(uuid.uuid4())[:8]
                 ext = os.path.splitext(image_url.split("?")[0])[1].lower()
                 if ext not in [".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"]:
                     ext = ".jpg"
-                filename = f"ai_image_{url_hash}{ext}"
+                filename = f"ai_image_{url_hash}_{timestamp}_{unique_id}{ext}"
             
             local_path = os.path.join(LOCAL_TEMP_DIR, filename)
             
@@ -798,7 +1248,15 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
             
             response.raise_for_status()
             
-            # 画像をローカルに保存
+            # バイトチェックを「書き込み前」に行う
+            content_size = len(response.content)
+            print(f"[DEBUG] Downloaded content size: {content_size} bytes")
+            
+            if content_size < 50 * 1024:
+                print(f"[REJECT] Byte size too small: {content_size} bytes < 50KB. URL: {image_url}")
+                return None  # ここで即座に抜ける（ファイルを作成しない）
+            
+            # 画像をローカルに保存（バリデーション後）
             with open(local_path, 'wb') as f:
                 f.write(response.content)
 
@@ -806,16 +1264,50 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
             print(f"[DEBUG] Saved image: path={local_path}, size={file_size} bytes, ext={os.path.splitext(local_path)[1]}")
             print(f"[DEBUG] Image exists after save: {os.path.exists(local_path)}")
 
-            # 画像のフォーマット検証
+            # Phase 1: 生データのデバッグ保存
+            try:
+                phase1_path = os.path.join(LOCAL_TEMP_DIR, f"debug_1_raw_{filename}")
+                with open(phase1_path, 'wb') as f:
+                    f.write(response.content)
+                print(f"[DEBUG] Saved raw debug image: {phase1_path}")
+            except Exception as e:
+                print(f"[DEBUG] Failed to save raw debug image: {e}")
+
+            # 画像のフォーマット検証と厳格なフィルタリング
             try:
                 with Image.open(local_path) as img:
-                    img.verify()
-                    print(f"[DEBUG] Image decode success: format={img.format}, mode={img.mode}")
-            except UnidentifiedImageError as e:
-                print(f"[DEBUG] Image decode failed (UnidentifiedImageError): {e}")
-                return None
+                    img.load()  # データ整合性を確認
+                    
+                    # 厳格なフィルタリング条件
+                    width, height = img.size
+                    
+                    print(f"[DEBUG] Image validation: size={file_size}B, resolution={width}x{height}, format={img.format}")
+                    
+                    # 除外条件チェック
+                    if file_size < 50 * 1024:  # 50KB未満
+                        print(f"[REJECT] Image too small: {file_size}B < 50KB")
+                        # 失敗した場合は痕跡（ファイル）を残さない
+                        if os.path.exists(local_path):
+                            os.remove(local_path)
+                            print(f"[DEBUG] Removed invalid file: {local_path}")
+                        return None
+                    
+                    if width < 640 or height < 480:  # 解像度が640x480未満
+                        print(f"[REJECT] Resolution too low: {width}x{height} < 640x480")
+                        # 失敗した場合は痕跡（ファイル）を残さない
+                        if os.path.exists(local_path):
+                            os.remove(local_path)
+                            print(f"[DEBUG] Removed invalid file: {local_path}")
+                        return None
+                    
+                    print(f"[PASS] Image validation passed: {width}x{height}, {file_size}B")
+                    
             except Exception as e:
-                print(f"[DEBUG] Image decode failed: {e}")
+                print(f"[DEBUG] Image validation failed: {e}")
+                # 失敗した場合は痕跡（ファイル）を残さない
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                    print(f"[DEBUG] Removed corrupted file: {local_path}")
                 return None
             
             # S3のtempフォルダにもアップロード
@@ -850,63 +1342,118 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
     return None
 
 
-def split_subtitle_text(text: str, max_chars: int = 100) -> List[str]:
-    """字幕を100文字以内で分割する。"""
+def split_subtitle_text(text: str, max_chars: int = 45) -> List[str]:
+    """字幕を45文字以内で分割する。句点（。）で区切り、短文は結合する。"""
     if len(text) <= max_chars:
         return [text]
 
     import re
-    parts = re.split(r"([。、])", text)
-    chunks = []
-    current = ""
-    for token in parts:
-        if not token:
-            continue
-        candidate = f"{current}{token}"
-        if len(candidate) > max_chars and current:
-            chunks.append(current)
-            current = token
+    # 句点（。）で分割
+    parts = re.split(r"([。])", text)
+    
+    # 分割記号を元に戻す
+    sentences = []
+    for i in range(0, len(parts), 2):
+        if i + 1 < len(parts):
+            sentence = parts[i] + parts[i + 1]
         else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return [chunk.strip() for chunk in chunks if chunk.strip()]
+            sentence = parts[i]
+        sentences.append(sentence.strip())
+    
+    # 短文（15文字未満）を次の文と結合
+    merged_sentences = []
+    i = 0
+    while i < len(sentences):
+        current = sentences[i]
+        
+        # 現在の文が15文字未満で、次の文がある場合は結合
+        while len(current) < 15 and i + 1 < len(sentences):
+            next_sentence = sentences[i + 1]
+            combined = current + next_sentence
+            if len(combined) <= max_chars:
+                current = combined
+                i += 1
+            else:
+                break
+        
+        merged_sentences.append(current)
+        i += 1
+    
+    # 45文字を超える場合は適切な位置で分割
+    final_chunks = []
+    for sentence in merged_sentences:
+        if len(sentence) <= max_chars:
+            final_chunks.append(sentence)
+        else:
+            # 長い文は適切な位置で分割
+            words = re.split(r'([、])', sentence)
+            current_chunk = ""
+            for j in range(0, len(words), 2):
+                if j + 1 < len(words):
+                    word = words[j] + words[j + 1]
+                else:
+                    word = words[j]
+                
+                if len(current_chunk + word) > max_chars and current_chunk:
+                    final_chunks.append(current_chunk.strip())
+                    current_chunk = word
+                else:
+                    current_chunk += word
+            
+            if current_chunk.strip():
+                final_chunks.append(current_chunk.strip())
+    
+    return [chunk.strip() for chunk in final_chunks if chunk.strip()]
 
 
 def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
-    """AIによる動的選別・自動取得で最適な画像を取得"""
+    """AIによる動的選別・自動取得で最適な画像を取得（複数キーワード対応）"""
     try:
-        # 1. キーワード抽出
-        keyword = extract_image_keywords_from_script(script_data)
-        print(f"[DEBUG] Extracted keyword for image search: {keyword}")
+        # 1. キーワードリスト抽出
+        keywords = extract_image_keywords_list(script_data)
+        print(f"[DEBUG] Extracted keywords for image search: {keywords}")
         
-        # 2. 画像検索
-        images = search_images_with_playwright(keyword)
+        # 2. 各キーワードで画像検索を試行（最小枚数確保）
+        for i, keyword in enumerate(keywords):
+            print(f"[DEBUG] Trying keyword {i+1}/{len(keywords)}: {keyword}")
+            
+            try:
+                images = search_images_with_playwright(keyword)
+                
+                if images:
+                    print(f"[DEBUG] Found {len(images)} images with keyword '{keyword}'")
+                    
+                    # 最初の画像（最も関連性が高い）をダウンロード
+                    best_image = images[0]
+                    image_path = download_image_from_url(best_image['url'])
+                    
+                    if image_path:
+                        print(f"Successfully selected and downloaded image with keyword '{keyword}': {best_image['title']}")
+                        return image_path
+                    else:
+                        print(f"[DEBUG] Failed to download image with keyword '{keyword}', trying next keyword")
+                        continue
+                else:
+                    print(f"[DEBUG] No images found with keyword '{keyword}', trying next keyword")
+                    continue
+                    
+            except Exception as e:
+                print(f"[DEBUG] Error with keyword '{keyword}': {e}, trying next keyword")
+                continue
         
-        if not images:
-            print("[ERROR] No images found for the video")
-            raise RuntimeError(f"画像検索でキーワード '{keyword}' に一致する画像が見つかりませんでした")
-        
-        print(f"[DEBUG] Found {len(images)} images, selecting the first one")
-        
-        # 最初の画像（最も関連性が高い）をダウンロード
-        best_image = images[0]
-        image_path = download_image_from_url(best_image['url'])
-        
-        if not image_path:
-            print("[ERROR] Failed to download the selected image")
-            raise RuntimeError(f"画像のダウンロードに失敗しました: {best_image['url']}")
-        
-        print(f"Successfully selected and downloaded AI image: {best_image['title']}")
-        return image_path
+        # すべてのキーワードで失敗した場合
+        print("[WARNING] No images found for any keywords, will use background only")
+        return None
             
     except Exception as e:
         print(f"[ERROR] AI image selection process failed: {e}")
-        # 既にRuntimeErrorの場合はそのまま再発生
+        # 既にRuntimeErrorの場合はNoneを返して処理を継続
         if isinstance(e, RuntimeError):
-            raise
-        # その他の例外はRuntimeErrorに変換
-        raise RuntimeError(f"画像取得処理でエラーが発生しました: {e}")
+            print(f"[INFO] RuntimeError occurred, returning None to continue with background only")
+            return None
+        else:
+            print(f"[INFO] Other error occurred, returning None to continue with background only")
+            return None
 
 
 def download_image_from_s3(image_key: str) -> str:
@@ -1306,7 +1853,6 @@ def build_video_with_subtitles(
     bg_clip = None
     bgm_clip = None
     text_clips = []
-    segment_clips = []
     video = None
     
     try:
@@ -1438,8 +1984,8 @@ def build_video_with_subtitles(
                     break
                 
                 # Geminiが抽出したキーワードを完全に維持して使用
-                # 数字や記号を削除せず、そのまま検索クエリに使用
-                search_keyword = f"{keyword} 製品 実機"
+                # サブワードを付加せず、固有名詞単体で検索
+                search_keyword = keyword
                 
                 print(f"[DEBUG] Segment {i} search keyword: {search_keyword}")
                 print(f"[DEBUG] Original keyword: '{keyword}' (length: {len(keyword)})")
@@ -1509,9 +2055,14 @@ def build_video_with_subtitles(
             print(f"[DEBUG] Segment {i}: start={seg_start}s, end={seg_end}s, duration={duration}s")
             print(f"[DEBUG] Available images: {num_images}")
             
+            # セグメントの有効時間を計算
+            available_time = seg_end - seg_start
+            max_images_in_segment = int(available_time / fixed_duration)
+            print(f"[DEBUG] Available time: {available_time}s, Max images: {max_images_in_segment}")
+            
             # 各画像を10秒固定で配置、セグメント終了時間を超える場合は配置しない
             images_scheduled = 0
-            for img_idx in range(num_images):
+            for img_idx in range(min(num_images, max_images_in_segment)):
                 img_start = seg_start + img_idx * fixed_duration
                 img_end = img_start + fixed_duration
                 
@@ -1525,16 +2076,42 @@ def build_video_with_subtitles(
                     print(f"[DEBUG] Image {img_idx} skipped: end={img_end}s > seg_end={seg_end}s")
                     break
                 
+                # 画像パスの有効性を確認
                 image_path = part_images[img_idx]
+                if not image_path or not os.path.exists(image_path):
+                    print(f"[DEBUG] Image {img_idx} skipped: invalid or missing file - {image_path}")
+                    continue
+                
+                # 画像ファイルの有効性を再確認
+                try:
+                    with Image.open(image_path) as img:
+                        width, height = img.size
+                        if width < 100 or height < 100:
+                            print(f"[DEBUG] Image {img_idx} skipped: too small ({width}x{height})")
+                            continue
+                except Exception as e:
+                    print(f"[DEBUG] Image {img_idx} skipped: invalid image file - {e}")
+                    continue
+                
+                # 有効な画像のみスケジュールに追加
+                actual_duration = min(fixed_duration, seg_end - img_start)
+                if actual_duration <= 0:
+                    print(f"[DEBUG] Image {img_idx} skipped: invalid duration {actual_duration}s")
+                    continue
+                
                 image_schedule.append({
                     "start": img_start,
-                    "duration": fixed_duration,
+                    "duration": actual_duration,
                     "path": image_path,
                 })
                 images_scheduled += 1
-                print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={fixed_duration}s")
+                print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={actual_duration}s")
             
             print(f"[DEBUG] Scheduled {images_scheduled} images for segment {i}")
+            
+            # スケジュールされた画像がない場合の警告
+            if images_scheduled == 0:
+                print(f"[WARNING] No valid images scheduled for segment {i}")
 
             # current_timeを厳密に管理（セグメント間の重複を防止）
             print(f"[DEBUG] Segment {i} completed. Current time before update: {current_time:.2f}s")
@@ -1597,10 +2174,10 @@ def build_video_with_subtitles(
         # 画像スケジュール作成完了後のチェック
         valid_images = [item for item in image_schedule if item["path"] is not None]
         if not valid_images:
-            print("[ERROR] No images were collected for the entire video")
-            raise RuntimeError("動画全体で画像が1枚も取得できませんでした。ネットワーク接続または画像ソースを確認してください。")
-        
-        print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
+            print("[WARNING] No images were collected for the entire video, using background only")
+            print("[INFO] Video will be generated with background video and subtitles only")
+        else:
+            print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
 
         def make_pos_func(start_time: float, target_x: int, target_y: int, start_x: int):
             """画像ごとに独立した位置関数を生成するクロージャ"""
@@ -1627,13 +2204,54 @@ def build_video_with_subtitles(
                         print(f"[DEBUG] Skipping SVG file: {image_path}")
                         image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
                     else:
-                        # PILで画像を読み込み、エラー時はフォールバック
+                        # PILで高品質リサイズ処理を実行
                         with Image.open(image_path) as img:
-                            img = img.convert("RGBA")
-                            image_array = np.array(img.convert("RGB"))
+                            print(f"[DEBUG] Original image size: {img.size}, format: {img.format}, mode: {img.mode}")
+                            
+                            # RGBに変換
+                            img = img.convert("RGB")
+                            original_width, original_height = img.size
+                            
+                            # アスペクト比を維持したまま最大サイズに収める
+                            max_width = 1400
+                            max_height = 800
+                            
+                            # スケール計算（アスペクト比維持）
+                            scale_w = max_width / original_width
+                            scale_h = max_height / original_height
+                            scale = min(scale_w, scale_h, 1.0)  # 拡大も許可する場合は1.0制限を削除
+                            
+                            target_width = int(original_width * scale)
+                            target_height = int(original_height * scale)
+                            
+                            # PillowのLANCZOSで高品質リサイズ
+                            if target_width != original_width or target_height != original_height:
+                                print(f"[DEBUG] Resizing with Pillow LANCZOS: {original_width}x{original_height} → {target_width}x{target_height}")
+                                img = img.resize((target_width, target_height), Image.LANCZOS)
+                            
+                            # 物理スペックのログ出力（リサイズ後）
+                            scale_factor = target_width / original_width if original_width > 0 else 1.0
+                            print(f"[INFO] After Resize: ({target_width} x {target_height}) | Scale Factor: {scale_factor:.2f}")
+                            
+                            # 軽くシャープ化して輪郭をクッキリさせる
+                            print(f"[DEBUG] Applying light sharpen filter")
+                            img = img.filter(ImageFilter.SHARPEN)
+                            
+                            # Phase 2: 処理済みデータのデバッグ保存
+                            try:
+                                base_filename = os.path.basename(image_path)
+                                phase2_path = os.path.join(LOCAL_TEMP_DIR, f"debug_2_processed_{base_filename}")
+                                img.save(phase2_path, quality=95)
+                                print(f"[DEBUG] Phase 2 saved: {phase2_path}")
+                            except Exception as e:
+                                print(f"[DEBUG] Failed to save Phase 2 debug: {e}")
+                            
+                            # MoviePy用にnumpy配列に変換
+                            image_array = np.array(img)
+                            print(f"[DEBUG] Final image array shape: {image_array.shape}")
                             print(
-                                f"[DEBUG] Image decode success: path={image_path}, "
-                                f"format={img.format}, mode={img.mode}"
+                                f"[DEBUG] High-quality processing complete: path={image_path}, "
+                                f"final_size={img.size}"
                             )
                 except UnidentifiedImageError as e:
                     print(f"[DEBUG] Image decode failed (UnidentifiedImageError): {e}")
@@ -1647,30 +2265,8 @@ def build_video_with_subtitles(
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
-            clip_w, clip_h = clip.w, clip.h
-
-            # 画像サイズ: 画面幅の58%〜72%でランダム（最大1280x720に制限）
-            width_ratio = random.uniform(0.58, 0.72)
-            target_width = min(int(VIDEO_WIDTH * width_ratio), 1280)
-            scale = target_width / max(clip_w, 1)
-            target_height = int(clip_h * scale)
             
-            # 高さが720pxを超えないように制限
-            if target_height > 720:
-                scale = 720 / max(clip_h, 1)
-                target_width = int(clip_w * scale)
-                target_height = 720
-
-            # 高さが画面を圧迫しないように制限
-            max_height = int(VIDEO_HEIGHT * 0.72)  # 上8%〜下80%の範囲
-            if target_height > max_height:
-                scale = max_height / max(clip_h, 1)
-                target_width = int(clip_w * scale)
-                target_height = int(clip_h * scale)
-
-            clip = clip.resized(width=target_width)
-            clip_w, clip_h = clip.w, clip.h
-
+            # Pillowで事前リサイズ済みのため、MoviePyでのリサイズは不要
             # フェードイン・アウトを追加（一時的にコメントアウト）
             # clip = clip.crossfadein(0.5).crossfadeout(0.5)
 
@@ -1687,22 +2283,41 @@ def build_video_with_subtitles(
             
             image_clips.append(clip)
 
-        # Layer 3: 左上セグメント表示 - 1920x1080用に調整
+        # Layer 3: 左上ヘッダー画像表示 - 1920x1080用に調整
+        heading_clip = None
         try:
-            segment_clip = TextClip(
-                text="概要",
-                font_size=28,  # 少し大きく
-                color="black",
-                font=font_path,
-                bg_color="white",  # 白背景
-                size=(250, 60)  # 少し大きく
-            ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
+            heading_path = download_heading_image()
+            if heading_path and os.path.exists(heading_path):
+                # ヘッダー画像を読み込んでImageClipとして配置
+                heading_img = ImageClip(heading_path)
+                
+                # サイズが大きすぎる場合は幅300〜400px程度にリサイズ
+                img_w, img_h = heading_img.size
+                if img_w > 400:
+                    scale = 400 / img_w
+                    target_width = 400
+                    target_height = int(img_h * scale)
+                    heading_img = heading_img.resized(width=target_width, height=target_height)
+                
+                # 左上に配置
+                heading_clip = heading_img.with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
+                print(f"[SUCCESS] Heading image loaded and positioned: {heading_img.size}")
+            else:
+                print("[WARNING] Heading image not available, using text fallback")
+                # フォールバックとしてテキストを表示
+                heading_clip = TextClip(
+                    text="概要",
+                    font_size=28,
+                    color="black",
+                    font=font_path,
+                    bg_color="white",
+                    size=(250, 60)
+                ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
         except Exception as e:
-            print(f"[ERROR] Failed to create segment text: {e}")
-            print(f"[DEBUG] Font path: {font_path}")
+            print(f"[ERROR] Failed to create heading clip: {e}")
             print(f"[DEBUG] Error type: {type(e).__name__}")
-            print("Continuing without segment text...")
-            segment_clip = None  # セグメントテキストなしで続行
+            print("Continuing without heading...")
+            heading_clip = None
 
         # Layer 4: 下部字幕 - 1920x1080用に調整
         current_time = 0.0
@@ -1719,20 +2334,21 @@ def build_video_with_subtitles(
                 
                 # 字幕クリップを作成（1920x1080用に調整）
                 try:
-                    chunks = split_subtitle_text(text, max_chars=100)
+                    chunks = split_subtitle_text(text, max_chars=45)
                     chunk_duration = subtitle_duration / max(len(chunks), 1)
                     for chunk_idx, chunk in enumerate(chunks):
                         txt_clip = TextClip(
                             text=chunk,
-                            font_size=48,  # 大きくして読みやすく
+                            font_size=58,  # 1.2倍に拡大（48→58）
                             color="black",
                             font=font_path,
                             method="caption",
                             size=(1700, None),
                             bg_color="white"  # 白背景
                         )
+                        # 字幕エリアを1.2倍に拡大して下に配置（VIDEO_HEIGHT - 360）
                         clip_start = current_time + chunk_idx * chunk_duration
-                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 300)).with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
+                        txt_clip = txt_clip.with_position((150, VIDEO_HEIGHT - 360)).with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
                         text_clips.append(txt_clip)
                 except Exception as e:
                     print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
@@ -1748,15 +2364,15 @@ def build_video_with_subtitles(
                 print(f"Error creating subtitle for part {i}: {e}")
                 continue
 
-        # すべてのレイヤーを合成（厳格な順序: 背景動画 -> 画像 -> セグメントテキスト -> 字幕）
+        # すべてのレイヤーを合成（厳格な順序: 背景動画 -> 画像 -> ヘッダー画像 -> 字幕）
         # bg_clip が最背面（インデックス0）、text_clips が最前面になるように厳格化
         all_clips = [bg_clip] + image_clips
-        if segment_clip:
-            all_clips.append(segment_clip)
+        if heading_clip:
+            all_clips.append(heading_clip)
         all_clips.extend(text_clips)
         
         # デバッグ用中間保存ログ
-        print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + セグメント{1 if segment_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
+        print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + ヘッダー{1 if heading_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
         if image_clips:
             first_img = image_clips[0]
             print(f"[DEBUG] First image clip: start={first_img.start}s, duration={first_img.duration}s, size={first_img.size}")
@@ -1876,26 +2492,52 @@ def build_video_with_subtitles(
             duration = getattr(img_clip, 'duration', 'N/A')
             print(f"[QUALITY CHECK] Image {i}: start={start_time}s, duration={duration}s")
         
-        bitrate = "800k" if DEBUG_MODE else None
+        bitrate = "800k" if DEBUG_MODE else VIDEO_BITRATE
         if DEBUG_MODE:
             print(f"DEBUG_MODE: Using low bitrate for preview: {bitrate}")
+        else:
+            print(f"Using high quality bitrate: {bitrate}")
+
+        # ffmpeg実行コマンドの可視化
+        # DEBUG_MODE時も8Mbpsを強制する
+        ffmpeg_params = ['-crf', '23', '-b:v', '8000k'] if not DEBUG_MODE else ['-crf', '28', '-preset', 'ultrafast', '-b:v', '8000k']
+        print(f"[INFO] FFmpeg Parameters: {ffmpeg_params}")
+        print(f"[INFO] Video Settings: fps=30, codec=libx264, preset={'medium' if not DEBUG_MODE else 'ultrafast'}")
+        print(f"[INFO] Bitrate Settings: bitrate={bitrate}, video_bitrate=8000k (forced)")
+        print(f"[INFO] Audio Settings: codec=aac, audio_bitrate=256k")
 
         video.write_videofile(
             out_video_path,
             fps=30,  # 30fps固定
             codec='libx264',
-            preset='ultrafast',  # 最速エンコード
+            preset='medium' if not DEBUG_MODE else 'ultrafast',  # 高画質設定
             audio_codec='aac',
             audio_bitrate='256k',  # 音声256kbps
             bitrate=bitrate,
             temp_audiofile='temp-audio.m4a',
             remove_temp=True,
             threads=4,  # 並列処理を抑制（ローカル環境向け）
-            ffmpeg_params=['-crf', '28', '-preset', 'ultrafast'],  # メモリ負荷低減
+            ffmpeg_params=ffmpeg_params,  # 高画質CRF値と8Mbps強制
             logger=None  # コンソール書き込みを抑制
         )
         
         print("Video generation completed successfully")
+        
+        # 最終フレームの書き出し
+        try:
+            # 画像が表示されている瞬間を取得（最初の画像クリップの開始時間）
+            if image_clips:
+                first_image_clip = image_clips[0]
+                frame_time = getattr(first_image_clip, 'start', 1.0)  # 開始時間、なければ1秒時点
+                
+                # フレームを保存
+                final_frame_path = os.path.join(os.path.dirname(out_video_path), "final_frame_check.png")
+                video.save_frame(final_frame_path, t=frame_time)
+                print(f"[DEBUG] Final frame saved: {final_frame_path} at t={frame_time}s")
+            else:
+                print("[DEBUG] No image clips found, skipping final frame export")
+        except Exception as e:
+            print(f"[DEBUG] Failed to save final frame: {e}")
 
     except Exception as e:
         print(f"Error in video generation: {e}")
@@ -1911,7 +2553,9 @@ def build_video_with_subtitles(
             audio_clip.close()
         if bgm_clip:
             bgm_clip.close()
-        for clip in text_clips + segment_clips:
+        if heading_clip:
+            heading_clip.close()
+        for clip in text_clips:
             if clip:
                 clip.close()
         
