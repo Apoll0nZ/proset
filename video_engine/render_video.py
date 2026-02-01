@@ -425,70 +425,113 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                 
                 print(f"[DEBUG] Total thumbnail elements found: {len(thumbnail_elements)}")
                 
-                # 各サムネイルをクリックしてオリジナル画像URLを取得
+                # 各サムネイルをクリックしてオリジナル画像URLを取得（3段構え）
                 for i, thumbnail in enumerate(thumbnail_elements[:max_results * 2]):  # 候補を増やす
                     try:
                         print(f"[DEBUG] Processing thumbnail {i+1}")
                         
-                        # サムネイルをクリック
-                        thumbnail.click()
-                        page.wait_for_timeout(2000)  # 画像ビューワー展開待機
-                        
-                        # 画像ビューワー内のオリジナル画像を取得
-                        original_image_selectors = [
-                            'img.n3VNCb',  # Google画像ビューワーのオリジナル画像
-                            'img.iPVvYb',  # 別のオリジナル画像セレクタ
-                            'img[data-src]',  # data-src属性を持つ画像
-                            'img[src*="gstatic.com"]',  # gstaticドメインの画像
-                            'img[src*="googleusercontent.com"]'  # googleusercontentドメインの画像
-                        ]
-                        
                         original_url = None
-                        for selector in original_image_selectors:
-                            img_element = page.query_selector(selector)
-                            if img_element:
-                                # src属性からURLを取得
-                                src = img_element.get_attribute('src')
-                                if src and src.startswith('http'):
-                                    # 可能性のあるオリジナルURLを優先
-                                    if 'gstatic.com' in src or 'googleusercontent.com' in src:
-                                        original_url = src
-                                        print(f"[DEBUG] Found original image URL: {src}")
-                                        break
+                        alt = ""
                         
-                        # 見つからない場合はdata-srcをチェック
-                        if not original_url:
+                        # 第一優先: 画像をクリックして表示される高解像度URL
+                        try:
+                            thumbnail.click()
+                            page.wait_for_timeout(2000)  # 画像ビューワー展開待機
+                            
+                            # 画像ビューワー内のオリジナル画像を取得
+                            original_image_selectors = [
+                                'img.n3VNCb',  # Google画像ビューワーのオリジナル画像
+                                'img.iPVvYb',  # 別のオリジナル画像セレクタ
+                                'img[data-src]',  # data-src属性を持つ画像
+                                'img[src*="gstatic.com"]',  # gstaticドメインの画像
+                                'img[src*="googleusercontent.com"]'  # googleusercontentドメインの画像
+                            ]
+                            
                             for selector in original_image_selectors:
                                 img_element = page.query_selector(selector)
                                 if img_element:
-                                    data_src = img_element.get_attribute('data-src')
+                                    # src属性からURLを取得
+                                    src = img_element.get_attribute('src')
+                                    if src and src.startswith('http'):
+                                        # 可能性のあるオリジナルURLを優先
+                                        if 'gstatic.com' in src or 'googleusercontent.com' in src:
+                                            original_url = src
+                                            alt = img_element.get_attribute('alt') or ''
+                                            print(f"[DEBUG] Found original image URL: {src}")
+                                            break
+                            
+                            # 見つからない場合はdata-srcをチェック
+                            if not original_url:
+                                for selector in original_image_selectors:
+                                    img_element = page.query_selector(selector)
+                                    if img_element:
+                                        data_src = img_element.get_attribute('data-src')
+                                        if data_src and data_src.startswith('http'):
+                                            original_url = data_src
+                                            alt = img_element.get_attribute('alt') or ''
+                                            print(f"[DEBUG] Found original image URL from data-src: {data_src}")
+                                            break
+                            
+                            # ビューワーを閉じる
+                            page.keyboard.press('Escape')
+                            page.wait_for_timeout(1000)
+                            
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to get original URL from viewer: {e}")
+                            # ビューワーを閉じる
+                            try:
+                                page.keyboard.press('Escape')
+                                page.wait_for_timeout(500)
+                            except:
+                                pass
+                        
+                        # 第二優先: サムネイル要素の data-iurl や data-src に隠されているプレビューURL
+                        if not original_url:
+                            try:
+                                data_iurl = thumbnail.get_attribute('data-iurl')
+                                if data_iurl and data_iurl.startswith('http'):
+                                    original_url = data_iurl
+                                    alt = thumbnail.get_attribute('alt') or ''
+                                    print(f"[DEBUG] Found preview URL from data-iurl: {data_iurl}")
+                            except:
+                                pass
+                            
+                            if not original_url:
+                                try:
+                                    data_src = thumbnail.get_attribute('data-src')
                                     if data_src and data_src.startswith('http'):
                                         original_url = data_src
-                                        print(f"[DEBUG] Found original image URL from data-src: {data_src}")
-                                        break
+                                        alt = thumbnail.get_attribute('alt') or ''
+                                        print(f"[DEBUG] Found preview URL from data-src: {data_src}")
+                                except:
+                                    pass
+                        
+                        # 第三優先: src 属性
+                        if not original_url:
+                            try:
+                                src = thumbnail.get_attribute('src')
+                                if src and src.startswith('http') and 'base64' not in src:
+                                    original_url = src
+                                    alt = thumbnail.get_attribute('alt') or ''
+                                    print(f"[DEBUG] Found URL from src: {src}")
+                            except:
+                                pass
                         
                         if original_url:
-                            # altテキストを取得
-                            alt = img_element.get_attribute('alt') if img_element else ''
-                            
                             # 50KB以上の画像のみを対象（最小ファイルサイズの再定義）
                             images.append({
                                 'url': original_url,
-                                'title': f'Original image {i+1} for {keyword}',
-                                'thumbnail': original_url,  # オリジナル画像をサムネイルとしても使用
+                                'title': f'Image {i+1} for {keyword}',
+                                'thumbnail': original_url,  # 取得したURLをサムネイルとしても使用
                                 'alt': alt,
-                                'is_google_thumbnail': False,  # オリジナル画像フラグ
-                                'source': 'google_original'
+                                'is_google_thumbnail': 'encrypted-tbn0.gstatic.com' in original_url,
+                                'source': 'google_search'
                             })
                             
-                            print(f"[DEBUG] Added original image {len(images)}: {original_url[:100]}...")
+                            print(f"[DEBUG] Added image {len(images)}: {original_url[:100]}...")
                             
                             if len(images) >= max_results:
                                 break
-                        
-                        # ビューワーを閉じて次のサムネイルへ
-                        page.keyboard.press('Escape')
-                        page.wait_for_timeout(1000)
                         
                     except Exception as e:
                         print(f"[DEBUG] Error processing thumbnail {i+1}: {e}")
@@ -647,6 +690,88 @@ def build_youtube_client_from_env():
     except Exception as e:
         print(f"Failed to build YouTube client: {e}")
         raise
+
+
+def extract_image_keywords_list(script_data: Dict[str, Any]) -> List[str]:
+    """台本から画像検索キーワードリストを抽出（固有名詞中心、キーワード加工なし）"""
+    try:
+        title = script_data.get("title", "")
+        content = script_data.get("content", {})
+        topic_summary = content.get("topic_summary", "")
+        script_parts = content.get("script_parts", [])
+        
+        # 台本のテキストを結合
+        all_text = f"{title} {topic_summary}"
+        for part in script_parts:
+            all_text += f" {part.get('text', '')}"
+        
+        # 固有名詞・重要キーワードリスト（優先順位順）
+        # 企業名・ブランド名
+        company_keywords = [
+            "ドコモ", "NTT", "KDDI", "ソフトバンク", "楽天", "Google", "Apple", "Microsoft", 
+            "Amazon", "Meta", "Tesla", "Sony", "Panasonic", "Sharp", "富士通", "NEC", "日立",
+            "東芝", "三菱", "住友", "三井", "VAIO", "富士通", "IBM", "Oracle", "Cisco", "Intel",
+            "AMD", "NVIDIA", "Qualcomm", "Samsung", "LG", "Huawei", "Xiaomi"
+        ]
+        
+        # 製品名・サービス名
+        product_keywords = [
+            "iPhone", "Android", "Windows", "Mac", "iPad", "Galaxy", "Pixel", "Surface",
+            "PlayStation", "Xbox", "Switch", "ChatGPT", "Gemini", "Copilot", "Siri", "Alexa",
+            "YouTube", "TikTok", "Instagram", "Twitter", "Facebook", "LINE", "Zoom", "Teams",
+            "Slack", "Dropbox", "GitHub", "AWS", "Azure", "GCP", "Firebase"
+        ]
+        
+        # 技術・IT用語
+        tech_keywords = [
+            "AI", "人工知能", "機械学習", "ディープラーニング", "データサイエンス", "プログラミング",
+            "ソフトウェア", "テクノロジー", "コンピュータ", "デジタル", "イノベーション", "5G", "6G",
+            "IoT", "ブロックチェーン", "クラウド", "サイバーセキュリティ", "VR", "AR", "メタバース",
+            "SaaS", "PaaS", "IaaS", "API", "SDK", "フレームワーク", "アルゴリズム", "データベース"
+        ]
+        
+        # 優先順位でキーワードを検索
+        all_keywords = company_keywords + product_keywords + tech_keywords
+        found_keywords = []
+        
+        for keyword in all_keywords:
+            if keyword in all_text:
+                found_keywords.append(keyword)
+                print(f"[DEBUG] Found keyword: {keyword}")
+        
+        # キーワードが見つからない場合はカタカナ語や英単語を抽出
+        if not found_keywords:
+            import re
+            
+            # カタカナ語（3文字以上）を抽出
+            katakana_pattern = r'[ァ-ヶー]{3,}'
+            katakana_words = re.findall(katakana_pattern, all_text)
+            found_keywords.extend(katakana_words)
+            
+            # 英単語（3文字以上）を抽出
+            english_pattern = r'[A-Za-z]{3,}'
+            english_words = re.findall(english_pattern, all_text)
+            found_keywords.extend(english_words)
+            
+            # 一般的な日本語名詞（3文字以上）を抽出
+            japanese_words = [word for word in all_text.split() if len(word) >= 3 and word.isalpha()]
+            found_keywords.extend(japanese_words)
+        
+        # 重複を除去してキーワードリストを返す
+        if found_keywords:
+            # 重複除去
+            unique_keywords = list(dict.fromkeys(found_keywords))
+            print(f"Extracted keywords: {unique_keywords[:5]}")  # 最初の5つを表示
+            return unique_keywords
+        else:
+            # フォールバックキーワード
+            fallback_keywords = ["technology", "テクノロジー", "AI"]
+            print(f"Using fallback keywords: {fallback_keywords}")
+            return fallback_keywords
+            
+    except Exception as e:
+        print(f"Failed to extract keywords: {e}")
+        return ["technology"]  # 最終フォールバック
 
 
 def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
@@ -1019,39 +1144,51 @@ def split_subtitle_text(text: str, max_chars: int = 45) -> List[str]:
 
 
 def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
-    """AIによる動的選別・自動取得で最適な画像を取得"""
+    """AIによる動的選別・自動取得で最適な画像を取得（複数キーワード対応）"""
     try:
-        # 1. キーワード抽出
-        keyword = extract_image_keywords_from_script(script_data)
-        print(f"[DEBUG] Extracted keyword for image search: {keyword}")
+        # 1. キーワードリスト抽出
+        keywords = extract_image_keywords_list(script_data)
+        print(f"[DEBUG] Extracted keywords for image search: {keywords}")
         
-        # 2. 画像検索
-        images = search_images_with_playwright(keyword)
+        # 2. 各キーワードで画像検索を試行（最小枚数確保）
+        for i, keyword in enumerate(keywords):
+            print(f"[DEBUG] Trying keyword {i+1}/{len(keywords)}: {keyword}")
+            
+            try:
+                images = search_images_with_playwright(keyword)
+                
+                if images:
+                    print(f"[DEBUG] Found {len(images)} images with keyword '{keyword}'")
+                    
+                    # 最初の画像（最も関連性が高い）をダウンロード
+                    best_image = images[0]
+                    image_path = download_image_from_url(best_image['url'])
+                    
+                    if image_path:
+                        print(f"Successfully selected and downloaded image with keyword '{keyword}': {best_image['title']}")
+                        return image_path
+                    else:
+                        print(f"[DEBUG] Failed to download image with keyword '{keyword}', trying next keyword")
+                        continue
+                else:
+                    print(f"[DEBUG] No images found with keyword '{keyword}', trying next keyword")
+                    continue
+                    
+            except Exception as e:
+                print(f"[DEBUG] Error with keyword '{keyword}': {e}, trying next keyword")
+                continue
         
-        if not images:
-            print("[ERROR] No images found for the video")
-            raise RuntimeError(f"画像検索でキーワード '{keyword}' に一致する画像が見つかりませんでした")
-        
-        print(f"[DEBUG] Found {len(images)} images, selecting the first one")
-        
-        # 最初の画像（最も関連性が高い）をダウンロード
-        best_image = images[0]
-        image_path = download_image_from_url(best_image['url'])
-        
-        if not image_path:
-            print("[ERROR] Failed to download the selected image")
-            raise RuntimeError(f"画像のダウンロードに失敗しました: {best_image['url']}")
-        
-        print(f"Successfully selected and downloaded AI image: {best_image['title']}")
-        return image_path
+        # すべてのキーワードで失敗した場合
+        print("[ERROR] No images found for any keywords")
+        raise RuntimeError(f"すべてのキーワード {keywords} で画像が見つかりませんでした")
             
     except Exception as e:
         print(f"[ERROR] AI image selection process failed: {e}")
         # 既にRuntimeErrorの場合はそのまま再発生
         if isinstance(e, RuntimeError):
             raise
-        # その他の例外はRuntimeErrorに変換
-        raise RuntimeError(f"画像取得処理でエラーが発生しました: {e}")
+        else:
+            raise RuntimeError(f"画像選択プロセスでエラーが発生しました: {e}")
 
 
 def download_image_from_s3(image_key: str) -> str:
