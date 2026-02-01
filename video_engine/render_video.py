@@ -354,7 +354,7 @@ def download_background_music() -> str:
 
 
 def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """画像検索（Google Playwrightのみ、失敗時はリトライ）"""
+    """Google画像検索からオリジナル画像URLを取得（サムネイル回避）"""
     
     import time
     
@@ -399,63 +399,115 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                 print(f"[DEBUG] Navigating to: {search_url}")
                 page.goto(search_url)
                 page.wait_for_load_state('networkidle', timeout=10000)
-                page.wait_for_timeout(3000)  # 待機時間を延長
+                page.wait_for_timeout(3000)  # 画像読み込み待機
                 
-                # 画像URLを収集
+                # 画像サムネイルをクリックしてオリジナル画像URLを取得
                 images = []
-                image_elements = page.query_selector_all('img[src]')
-                print(f"[DEBUG] Found {len(image_elements)} image elements")
                 
-                for i, img in enumerate(image_elements[:max_results * 3]):  # 候補を増やす
+                # 画像サムネイル要素を取得
+                thumbnail_selectors = [
+                    'div.Q4LuWd',  # Google画像検索のサムネイルコンテナ
+                    'img.Q4LuWd',  # 画像要素
+                    'div.bRMDJf',  # 別の画像コンテナ
+                    'img.rg_i'    # 古い画像要素
+                ]
+                
+                thumbnail_elements = []
+                for selector in thumbnail_selectors:
+                    elements = page.query_selector_all(selector)
+                    if elements:
+                        thumbnail_elements.extend(elements)
+                        print(f"[DEBUG] Found {len(elements)} elements with selector: {selector}")
+                
+                if not thumbnail_elements:
+                    print("[ERROR] No thumbnail elements found")
+                    raise RuntimeError("画像サムネイルが見つかりませんでした")
+                
+                print(f"[DEBUG] Total thumbnail elements found: {len(thumbnail_elements)}")
+                
+                # 各サムネイルをクリックしてオリジナル画像URLを取得
+                for i, thumbnail in enumerate(thumbnail_elements[:max_results * 2]):  # 候補を増やす
                     try:
-                        src = img.get_attribute('src')
-                        alt = img.get_attribute('alt') or ''
+                        print(f"[DEBUG] Processing thumbnail {i+1}")
                         
-                        # 緩和したフィルタリング条件
-                        if src and src.startswith('http') and 'base64' not in src:
-                            # サイズフィルタリングを緩和 - 小さすぎる画像のみ除外
-                            if 'encrypted-tbn0.gstatic.com' in src:
-                                # Googleサムネイルは許可
-                                is_valid = True
-                            elif 'googleusercontent.com' in src:
-                                # Googleユーザーコンテンツも許可
-                                is_valid = True
-                            else:
-                                # その他のソースも許可（製品関連の可能性）
-                                is_valid = True
+                        # サムネイルをクリック
+                        thumbnail.click()
+                        page.wait_for_timeout(2000)  # 画像ビューワー展開待機
+                        
+                        # 画像ビューワー内のオリジナル画像を取得
+                        original_image_selectors = [
+                            'img.n3VNCb',  # Google画像ビューワーのオリジナル画像
+                            'img.iPVvYb',  # 別のオリジナル画像セレクタ
+                            'img[data-src]',  # data-src属性を持つ画像
+                            'img[src*="gstatic.com"]',  # gstaticドメインの画像
+                            'img[src*="googleusercontent.com"]'  # googleusercontentドメインの画像
+                        ]
+                        
+                        original_url = None
+                        for selector in original_image_selectors:
+                            img_element = page.query_selector(selector)
+                            if img_element:
+                                # src属性からURLを取得
+                                src = img_element.get_attribute('src')
+                                if src and src.startswith('http'):
+                                    # 可能性のあるオリジナルURLを優先
+                                    if 'gstatic.com' in src or 'googleusercontent.com' in src:
+                                        original_url = src
+                                        print(f"[DEBUG] Found original image URL: {src}")
+                                        break
+                        
+                        # 見つからない場合はdata-srcをチェック
+                        if not original_url:
+                            for selector in original_image_selectors:
+                                img_element = page.query_selector(selector)
+                                if img_element:
+                                    data_src = img_element.get_attribute('data-src')
+                                    if data_src and data_src.startswith('http'):
+                                        original_url = data_src
+                                        print(f"[DEBUG] Found original image URL from data-src: {data_src}")
+                                        break
+                        
+                        if original_url:
+                            # altテキストを取得
+                            alt = img_element.get_attribute('alt') if img_element else ''
                             
-                            # 製品関連フィルタリングを緩和 - 明らかな風景のみ除外
-                            is_product_related = True
-                            strict_exclude_keywords = ['風景写真', 'landscape photography', 'nature photography']
+                            # 50KB以上の画像のみを対象（最小ファイルサイズの再定義）
+                            images.append({
+                                'url': original_url,
+                                'title': f'Original image {i+1} for {keyword}',
+                                'thumbnail': original_url,  # オリジナル画像をサムネイルとしても使用
+                                'alt': alt,
+                                'is_google_thumbnail': False,  # オリジナル画像フラグ
+                                'source': 'google_original'
+                            })
                             
-                            for exclude_word in strict_exclude_keywords:
-                                if exclude_word.lower() in alt.lower():
-                                    is_product_related = False
-                                    break
+                            print(f"[DEBUG] Added original image {len(images)}: {original_url[:100]}...")
                             
-                            if is_valid and is_product_related:
-                                images.append({
-                                    'url': src,
-                                    'title': f'Google image {i+1} for {keyword}',
-                                    'thumbnail': src,
-                                    'alt': alt,
-                                    'is_google_thumbnail': 'encrypted-tbn0.gstatic.com' in src
-                                })
-                                
-                                if len(images) >= max_results:
-                                    break
+                            if len(images) >= max_results:
+                                break
+                        
+                        # ビューワーを閉じて次のサムネイルへ
+                        page.keyboard.press('Escape')
+                        page.wait_for_timeout(1000)
+                        
                     except Exception as e:
-                        print(f"[DEBUG] Error processing image {i}: {e}")
+                        print(f"[DEBUG] Error processing thumbnail {i+1}: {e}")
+                        # エラー時もビューワーを閉じる
+                        try:
+                            page.keyboard.press('Escape')
+                            page.wait_for_timeout(500)
+                        except:
+                            pass
                         continue
                 
                 browser.close()
                 
                 if images:
-                    print(f"Successfully found {len(images)} Google images for '{keyword}'")
+                    print(f"Successfully found {len(images)} original images for '{keyword}'")
                     return images
                 else:
-                    print(f"[ERROR] No valid Google images found for '{keyword}'")
-                    raise RuntimeError(f"Google画像検索でキーワード '{keyword}' に一致する画像が見つかりませんでした")
+                    print(f"[ERROR] No original images found for '{keyword}'")
+                    raise RuntimeError(f"Google画像検索でオリジナル画像が見つかりませんでした: {keyword}")
                     
         except ImportError:
             print("[ERROR] Playwright not available")
