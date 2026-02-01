@@ -1099,8 +1099,8 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
     return None
 
 
-def split_subtitle_text(text: str, max_chars: int = 45) -> List[str]:
-    """字幕を45文字以内で分割する。句点（。）で区切り、短文は結合する。"""
+def split_subtitle_text(text: str, max_chars: int = 60) -> List[str]:
+    """字幕を60文字以内で分割する。句点（。）で区切り、短文は結合する。"""
     if len(text) <= max_chars:
         return [text]
 
@@ -2042,11 +2042,11 @@ async def build_video_with_subtitles(
             else:
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
-            clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
+            clip = ImageClip(image_array).with_start(1.0).with_duration(image_duration).with_opacity(1.0)
             
             # Pillowで事前リサイズ済みのため、MoviePyでのリサイズは不要
-            # フェードイン・アウトを追加（一時的にコメントアウト）
-            # clip = clip.crossfadein(0.5).crossfadeout(0.5)
+            # 1秒のフェードインとフェードアウトを追加（クロスフェード演出）
+            clip = clip.crossfadein(1.0).crossfadeout(1.0)
 
             # 座標を中央に固定
             clip = clip.with_position("center")  # 画像は中央配置
@@ -2069,11 +2069,11 @@ async def build_video_with_subtitles(
                 # ヘッダー画像を読み込んでImageClipとして配置
                 heading_img = ImageClip(heading_path)
                 
-                # サイズが大きすぎる場合は幅300〜400px程度にリサイズ
+                # サイズが大きすぎる場合は幅80px程度にリサイズ（1/5サイズ）
                 img_w, img_h = heading_img.size
-                if img_w > 400:
-                    scale = 400 / img_w
-                    target_width = 400
+                if img_w > 80:
+                    scale = 80 / img_w
+                    target_width = 80
                     target_height = int(img_h * scale)
                     heading_img = heading_img.resized(width=target_width, height=target_height)
                 
@@ -2112,7 +2112,7 @@ async def build_video_with_subtitles(
                 
                 # 字幕クリップを作成（1920x1080用に調整）
                 try:
-                    chunks = split_subtitle_text(text, max_chars=45)
+                    chunks = split_subtitle_text(text, max_chars=60)
                     chunk_duration = subtitle_duration / max(len(chunks), 1)
                     for chunk_idx, chunk in enumerate(chunks):
                         txt_clip = TextClip(
