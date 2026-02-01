@@ -50,6 +50,28 @@ except ImportError:
             except:
                 return clip  # エラー時はフェードなしで返す
 
+# スライドイン・アウト関数（右から左へ）
+def slide_in_right(clip, duration):
+    """右からスライドインする関数"""
+    try:
+        # 画面右外から中央へスライド
+        w, h = clip.size
+        return clip.with_effects([vfx.SlideIn(duration, side='right')])
+    except:
+        # フォールバック：positionをアニメーション
+        w, h = clip.size
+        return clip.set_position(lambda t: (w - w * max(0, min(1, t/duration)), 'center'))
+
+def slide_out_left(clip, duration):
+    """左へスライドアウトする関数"""
+    try:
+        # 中央から画面左外へスライド
+        return clip.with_effects([vfx.SlideOut(duration, side='left')])
+    except:
+        # フォールバック：positionをアニメーション
+        w, h = clip.size
+        return clip.set_position(lambda t: (-w * max(0, min(1, t/duration)), 'center'))
+
 # loop関数の安全なインポート
 try:
     from moviepy.video.fx import loop
@@ -1892,7 +1914,7 @@ async def build_video_with_subtitles(
         topic_summary = content.get("topic_summary", "")
         image_schedule = []
         total_images_collected = 0
-        current_time = 0.0
+        current_time = 1.0  # 最初の画像を1秒後に表示
 
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
@@ -2210,9 +2232,9 @@ async def build_video_with_subtitles(
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             
             # Pillowで事前リサイズ済みのため、MoviePyでのリサイズは不要
-            # 1秒のフェードインとフェードアウトを追加（クロスフェード演出）
-            clip = crossfadein(clip, 1.0)
-            clip = crossfadeout(clip, 1.0)
+            # 1秒のスライドインとスライドアウトを追加（右から左へ）
+            clip = slide_in_right(clip, 1.0)
+            clip = slide_out_left(clip, 1.0)
 
             # 座標を中央に固定
             clip = clip.with_position("center")  # 画像は中央配置
@@ -2243,8 +2265,9 @@ async def build_video_with_subtitles(
                     target_height = int(img_h * scale)
                     heading_img = heading_img.resized(width=target_width, height=target_height)
                 
-                # 左上に配置
+                # 左上に配置し、1秒後にスライドイン
                 heading_clip = heading_img.with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
+                heading_clip = slide_in_right(heading_clip, 1.0)  # 1秒後にスライドイン
                 print(f"[SUCCESS] Heading image loaded and positioned: {heading_img.size}")
             else:
                 print("[WARNING] Heading image not available, using text fallback")
