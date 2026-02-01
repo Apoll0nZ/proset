@@ -353,8 +353,8 @@ def download_background_music() -> str:
         return None
 
 
-def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """Google画像検索からオリジナル画像URLを取得（サムネイル回避）"""
+async def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """Google画像検索からオリジナル画像URLを取得（サムネイル回避・コンテキスト消失対策）"""
     
     import time
     
@@ -430,7 +430,110 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                 
                 print(f"[DEBUG] Total thumbnail elements found: {len(thumbnail_elements)}")
                 
-                # 各サムネイルをクリックしてオリジナル画像URLを取得（3段構え）
+                # JavaScript evaluateで直接画像URLを一括抽出（新アプローチ）
+                print(f"[DEBUG] Using JavaScript evaluate for bulk image extraction")
+                try:
+                    js_result = await page.evaluate("""
+                        () => {
+                            const images = [];
+                            
+                            // すべての画像リンクを取得
+                            const links = document.querySelectorAll('a[href*="imgurl"], a[href*="tbm=isch"]');
+                            
+                            for (const link of links) {
+                                try {
+                                    const href = link.href;
+                                    const urlParams = new URLSearchParams(href.split('?')[1]);
+                                    const imgurl = urlParams.get('imgurl');
+                                    
+                                    if (imgurl && imgurl.startsWith('http') && !imgurl.includes('gstatic.com')) {
+                                        const img = link.querySelector('img');
+                                        images.push({
+                                            src: imgurl,
+                                            alt: img ? img.alt : '',
+                                            method: 'bulk_js_extraction'
+                                        });
+                                    }
+                                } catch (e) {
+                                    continue;
+                                }
+                            }
+                            
+                            // 画像要素から直接URLを取得
+                            const imgElements = document.querySelectorAll('img[src*="http"]');
+                            for (const img of imgElements) {
+                                try {
+                                    const src = img.src;
+                                    if (src && src.startsWith('http') && !src.includes('gstatic.com') && !src.includes('base64')) {
+                                        // サムネイルサイズの画像は除外
+                                        if (src.includes('encrypted-tbn')) continue;
+                                        
+                                        images.push({
+                                            src: src,
+                                            alt: img.alt || '',
+                                            method: 'direct_img_extraction'
+                                        });
+                                    }
+                                } catch (e) {
+                                    continue;
+                                }
+                            }
+                            
+                            // data-iurl属性を持つ要素を検索
+                            const dataIurlElements = document.querySelectorAll('[data-iurl]');
+                            for (const element of dataIurlElements) {
+                                try {
+                                    const dataIurl = element.getAttribute('data-iurl');
+                                    if (dataIurl && dataIurl.startsWith('http') && !dataIurl.includes('gstatic.com')) {
+                                        images.push({
+                                            src: dataIurl,
+                                            alt: element.alt || '',
+                                            method: 'data_iurl_extraction'
+                                        });
+                                    }
+                                } catch (e) {
+                                    continue;
+                                }
+                            }
+                            
+                            return images.slice(0, 10); // 最大10件
+                        }
+                    """)
+                    
+                    if js_result and len(js_result) > 0:
+                        print(f"[SUCCESS] JavaScript extraction found {len(js_result)} images")
+                        
+                        for img_data in js_result:
+                            original_url = img_data.get('src')
+                            alt = img_data.get('alt', '')
+                            method = img_data.get('method', 'unknown')
+                            
+                            if original_url and 'gstatic.com' not in original_url:
+                                images.append({
+                                    'url': original_url,
+                                    'title': f'Image {len(images)+1} for {keyword}',
+                                    'thumbnail': original_url,
+                                    'alt': alt,
+                                    'is_google_thumbnail': False,
+                                    'source': f'google_search_{method}'
+                                })
+                                
+                                print(f"[DEBUG] Added image {len(images)}: {original_url[:100]}... (method: {method})")
+                                
+                                if len(images) >= max_results:
+                                    break
+                        
+                        if images:
+                            print(f"Successfully found {len(images)} images using JavaScript extraction for '{keyword}'")
+                            await browser.close()
+                            return images
+                    else:
+                        print(f"[DEBUG] JavaScript extraction returned no results")
+                        
+                except Exception as e:
+                    print(f"[DEBUG] JavaScript extraction failed: {e}")
+                
+                # 各サムネイルをクリックしてオリジナル画像URLを取得（フォールバック）
                 for i, thumbnail in enumerate(thumbnail_elements[:max_results * 2]):  # 候補を増やす
                     try:
                         print(f"[DEBUG] Processing thumbnail {i+1}")
@@ -474,9 +577,9 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                                 fresh_thumbnail.wait_for_element_state('visible', timeout=3000)
                                 print(f"[DEBUG] Thumbnail is visible, attempting click")
                                 
-                                # クリック実行
-                                fresh_thumbnail.click()
-                                print(f"[DEBUG] Thumbnail clicked successfully")
+                                # クリック実行（dispatchEventで重なりを回避）
+                                await fresh_thumbnail.dispatch_event("click")
+                                print(f"[DEBUG] Thumbnail clicked successfully with dispatch_event")
                                 
                             except Exception as e:
                                 print(f"[DEBUG] Thumbnail click preparation failed: {e}")
@@ -1406,7 +1509,7 @@ def split_subtitle_text(text: str, max_chars: int = 45) -> List[str]:
     return [chunk.strip() for chunk in final_chunks if chunk.strip()]
 
 
-def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
+async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
     """AIによる動的選別・自動取得で最適な画像を取得（複数キーワード対応）"""
     try:
         # 1. キーワードリスト抽出
@@ -1418,7 +1521,7 @@ def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
             print(f"[DEBUG] Trying keyword {i+1}/{len(keywords)}: {keyword}")
             
             try:
-                images = search_images_with_playwright(keyword)
+                images = await search_images_with_playwright(keyword)
                 
                 if images:
                     print(f"[DEBUG] Found {len(images)} images with keyword '{keyword}'")
@@ -1832,7 +1935,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     return final_audio_path, part_durations
 
 
-def build_video_with_subtitles(
+async def build_video_with_subtitles(
     background_path: str,
     font_path: str,
     script_parts: List[Dict[str, Any]],
@@ -1984,14 +2087,34 @@ def build_video_with_subtitles(
                     break
                 
                 # Geminiが抽出したキーワードを完全に維持して使用
-                # サブワードを付加せず、固有名詞単体で検索
+                # 実体のある画像が出やすい接尾辞を付与して具体化
                 search_keyword = keyword
+                
+                # 抽象的な概念を具体化する接尾辞を付与
+                concrete_suffixes = [
+                    "logo png", "interface screenshot", "software dashboard", 
+                    "product photo", "official image", "real device"
+                ]
+                
+                # キーワードが抽象的な場合は接尾辞を付与
+                abstract_keywords = ["AI", "技術", "サービス", "システム", "プラットフォーム"]
+                is_abstract = any(abstract in keyword for abstract in abstract_keywords)
+                
+                if is_abstract and len(keyword) <= 10:
+                    # 短い抽象的なキーワードには接尾辞を付与
+                    search_keyword = f"{keyword} {concrete_suffixes[0]}"
+                    print(f"[DEBUG] Abstract keyword detected, adding suffix: {keyword} -> {search_keyword}")
+                elif "logo" not in keyword.lower() and "screenshot" not in keyword.lower():
+                    # ロゴやスクリーンショットでない場合は画像用接尾辞を試行
+                    if len(keyword.split()) == 1:  # 単語の場合
+                        search_keyword = f"{keyword} official image"
+                        print(f"[DEBUG] Single word keyword, adding image suffix: {keyword} -> {search_keyword}")
                 
                 print(f"[DEBUG] Segment {i} search keyword: {search_keyword}")
                 print(f"[DEBUG] Original keyword: '{keyword}' (length: {len(keyword)})")
                 
                 try:
-                    images = search_images_with_playwright(search_keyword, max_results=2)
+                    images = await search_images_with_playwright(search_keyword, max_results=2)
                     print(f"[DEBUG] Found {len(images)} images for keyword: '{keyword}'")
                     
                     for image in images:
@@ -2174,10 +2297,10 @@ def build_video_with_subtitles(
         # 画像スケジュール作成完了後のチェック
         valid_images = [item for item in image_schedule if item["path"] is not None]
         if not valid_images:
-            print("[WARNING] No images were collected for the entire video, using background only")
-            print("[INFO] Video will be generated with background video and subtitles only")
-        else:
-            print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
+            print("[ERROR] No images were collected for the entire video")
+            raise RuntimeError("動画全体で画像が1枚も取得できませんでした。ネットワーク接続または画像ソースを確認してください。")
+        
+        print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
 
         def make_pos_func(start_time: float, target_x: int, target_y: int, start_x: int):
             """画像ごとに独立した位置関数を生成するクロージャ"""
@@ -2660,7 +2783,7 @@ def put_video_history_item(item: Dict[str, Any]) -> None:
     table.put_item(Item=converted_item)
 
 
-def main() -> None:
+async def main() -> None:
     """ローカル/Actions 実行用エントリポイント。"""
     with tempfile.TemporaryDirectory() as tmpdir:
         script_obj = None
@@ -2708,7 +2831,7 @@ def main() -> None:
             # 3. Video 合成
             print("Generating video...")
             video_path = os.path.join(tmpdir, "video.mp4")
-            build_video_with_subtitles(
+            await build_video_with_subtitles(
                 background_path=BACKGROUND_IMAGE_PATH,
                 font_path=FONT_PATH,
                 script_parts=script_parts,
@@ -2854,4 +2977,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
