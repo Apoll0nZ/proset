@@ -438,39 +438,148 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                             thumbnail.click()
                             page.wait_for_timeout(2000)  # 画像ビューワー展開待機
                             
-                            # 画像ビューワー内のオリジナル画像を取得
-                            original_image_selectors = [
-                                'img.n3VNCb',  # Google画像ビューワーのオリジナル画像
-                                'img.iPVvYb',  # 別のオリジナル画像セレクタ
-                                'img[data-src]',  # data-src属性を持つ画像
-                                'img[src*="gstatic.com"]',  # gstaticドメインの画像
-                                'img[src*="googleusercontent.com"]'  # googleusercontentドメインの画像
-                            ]
+                            # gstatic.comではないオリジナルURLを待機して取得
+                            original_url = None
+                            alt = ""
                             
-                            for selector in original_image_selectors:
-                                img_element = page.query_selector(selector)
-                                if img_element:
-                                    # src属性からURLを取得
-                                    src = img_element.get_attribute('src')
-                                    if src and src.startswith('http'):
-                                        # 可能性のあるオリジナルURLを優先
-                                        if 'gstatic.com' in src or 'googleusercontent.com' in src:
-                                            original_url = src
-                                            alt = img_element.get_attribute('alt') or ''
-                                            print(f"[DEBUG] Found original image URL: {src}")
-                                            break
+                            # wait_for_selectorでオリジナル画像を待機
+                            try:
+                                # gstatic.comではない画像を待機
+                                non_gstatic_selectors = [
+                                    'img.n3VNCb[src*="googleusercontent.com"]',
+                                    'img.iPVvYb[src*="googleusercontent.com"]',
+                                    'img[src*="wikimedia.org"]',
+                                    'img[src*="wikipedia.org"]',
+                                    'img[src*="flickr.com"]',
+                                    'img[src*="unsplash.com"]',
+                                    'img[src*="pexels.com"]',
+                                    'img[src*="pixabay.com"]'
+                                ]
+                                
+                                for selector in non_gstatic_selectors:
+                                    print(f"[DEBUG] Trying selector: {selector}")
+                                    try:
+                                        page.wait_for_selector(selector, timeout=3000)
+                                        img_element = page.query_selector(selector)
+                                        if img_element:
+                                            src = img_element.get_attribute('src')
+                                            print(f"[DEBUG] Selector '{selector}' found URL: {src}")
+                                            if src and src.startswith('http') and 'gstatic.com' not in src:
+                                                original_url = src
+                                                alt = img_element.get_attribute('alt') or ''
+                                                print(f"[SUCCESS] Non-gstatic original URL found: {src}")
+                                                print(f"[DEBUG] Used selector: {selector}")
+                                                break
+                                            else:
+                                                print(f"[DEBUG] URL rejected (gstatic.com or invalid): {src}")
+                                        else:
+                                            print(f"[DEBUG] Selector '{selector}' found no element")
+                                    except Exception as e:
+                                        print(f"[DEBUG] Selector '{selector}' failed: {e}")
+                                        continue
+                                        
+                            except Exception as e:
+                                print(f"[DEBUG] wait_for_selector process failed: {e}")
                             
-                            # 見つからない場合はdata-srcをチェック
+                            # それでも見つからない場合はJavaScript evaluateで強制取得
                             if not original_url:
+                                print(f"[DEBUG] Falling back to JavaScript evaluate method")
+                                try:
+                                    js_result = page.evaluate("""
+                                        () => {
+                                            // 画像ビューワー内のすべてのimg要素を取得
+                                            const images = document.querySelectorAll('img');
+                                            let largestImage = null;
+                                            let maxSize = 0;
+                                            
+                                            for (const img of images) {
+                                                const src = img.src || img.getAttribute('data-src');
+                                                if (src && src.startsWith('http') && !src.includes('gstatic.com')) {
+                                                    // 画像サイズを計算（width * height）
+                                                    const width = img.naturalWidth || img.width || 0;
+                                                    const height = img.naturalHeight || img.height || 0;
+                                                    const size = width * height;
+                                                    
+                                                    if (size > maxSize) {
+                                                        maxSize = size;
+                                                        largestImage = {
+                                                            src: src,
+                                                            alt: img.alt || '',
+                                                            width: width,
+                                                            height: height
+                                                        };
+                                                    }
+                                                }
+                                            }
+                                            
+                                            return largestImage;
+                                        }
+                                    """)
+                                    
+                                    if js_result:
+                                        original_url = js_result.get('src')
+                                        alt = js_result.get('alt', '')
+                                        print(f"[SUCCESS] JavaScript evaluate found largest image: {original_url}")
+                                        print(f"[DEBUG] Image size: {js_result.get('width')}x{js_result.get('height')}")
+                                        print(f"[DEBUG] Method: JavaScript evaluate (largest image)")
+                                    else:
+                                        print(f"[DEBUG] JavaScript evaluate returned no result")
+                                        
+                                except Exception as e:
+                                    print(f"[DEBUG] JavaScript evaluate failed: {e}")
+                            
+                            # まだ見つからない場合は従来の方法でフォールバック
+                            if not original_url:
+                                print(f"[DEBUG] Falling back to traditional selector method")
+                                original_image_selectors = [
+                                    'img.n3VNCb',  # Google画像ビューワーのオリジナル画像
+                                    'img.iPVvYb',  # 別のオリジナル画像セレクタ
+                                    'img[data-src]',  # data-src属性を持つ画像
+                                    'img[src*="googleusercontent.com"]'  # googleusercontentドメインの画像
+                                ]
+                                
                                 for selector in original_image_selectors:
+                                    print(f"[DEBUG] Trying fallback selector: {selector}")
                                     img_element = page.query_selector(selector)
                                     if img_element:
-                                        data_src = img_element.get_attribute('data-src')
-                                        if data_src and data_src.startswith('http'):
-                                            original_url = data_src
+                                        # src属性からURLを取得
+                                        src = img_element.get_attribute('src')
+                                        print(f"[DEBUG] Fallback selector '{selector}' found URL: {src}")
+                                        if src and src.startswith('http'):
+                                            original_url = src
                                             alt = img_element.get_attribute('alt') or ''
-                                            print(f"[DEBUG] Found original image URL from data-src: {data_src}")
+                                            print(f"[SUCCESS] Fallback found URL: {src}")
+                                            print(f"[DEBUG] Used selector: {selector}")
                                             break
+                                        else:
+                                            print(f"[DEBUG] Fallback URL invalid: {src}")
+                                    else:
+                                        print(f"[DEBUG] Fallback selector '{selector}' found no element")
+                                
+                                # 見つからない場合はdata-srcをチェック
+                                if not original_url:
+                                    print(f"[DEBUG] Trying data-src attributes")
+                                    for selector in original_image_selectors:
+                                        print(f"[DEBUG] Trying data-src selector: {selector}")
+                                        img_element = page.query_selector(selector)
+                                        if img_element:
+                                            data_src = img_element.get_attribute('data-src')
+                                            print(f"[DEBUG] Data-src selector '{selector}' found: {data_src}")
+                                            if data_src and data_src.startswith('http'):
+                                                original_url = data_src
+                                                alt = img_element.get_attribute('alt') or ''
+                                                print(f"[SUCCESS] Data-src found: {data_src}")
+                                                print(f"[DEBUG] Used selector: {selector}")
+                                                break
+                                            else:
+                                                print(f"[DEBUG] Data-src invalid: {data_src}")
+                                        else:
+                                            print(f"[DEBUG] Data-src selector '{selector}' found no element")
+                            
+                            if original_url:
+                                print(f"[FINAL] Successfully obtained original URL: {original_url}")
+                            else:
+                                print(f"[FAILED] Could not obtain original URL from any method")
                             
                             # ビューワーを閉じる
                             page.keyboard.press('Escape')
@@ -487,35 +596,51 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                         
                         # 第二優先: サムネイル要素の data-iurl や data-src に隠されているプレビューURL
                         if not original_url:
+                            print(f"[DEBUG] Trying second priority: thumbnail data attributes")
                             try:
+                                print(f"[DEBUG] Checking data-iurl attribute")
                                 data_iurl = thumbnail.get_attribute('data-iurl')
+                                print(f"[DEBUG] data-iurl value: {data_iurl}")
                                 if data_iurl and data_iurl.startswith('http'):
                                     original_url = data_iurl
                                     alt = thumbnail.get_attribute('alt') or ''
-                                    print(f"[DEBUG] Found preview URL from data-iurl: {data_iurl}")
-                            except:
-                                pass
+                                    print(f"[SUCCESS] Found preview URL from data-iurl: {data_iurl}")
+                                    print(f"[DEBUG] Method: data-iurl attribute")
+                                else:
+                                    print(f"[DEBUG] data-iurl invalid or empty")
+                            except Exception as e:
+                                print(f"[DEBUG] data-iurl extraction failed: {e}")
                             
                             if not original_url:
                                 try:
+                                    print(f"[DEBUG] Checking data-src attribute")
                                     data_src = thumbnail.get_attribute('data-src')
+                                    print(f"[DEBUG] data-src value: {data_src}")
                                     if data_src and data_src.startswith('http'):
                                         original_url = data_src
                                         alt = thumbnail.get_attribute('alt') or ''
-                                        print(f"[DEBUG] Found preview URL from data-src: {data_src}")
-                                except:
-                                    pass
+                                        print(f"[SUCCESS] Found preview URL from data-src: {data_src}")
+                                        print(f"[DEBUG] Method: data-src attribute")
+                                    else:
+                                        print(f"[DEBUG] data-src invalid or empty")
+                                except Exception as e:
+                                    print(f"[DEBUG] data-src extraction failed: {e}")
                         
                         # 第三優先: src 属性
                         if not original_url:
+                            print(f"[DEBUG] Trying third priority: src attribute")
                             try:
                                 src = thumbnail.get_attribute('src')
+                                print(f"[DEBUG] src value: {src}")
                                 if src and src.startswith('http') and 'base64' not in src:
                                     original_url = src
                                     alt = thumbnail.get_attribute('alt') or ''
-                                    print(f"[DEBUG] Found URL from src: {src}")
-                            except:
-                                pass
+                                    print(f"[SUCCESS] Found URL from src: {src}")
+                                    print(f"[DEBUG] Method: src attribute")
+                                else:
+                                    print(f"[DEBUG] src invalid or contains base64")
+                            except Exception as e:
+                                print(f"[DEBUG] src extraction failed: {e}")
                         
                         if original_url:
                             # 50KB以上の画像のみを対象（最小ファイルサイズの再定義）
@@ -1719,8 +1844,8 @@ def build_video_with_subtitles(
                     break
                 
                 # Geminiが抽出したキーワードを完全に維持して使用
-                # 数字や記号を削除せず、そのまま検索クエリに使用
-                search_keyword = f"{keyword} 製品 実機"
+                # サブワードを付加せず、固有名詞単体で検索
+                search_keyword = keyword
                 
                 print(f"[DEBUG] Segment {i} search keyword: {search_keyword}")
                 print(f"[DEBUG] Original keyword: '{keyword}' (length: {len(keyword)})")
@@ -2203,10 +2328,11 @@ def build_video_with_subtitles(
             print(f"Using high quality bitrate: {bitrate}")
 
         # ffmpeg実行コマンドの可視化
-        ffmpeg_params = ['-crf', '23', '-b:v', '8000k'] if not DEBUG_MODE else ['-crf', '28', '-preset', 'ultrafast']
+        # DEBUG_MODE時も8Mbpsを強制する
+        ffmpeg_params = ['-crf', '23', '-b:v', '8000k'] if not DEBUG_MODE else ['-crf', '28', '-preset', 'ultrafast', '-b:v', '8000k']
         print(f"[INFO] FFmpeg Parameters: {ffmpeg_params}")
         print(f"[INFO] Video Settings: fps=30, codec=libx264, preset={'medium' if not DEBUG_MODE else 'ultrafast'}")
-        print(f"[INFO] Bitrate Settings: bitrate={bitrate}, video_bitrate=8000k")
+        print(f"[INFO] Bitrate Settings: bitrate={bitrate}, video_bitrate=8000k (forced)")
         print(f"[INFO] Audio Settings: codec=aac, audio_bitrate=256k")
 
         video.write_videofile(
