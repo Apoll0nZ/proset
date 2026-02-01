@@ -822,16 +822,52 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
             print(f"[DEBUG] Saved image: path={local_path}, size={file_size} bytes, ext={os.path.splitext(local_path)[1]}")
             print(f"[DEBUG] Image exists after save: {os.path.exists(local_path)}")
 
-            # 画像のフォーマット検証
+            # Phase 1: 生データのデバッグ保存
+            try:
+                phase1_path = os.path.join(LOCAL_TEMP_DIR, f"debug_1_raw_{filename}")
+                import shutil
+                shutil.copy2(local_path, phase1_path)
+                print(f"[DEBUG] Phase 1 saved: {phase1_path}")
+            except Exception as e:
+                print(f"[DEBUG] Failed to save Phase 1 debug: {e}")
+
+            # 画像のフォーマット検証と厳格なフィルタリング
             try:
                 with Image.open(local_path) as img:
-                    img.verify()
-                    print(f"[DEBUG] Image decode success: format={img.format}, mode={img.mode}")
+                    img.load()  # データ整合性を確認
+                    
+                    # 物理スペックのログ出力
+                    original_width, original_height = img.size
+                    dpi = img.info.get('dpi', (0, 0))[0] if img.info.get('dpi') else 0
+                    print(f"[INFO] Original Size: ({original_width} x {original_height}) | File Size: {file_size // 1024} KB | DPI: {dpi}")
+                    
+                    # 厳格なフィルタリング条件
+                    width, height = img.size
+                    
+                    print(f"[DEBUG] Image validation: size={file_size}B, resolution={width}x{height}, format={img.format}")
+                    
+                    # 除外条件チェック
+                    if file_size < 50 * 1024:  # 50KB未満
+                        print(f"[REJECT] Image too small: {file_size}B < 50KB")
+                        os.remove(local_path)
+                        return None
+                    
+                    if width < 640 or height < 480:  # 解像度が640x480未満
+                        print(f"[REJECT] Resolution too low: {width}x{height} < 640x480")
+                        os.remove(local_path)
+                        return None
+                    
+                    print(f"[PASS] Image validation passed: {width}x{height}, {file_size}B")
+                    
             except UnidentifiedImageError as e:
-                print(f"[DEBUG] Image decode failed (UnidentifiedImageError): {e}")
+                print(f"[REJECT] Image decode failed (UnidentifiedImageError): {e}")
+                if os.path.exists(local_path):
+                    os.remove(local_path)
                 return None
             except Exception as e:
-                print(f"[DEBUG] Image decode failed: {e}")
+                print(f"[REJECT] Image validation failed: {e}")
+                if os.path.exists(local_path):
+                    os.remove(local_path)
                 return None
             
             # S3のtempフォルダにもアップロード
@@ -1708,9 +1744,22 @@ def build_video_with_subtitles(
                                 print(f"[DEBUG] Resizing with Pillow LANCZOS: {original_width}x{original_height} → {target_width}x{target_height}")
                                 img = img.resize((target_width, target_height), Image.LANCZOS)
                             
+                            # 物理スペックのログ出力（リサイズ後）
+                            scale_factor = target_width / original_width if original_width > 0 else 1.0
+                            print(f"[INFO] After Resize: ({target_width} x {target_height}) | Scale Factor: {scale_factor:.2f}")
+                            
                             # 軽くシャープ化して輪郭をクッキリさせる
                             print(f"[DEBUG] Applying light sharpen filter")
                             img = img.filter(ImageFilter.SHARPEN)
+                            
+                            # Phase 2: 処理済みデータのデバッグ保存
+                            try:
+                                base_filename = os.path.basename(image_path)
+                                phase2_path = os.path.join(LOCAL_TEMP_DIR, f"debug_2_processed_{base_filename}")
+                                img.save(phase2_path, quality=95)
+                                print(f"[DEBUG] Phase 2 saved: {phase2_path}")
+                            except Exception as e:
+                                print(f"[DEBUG] Failed to save Phase 2 debug: {e}")
                             
                             # MoviePy用にnumpy配列に変換
                             image_array = np.array(img)
@@ -1964,6 +2013,13 @@ def build_video_with_subtitles(
         else:
             print(f"Using high quality bitrate: {bitrate}")
 
+        # ffmpeg実行コマンドの可視化
+        ffmpeg_params = ['-crf', '23', '-b:v', '8000k'] if not DEBUG_MODE else ['-crf', '28', '-preset', 'ultrafast']
+        print(f"[INFO] FFmpeg Parameters: {ffmpeg_params}")
+        print(f"[INFO] Video Settings: fps=30, codec=libx264, preset={'medium' if not DEBUG_MODE else 'ultrafast'}")
+        print(f"[INFO] Bitrate Settings: bitrate={bitrate}, video_bitrate=8000k")
+        print(f"[INFO] Audio Settings: codec=aac, audio_bitrate=256k")
+
         video.write_videofile(
             out_video_path,
             fps=30,  # 30fps固定
@@ -1975,11 +2031,27 @@ def build_video_with_subtitles(
             temp_audiofile='temp-audio.m4a',
             remove_temp=True,
             threads=4,  # 並列処理を抑制（ローカル環境向け）
-            ffmpeg_params=['-crf', '23'] if not DEBUG_MODE else ['-crf', '28', '-preset', 'ultrafast'],  # 高画質CRF値
+            ffmpeg_params=ffmpeg_params,  # 高画質CRF値と8Mbps強制
             logger=None  # コンソール書き込みを抑制
         )
         
         print("Video generation completed successfully")
+        
+        # 最終フレームの書き出し
+        try:
+            # 画像が表示されている瞬間を取得（最初の画像クリップの開始時間）
+            if image_clips:
+                first_image_clip = image_clips[0]
+                frame_time = getattr(first_image_clip, 'start', 1.0)  # 開始時間、なければ1秒時点
+                
+                # フレームを保存
+                final_frame_path = os.path.join(os.path.dirname(out_video_path), "final_frame_check.png")
+                video.save_frame(final_frame_path, t=frame_time)
+                print(f"[DEBUG] Final frame saved: {final_frame_path} at t={frame_time}s")
+            else:
+                print("[DEBUG] No image clips found, skipping final frame export")
+        except Exception as e:
+            print(f"[DEBUG] Failed to save final frame: {e}")
 
     except Exception as e:
         print(f"Error in video generation: {e}")
