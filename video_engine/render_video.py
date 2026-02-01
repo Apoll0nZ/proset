@@ -37,9 +37,18 @@ except ImportError:
         # MoviePy v1.x
         from moviepy.video.fx.all import crossfadein, crossfadeout
     except ImportError:
-        # フォールバック: fx.all がない場合は属性としてアクセス
-        crossfadein = lambda clip, d: clip.fx(vfx.crossfadein, d)
-        crossfadeout = lambda clip, d: clip.fx(vfx.crossfadeout, d)
+        # フォールバック: with_effectsを使用（MoviePy 2.0系）
+        def crossfadein(clip, duration):
+            try:
+                return clip.with_effects([vfx.CrossFadeIn(duration)])
+            except:
+                return clip  # エラー時はフェードなしで返す
+        
+        def crossfadeout(clip, duration):
+            try:
+                return clip.with_effects([vfx.CrossFadeOut(duration)])
+            except:
+                return clip  # エラー時はフェードなしで返す
 
 # loop関数の安全なインポート
 try:
@@ -48,7 +57,11 @@ except ImportError:
     try:
         from moviepy.video.fx.all import loop
     except ImportError:
-        loop = lambda clip, duration: clip.fx(vfx.loop, duration)
+        def loop(clip, duration):
+            try:
+                return clip.with_effects([vfx.Loop(duration)])
+            except:
+                return clip  # エラー時はループなしで返す
 
 # resize関数の安全なインポート
 try:
@@ -57,7 +70,11 @@ except ImportError:
     try:
         from moviepy.video.fx.all import resize
     except ImportError:
-        resize = lambda clip, width, height: clip.fx(vfx.resize, width, height)
+        def resize(clip, width, height):
+            try:
+                return clip.with_effects([vfx.Resize(width, height)])
+            except:
+                return clip  # エラー時はリサイズなしで返す
 import requests
 
 from create_thumbnail import create_thumbnail
@@ -484,11 +501,24 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
             
             # 製品名や型番の場合は企業名をプレフィックスとして付与
             company_added = False
-            for product, company in company_mapping.items():
-                if product.lower() in keyword.lower() and not keyword.lower().startswith(company.lower()):
-                    search_keyword = f"{company} {keyword}"
-                    company_added = True
-                    break
+            
+            # 汚染防止：一般的な単語が企業名として誤認識されるのを防ぐ
+            common_words = {
+                'open', 'close', 'start', 'end', 'new', 'old', 'big', 'small', 'high', 'low',
+                'top', 'bottom', 'left', 'right', 'first', 'last', 'best', 'worst', 'good', 'bad',
+                'hot', 'cold', 'fast', 'slow', 'easy', 'hard', 'simple', 'complex', 'basic',
+                'advanced', 'pro', 'plus', 'minus', 'max', 'min', 'super', 'ultra', 'mega',
+                'micro', 'mini', 'nano', 'giga', 'tera', 'peta', 'kilo', 'milli'
+            }
+            
+            # キーワードが一般的な単語のみの場合は企業名を付与しない
+            keyword_lower = keyword.lower().strip()
+            if keyword_lower not in common_words and len(keyword_lower) > 2:
+                for product, company in company_mapping.items():
+                    if product.lower() in keyword.lower() and not keyword.lower().startswith(company.lower()):
+                        search_keyword = f"{company} {keyword}"
+                        company_added = True
+                        break
             
             # テック関連画像がヒットしやすいようにクエリを最適化
             if company_added or any(tech in keyword.lower() for tech in ['cpu', 'gpu', 'ai', 'ml', 'tech', 'chip', 'processor']):
@@ -498,11 +528,13 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
             # フォールバック検索（2回目以降）
             if attempt > 0:
                 if not company_added:
-                    # 企業名が付与されていない場合は付与を試みる
-                    for product, company in company_mapping.items():
-                        if product.lower() in keyword.lower():
-                            search_keyword = f"{company} {keyword} official"
-                            break
+                    # 企業名が付与されていない場合は付与を試みる（汚染防止付き）
+                    keyword_lower = keyword.lower().strip()
+                    if keyword_lower not in common_words and len(keyword_lower) > 2:
+                        for product, company in company_mapping.items():
+                            if product.lower() in keyword.lower():
+                                search_keyword = f"{company} {keyword} official"
+                                break
                 print(f"[FALLBACK] Attempt {attempt + 1}: {search_keyword}")
             else:
                 print(f"Searching Bing images for: {search_keyword} (attempt {attempt + 1}/{max_retries})")
