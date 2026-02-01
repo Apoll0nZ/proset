@@ -27,7 +27,37 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from moviepy import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, CompositeAudioClip
-from moviepy.video.fx.all import crossfadein, crossfadeout
+
+# MoviePyバージョンに依存しない安全なインポート
+try:
+    # MoviePy v2.x
+    from moviepy.video.fx import crossfadein, crossfadeout
+except ImportError:
+    try:
+        # MoviePy v1.x
+        from moviepy.video.fx.all import crossfadein, crossfadeout
+    except ImportError:
+        # フォールバック: fx.all がない場合は属性としてアクセス
+        crossfadein = lambda clip, d: clip.fx(vfx.crossfadein, d)
+        crossfadeout = lambda clip, d: clip.fx(vfx.crossfadeout, d)
+
+# loop関数の安全なインポート
+try:
+    from moviepy.video.fx import loop
+except ImportError:
+    try:
+        from moviepy.video.fx.all import loop
+    except ImportError:
+        loop = lambda clip, duration: clip.fx(vfx.loop, duration)
+
+# resize関数の安全なインポート
+try:
+    from moviepy.video.fx import resize
+except ImportError:
+    try:
+        from moviepy.video.fx.all import resize
+    except ImportError:
+        resize = lambda clip, width, height: clip.fx(vfx.resize, width, height)
 import requests
 
 from create_thumbnail import create_thumbnail
@@ -1735,7 +1765,6 @@ async def build_video_with_subtitles(
                 # BGMを動画長に合わせてループまたはトリミング
                 if bgm_clip.duration < total_duration:
                     # BGMが短い場合はループ
-                    from moviepy.video.fx.all import loop
                     bgm_clip = loop(bgm_clip, duration=total_duration)
                     print("BGM looped to match video duration")
                 elif bgm_clip.duration > total_duration:
@@ -1795,7 +1824,6 @@ async def build_video_with_subtitles(
                         print("[ACTION] MoviePy v2.0 仕様に変更します")
                         
                         # MoviePy v2.0 仕様で再処理
-                        from moviepy.video.fx import resize
                         bg_clip_raw = VideoFileClip(bg_video_path).without_audio()
                         if DEBUG_MODE:
                             bg_clip_raw = bg_clip_raw.subclipped(0, 60)
