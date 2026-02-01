@@ -2064,12 +2064,17 @@ async def build_video_with_subtitles(
                     print(f"[DEBUG] Image {img_idx} skipped: invalid duration {actual_duration}s")
                     continue
                 
+                # 画像スケジュールに追加（0.5秒のオーバーラップでクロスフェード）
+                img_start = current_time
+                actual_duration = duration + 0.5  # 0.5秒延長して次の画像とオーバーラップ
+                
                 image_schedule.append({
                     "start": img_start,
                     "duration": actual_duration,
                     "path": image_path,
                 })
-                images_scheduled += 1
+                
+                current_time += duration  # 次の画像は通常時間で開始（オーバーラップでクロスフェード）
                 print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={actual_duration}s")
             
             print(f"[DEBUG] Scheduled {images_scheduled} images for segment {i}")
@@ -2232,9 +2237,9 @@ async def build_video_with_subtitles(
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             
             # Pillowで事前リサイズ済みのため、MoviePyでのリサイズは不要
-            # 0.5秒のスライドインとスライドアウトを追加（右から左へ）
-            clip = slide_in_right(clip, 0.5)
-            clip = slide_out_left(clip, 0.5)
+            # 1秒後から0.5秒でフェードイン開始
+            clip = crossfadein(clip, 0.5)
+            # 画像間は0.5秒のクロスフェードで同時切替（次の画像が来るときに自動的に適用）
 
             # 座標を中央に固定
             clip = clip.with_position("center")  # 画像は中央配置
@@ -2265,8 +2270,8 @@ async def build_video_with_subtitles(
                     target_height = int(img_h * scale)
                     heading_img = heading_img.resized(width=target_width, height=target_height)
                 
-                # 左上に配置し、1秒後に0.5秒で素早くスライドイン
-                heading_clip = heading_img.with_position((20, 20)).with_start(1.0).with_duration(total_duration).with_opacity(1.0)
+                # 左上に配置し、同時開始で1/5縮小、0.5秒で高速スライドイン
+                heading_clip = heading_img.with_position((20, 20)).with_start(0.0).with_duration(total_duration).with_opacity(1.0)
                 heading_clip = slide_in_right(heading_clip, 0.5)  # 0.5秒でスライドイン
                 print(f"[SUCCESS] Heading image loaded and positioned: {heading_img.size}")
             else:
