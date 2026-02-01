@@ -2160,9 +2160,9 @@ async def build_video_with_subtitles(
                     print(f"[DEBUG] Image {img_idx} skipped: invalid duration {actual_duration}s")
                     continue
                 
-                # 画像スケジュールに追加（0.5秒オーバーラップで切り替えアニメーション）
+                # 画像スケジュールに追加（0.05秒間隔で切り替え）
                 img_start = current_time
-                actual_duration = fixed_duration + 0.5  # 0.5秒延長して次の画像とオーバーラップ
+                actual_duration = fixed_duration - 0.05  # 0.05秒短くして次の画像との間隔を確保
                 
                 image_schedule.append({
                     "start": img_start,
@@ -2170,7 +2170,7 @@ async def build_video_with_subtitles(
                     "path": image_path,
                 })
                 
-                current_time += fixed_duration  # 次の画像は通常時間で開始（オーバーラップで切り替え）
+                current_time += fixed_duration  # 次の画像は0.05秒後から開始
                 print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={actual_duration}s")
             
             print(f"[DEBUG] Scheduled {images_scheduled} images for segment {i}")
@@ -2366,7 +2366,7 @@ async def build_video_with_subtitles(
                     heading_img = heading_img.resized(width=target_width, height=target_height)
                 
                 # 左上に固定配置（スライドインなし）
-                heading_clip = heading_img.with_position((20, 20)).with_start(0.0).with_duration(total_duration).with_opacity(1.0)
+                heading_clip = heading_img.with_position((30, 30)).with_start(0.0).with_duration(total_duration).with_opacity(1.0)
                 print(f"[SUCCESS] Heading image loaded at top-left: {heading_img.size}")
             else:
                 print("[WARNING] Heading image not available, using text fallback")
