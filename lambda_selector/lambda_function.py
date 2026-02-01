@@ -337,7 +337,7 @@ def fetch_reaction_summary(group_b_sources: List[str]) -> Dict[str, str]:
 # -----------------------------------------------------------------------------
 # Gemini 評価ロジック（スコアリング方式）
 # -----------------------------------------------------------------------------
-BASE_SCORE_THRESHOLD = 75.0  # 基準点
+BASE_SCORE_THRESHOLD = 65.0  # 基準点
 STOCK_DAYS = 7  # 過去何日間のストック記事を対象にするか
 MAX_EVALUATION_ATTEMPTS = 3  # 最大評価試行回数
 MIN_CANDIDATES_THRESHOLD = 3  # 最低候補数
