@@ -20,7 +20,7 @@ if os.name != 'nt':
 
 import boto3
 import numpy as np
-from PIL import Image, UnidentifiedImageError, WebPImagePlugin
+from PIL import Image, UnidentifiedImageError, WebPImagePlugin, ImageFilter
 from botocore.client import Config
 import gc  # メモリ解放用
 from google.oauth2.credentials import Credentials
@@ -1683,13 +1683,41 @@ def build_video_with_subtitles(
                         print(f"[DEBUG] Skipping SVG file: {image_path}")
                         image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
                     else:
-                        # PILで画像を読み込み、エラー時はフォールバック
+                        # PILで高品質リサイズ処理を実行
                         with Image.open(image_path) as img:
-                            img = img.convert("RGBA")
-                            image_array = np.array(img.convert("RGB"))
+                            print(f"[DEBUG] Original image size: {img.size}, format: {img.format}, mode: {img.mode}")
+                            
+                            # RGBに変換
+                            img = img.convert("RGB")
+                            original_width, original_height = img.size
+                            
+                            # アスペクト比を維持したまま最大サイズに収める
+                            max_width = 1400
+                            max_height = 800
+                            
+                            # スケール計算（アスペクト比維持）
+                            scale_w = max_width / original_width
+                            scale_h = max_height / original_height
+                            scale = min(scale_w, scale_h, 1.0)  # 拡大も許可する場合は1.0制限を削除
+                            
+                            target_width = int(original_width * scale)
+                            target_height = int(original_height * scale)
+                            
+                            # PillowのLANCZOSで高品質リサイズ
+                            if target_width != original_width or target_height != original_height:
+                                print(f"[DEBUG] Resizing with Pillow LANCZOS: {original_width}x{original_height} → {target_width}x{target_height}")
+                                img = img.resize((target_width, target_height), Image.LANCZOS)
+                            
+                            # 軽くシャープ化して輪郭をクッキリさせる
+                            print(f"[DEBUG] Applying light sharpen filter")
+                            img = img.filter(ImageFilter.SHARPEN)
+                            
+                            # MoviePy用にnumpy配列に変換
+                            image_array = np.array(img)
+                            print(f"[DEBUG] Final image array shape: {image_array.shape}")
                             print(
-                                f"[DEBUG] Image decode success: path={image_path}, "
-                                f"format={img.format}, mode={img.mode}"
+                                f"[DEBUG] High-quality processing complete: path={image_path}, "
+                                f"final_size={img.size}"
                             )
                 except UnidentifiedImageError as e:
                     print(f"[DEBUG] Image decode failed (UnidentifiedImageError): {e}")
@@ -1703,27 +1731,8 @@ def build_video_with_subtitles(
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
-            clip_w, clip_h = clip.w, clip.h
-
-            # 画像サイズ: アスペクト比を維持して最大幅1400px・高さ800pxに収める
-            clip_w, clip_h = clip.w, clip.h
             
-            # アスペクト比を維持したまま最大サイズに収める
-            max_width = 1400
-            max_height = 800
-            
-            # スケール計算（アスペクト比維持）
-            scale_w = max_width / clip_w
-            scale_h = max_height / clip_h
-            scale = min(scale_w, scale_h, 1.0)  # 拡大はしない（1.0を上限）
-            
-            target_width = int(clip_w * scale)
-            target_height = int(clip_h * scale)
-            
-            # lanczos補間で高品質にリサイズ
-            clip = clip.resized(width=target_width, height=target_height, interp='lanczos')
-            clip_w, clip_h = clip.w, clip.h
-
+            # Pillowで事前リサイズ済みのため、MoviePyでのリサイズは不要
             # フェードイン・アウトを追加（一時的にコメントアウト）
             # clip = clip.crossfadein(0.5).crossfadeout(0.5)
 
