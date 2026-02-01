@@ -18,11 +18,14 @@ generated_audio/
 generated_video/
 dist/
 build/
+
+# Lambda functions - PROTECTED: Do not delete these files
+# These contain the latest deployed code from AWS Lambda
 lambda/
 
 # Lambda functions (private)
-lambda_selector/
 lambda_writer/
+# lambda_selector/
 
 # OS / editor specific
 .DS_Store
