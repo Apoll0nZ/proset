@@ -137,6 +137,7 @@ YOUTUBE_CLIENT_SECRETS_JSON = os.environ.get("YOUTUBE_CLIENT_SECRETS_JSON", "")
 VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1920"))
 VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1080"))
 FPS = int(os.environ.get("FPS", "30"))
+VIDEO_BITRATE = "8M"  # 高画質設定：8Mbps
 
 # デバッグモード（Trueの時は最初の60秒のみ書き出し）
 DEBUG_MODE = True
@@ -1948,22 +1949,24 @@ def build_video_with_subtitles(
             duration = getattr(img_clip, 'duration', 'N/A')
             print(f"[QUALITY CHECK] Image {i}: start={start_time}s, duration={duration}s")
         
-        bitrate = "800k" if DEBUG_MODE else None
+        bitrate = "800k" if DEBUG_MODE else VIDEO_BITRATE
         if DEBUG_MODE:
             print(f"DEBUG_MODE: Using low bitrate for preview: {bitrate}")
+        else:
+            print(f"Using high quality bitrate: {bitrate}")
 
         video.write_videofile(
             out_video_path,
             fps=30,  # 30fps固定
             codec='libx264',
-            preset='ultrafast',  # 最速エンコード
+            preset='medium' if not DEBUG_MODE else 'ultrafast',  # 高画質設定
             audio_codec='aac',
             audio_bitrate='256k',  # 音声256kbps
             bitrate=bitrate,
             temp_audiofile='temp-audio.m4a',
             remove_temp=True,
             threads=4,  # 並列処理を抑制（ローカル環境向け）
-            ffmpeg_params=['-crf', '28', '-preset', 'ultrafast'],  # メモリ負荷低減
+            ffmpeg_params=['-crf', '23'] if not DEBUG_MODE else ['-crf', '28', '-preset', 'ultrafast'],  # 高画質CRF値
             logger=None  # コンソール書き込みを抑制
         )
         
