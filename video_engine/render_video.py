@@ -425,8 +425,8 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                         print(f"[DEBUG] Found {len(elements)} elements with selector: {selector}")
                 
                 if not thumbnail_elements:
-                    print("[ERROR] No thumbnail elements found")
-                    raise RuntimeError("画像サムネイルが見つかりませんでした")
+                    print("[WARNING] No thumbnail elements found, returning empty list")
+                    return []
                 
                 print(f"[DEBUG] Total thumbnail elements found: {len(thumbnail_elements)}")
                 
@@ -797,12 +797,12 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                     print(f"Successfully found {len(images)} original images for '{keyword}'")
                     return images
                 else:
-                    print(f"[ERROR] No original images found for '{keyword}'")
-                    raise RuntimeError(f"Google画像検索でオリジナル画像が見つかりませんでした: {keyword}")
+                    print(f"[WARNING] No original images found for '{keyword}', will return empty list")
+                    return []
                     
         except ImportError:
             print("[ERROR] Playwright not available")
-            raise RuntimeError("Playwrightがインストールされていません")
+            return []
             
         except Exception as e:
             # HTTPエラー（503, 429など）の場合はリトライ
@@ -813,15 +813,16 @@ def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Di
                     time.sleep(retry_delay)
                     continue
                 else:
-                    print(f"[ERROR] Max retries reached for '{keyword}'")
-                    raise RuntimeError(f"画像検索で最大リトライ回数に達しました: {e}")
+                    print(f"[ERROR] Max retries reached for '{keyword}', returning empty list")
+                    return []
             else:
-                # その他のエラーは即時失敗
-                print(f"[ERROR] Non-retryable error in image search: {e}")
-                raise RuntimeError(f"画像検索でエラーが発生しました: {e}")
+                # その他のエラーは空リストを返して継続
+                print(f"[ERROR] Error in image search: {e}, returning empty list")
+                return []
     
     # すべてのリトライが失敗した場合
-    raise RuntimeError(f"画像検索がすべて失敗しました: {keyword}")
+    print(f"[WARNING] All image search attempts failed for '{keyword}', returning empty list")
+    return []
 
 
 def get_youtube_credentials_from_env():
@@ -1441,16 +1442,18 @@ def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
                 continue
         
         # すべてのキーワードで失敗した場合
-        print("[ERROR] No images found for any keywords")
-        raise RuntimeError(f"すべてのキーワード {keywords} で画像が見つかりませんでした")
+        print("[WARNING] No images found for any keywords, will use background only")
+        return None
             
     except Exception as e:
         print(f"[ERROR] AI image selection process failed: {e}")
-        # 既にRuntimeErrorの場合はそのまま再発生
+        # 既にRuntimeErrorの場合はNoneを返して処理を継続
         if isinstance(e, RuntimeError):
-            raise
+            print(f"[INFO] RuntimeError occurred, returning None to continue with background only")
+            return None
         else:
-            raise RuntimeError(f"画像選択プロセスでエラーが発生しました: {e}")
+            print(f"[INFO] Other error occurred, returning None to continue with background only")
+            return None
 
 
 def download_image_from_s3(image_key: str) -> str:
@@ -2171,10 +2174,10 @@ def build_video_with_subtitles(
         # 画像スケジュール作成完了後のチェック
         valid_images = [item for item in image_schedule if item["path"] is not None]
         if not valid_images:
-            print("[ERROR] No images were collected for the entire video")
-            raise RuntimeError("動画全体で画像が1枚も取得できませんでした。ネットワーク接続または画像ソースを確認してください。")
-        
-        print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
+            print("[WARNING] No images were collected for the entire video, using background only")
+            print("[INFO] Video will be generated with background video and subtitles only")
+        else:
+            print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
 
         def make_pos_func(start_time: float, target_x: int, target_y: int, start_x: int):
             """画像ごとに独立した位置関数を生成するクロージャ"""
