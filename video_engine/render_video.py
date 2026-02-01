@@ -27,6 +27,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from moviepy import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, CompositeAudioClip
+from moviepy.video.fx.all import crossfadein, crossfadeout
 import requests
 
 from create_thumbnail import create_thumbnail
@@ -359,28 +360,120 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
     import time
     import json
     
+    # グローバルキャッシュ（同一セッション内で再利用）
+    if not hasattr(search_images_with_playwright, '_cache'):
+        search_images_with_playwright._cache = {}
+    
+    cache = search_images_with_playwright._cache
+    cache_key = f"{keyword}_{max_results}"
+    
+    # キャッシュをチェック
+    if cache_key in cache:
+        print(f"[CACHE] Using cached results for '{keyword}': {len(cache[cache_key])} images")
+        return cache[cache_key]
+    
     # Bingを使用
     max_retries = 2
     retry_delay = 1  # 秒
     
-    # フォールバック用の企業名マッピング（必要な場合のみ）
+    # 企業名マッピング（製品名や型番に企業名をプレフィックスとして付与）
     company_mapping = {
+        # AI/LLM
         'GPT-5': 'OpenAI',
-        'Grace CPU': 'Google',
+        'GPT-4': 'OpenAI',
+        'ChatGPT': 'OpenAI',
         'Claude': 'Anthropic',
+        'Claude 3': 'Anthropic',
         'Gemini': 'Google',
-        'Copilot': 'Microsoft'
+        'Gemini Pro': 'Google',
+        'Copilot': 'Microsoft',
+        'Bard': 'Google',
+        
+        # NVIDIA製品
+        'H100': 'NVIDIA',
+        'H200': 'NVIDIA',
+        'A100': 'NVIDIA',
+        'RTX 5090': 'NVIDIA',
+        'RTX 4090': 'NVIDIA',
+        'RTX 4080': 'NVIDIA',
+        'RTX 3090': 'NVIDIA',
+        'Blackwell': 'NVIDIA',
+        'Grace CPU': 'NVIDIA',
+        'Grace Hopper': 'NVIDIA',
+        'GeForce': 'NVIDIA',
+        'Quadro': 'NVIDIA',
+        'Tesla': 'NVIDIA',
+        
+        # AMD製品
+        'Ryzen': 'AMD',
+        'EPYC': 'AMD',
+        'Radeon': 'AMD',
+        'RX 7900': 'AMD',
+        'RX 6800': 'AMD',
+        
+        # Intel製品
+        'Core i9': 'Intel',
+        'Core i7': 'Intel',
+        'Core i5': 'Intel',
+        'Xeon': 'Intel',
+        'Arc': 'Intel',
+        
+        # Apple製品
+        'M3': 'Apple',
+        'M2': 'Apple',
+        'M1': 'Apple',
+        'iPhone': 'Apple',
+        'MacBook': 'Apple',
+        
+        # Google製品
+        'Tensor': 'Google',
+        'Pixel': 'Google',
+        'Chromebook': 'Google',
+        
+        # Microsoft製品
+        'Surface': 'Microsoft',
+        'Windows': 'Microsoft',
+        'Azure': 'Microsoft',
+        
+        # その他
+        'Tesla': 'Tesla',
+        'SpaceX': 'SpaceX',
+        'Amazon': 'Amazon',
+        'AWS': 'Amazon',
+        'Meta': 'Meta',
+        'Facebook': 'Meta',
+        'Instagram': 'Meta'
     }
     
     for attempt in range(max_retries):
         try:
             from playwright.async_api import async_playwright
             
-            # フォールバック検索キーワードの決定
+            # 検索キーワードの最適化
             search_keyword = keyword
-            if attempt > 0 and keyword in company_mapping:
-                search_keyword = f"{company_mapping[keyword]} {keyword}"
-                print(f"[FALLBACK] Trying with company name: {search_keyword}")
+            
+            # 製品名や型番の場合は企業名をプレフィックスとして付与
+            company_added = False
+            for product, company in company_mapping.items():
+                if product.lower() in keyword.lower() and not keyword.lower().startswith(company.lower()):
+                    search_keyword = f"{company} {keyword}"
+                    company_added = True
+                    break
+            
+            # テック関連画像がヒットしやすいようにクエリを最適化
+            if company_added or any(tech in keyword.lower() for tech in ['cpu', 'gpu', 'ai', 'ml', 'tech', 'chip', 'processor']):
+                if 'tech' not in search_keyword.lower() and 'official' not in search_keyword.lower():
+                    search_keyword = f"{search_keyword} tech official"
+            
+            # フォールバック検索（2回目以降）
+            if attempt > 0:
+                if not company_added:
+                    # 企業名が付与されていない場合は付与を試みる
+                    for product, company in company_mapping.items():
+                        if product.lower() in keyword.lower():
+                            search_keyword = f"{company} {keyword} official"
+                            break
+                print(f"[FALLBACK] Attempt {attempt + 1}: {search_keyword}")
             else:
                 print(f"Searching Bing images for: {search_keyword} (attempt {attempt + 1}/{max_retries})")
             
@@ -548,6 +641,9 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
                         
                         if images:
                             print(f"Successfully found {len(images)} valid images for '{keyword}'")
+                            # キャッシュに保存
+                            cache[cache_key] = images
+                            print(f"[CACHE] Saved {len(images)} images for '{keyword}' to cache")
                             await browser.close()
                             return images
                     else:
@@ -558,6 +654,9 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
                 
                 await browser.close()
                 print(f"[WARNING] No images found for '{keyword}'")
+                # 空の結果もキャッシュに保存
+                cache[cache_key] = []
+                print(f"[CACHE] Saved empty result for '{keyword}' to cache")
                 return []
                     
         except ImportError:
@@ -573,12 +672,18 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
                     continue
                 else:
                     print(f"[ERROR] Max retries reached for '{keyword}'")
+                    # エラー結果もキャッシュに保存
+                    cache[cache_key] = []
                     return []
             else:
                 print(f"[ERROR] Error in image search: {e}")
+                # エラー結果もキャッシュに保存
+                cache[cache_key] = []
                 return []
     
     print(f"[WARNING] All attempts failed for '{keyword}'")
+    # 全試行失敗もキャッシュに保存
+    cache[cache_key] = []
     return []
 
 
@@ -2042,11 +2147,12 @@ async def build_video_with_subtitles(
             else:
                 image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
 
-            clip = ImageClip(image_array).with_start(1.0).with_duration(image_duration).with_opacity(1.0)
+            clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             
             # Pillowで事前リサイズ済みのため、MoviePyでのリサイズは不要
             # 1秒のフェードインとフェードアウトを追加（クロスフェード演出）
-            clip = clip.crossfadein(1.0).crossfadeout(1.0)
+            clip = crossfadein(clip, 1.0)
+            clip = crossfadeout(clip, 1.0)
 
             # 座標を中央に固定
             clip = clip.with_position("center")  # 画像は中央配置
