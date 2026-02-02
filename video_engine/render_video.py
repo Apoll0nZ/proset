@@ -670,6 +670,10 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
                 if 'tech' not in search_keyword.lower() and 'official' not in search_keyword.lower():
                     search_keyword = f"{search_keyword} tech official"
             
+            # ストックフォトを除外するために-shutterstockを付与
+            if '-shutterstock' not in search_keyword.lower():
+                search_keyword = f"{search_keyword} -shutterstock"
+            
             # フォールバック検索（2回目以降）
             if attempt > 0:
                 if not company_added:
@@ -1270,6 +1274,22 @@ def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List
 
 
 
+def is_blocked_domain(image_url: str) -> bool:
+    """ストックフォトドメインをブロック"""
+    blocked_domains = [
+        'shutterstock.com',
+        'gettyimages.com', 
+        'stock.adobe.com',
+        'alamy.com'
+    ]
+    
+    url_lower = image_url.lower()
+    for domain in blocked_domains:
+        if domain in url_lower:
+            print(f"[BLOCK] Blocked stock photo domain: {domain} in {image_url}")
+            return True
+    return False
+
 def download_image_from_url(image_url: str, filename: str = None) -> str:
     """URLから画像をダウンロードしてtempフォルダに保存し、S3にもアップロード（リトライ付き・ゾンビ画像対策）"""
     
@@ -1288,6 +1308,10 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
             # gstaticドメインを入り口で拒否（より厳格に）
             if "gstatic.com" in image_url or "encrypted-tbn" in image_url:
                 print(f"[REJECT] Blocked thumbnail domain (gstatic/encrypted-tbn): {image_url}")
+                return None
+            
+            # ストックフォトドメインをブロック
+            if is_blocked_domain(image_url):
                 return None
 
             if not filename:
@@ -2057,13 +2081,10 @@ async def build_video_with_subtitles(
                 
                 # 抽象的な概念を具体化する接尾辞を付与
                 concrete_suffixes = [
-                    "logo png", "interface screenshot", "software dashboard", 
-                    "product photo", "official image", "real device"
+                    "official image", "product photo", "technology", "device", "hardware"
                 ]
                 
-                # キーワードが抽象的な場合は接尾辞を付与
-                abstract_keywords = ["AI", "技術", "サービス", "システム", "プラットフォーム"]
-                is_abstract = any(abstract in keyword for abstract in abstract_keywords)
+                is_abstract = any(word in keyword.lower() for word in ['concept', 'idea', 'system', 'solution', 'platform'])
                 
                 if is_abstract and len(keyword) <= 10:
                     # 短い抽象的なキーワードには接尾辞を付与
@@ -2074,6 +2095,10 @@ async def build_video_with_subtitles(
                     if len(keyword.split()) == 1:  # 単語の場合
                         search_keyword = f"{keyword} official image"
                         print(f"[DEBUG] Single word keyword, adding image suffix: {keyword} -> {search_keyword}")
+                
+                # ストックフォトを除外するために-shutterstockを付与
+                if '-shutterstock' not in search_keyword.lower():
+                    search_keyword = f"{search_keyword} -shutterstock"
                 
                 print(f"[DEBUG] Segment {i} search keyword: {search_keyword}")
                 print(f"[DEBUG] Original keyword: '{keyword}' (length: {len(keyword)})")

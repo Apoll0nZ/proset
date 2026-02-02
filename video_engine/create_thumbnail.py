@@ -114,11 +114,67 @@ def get_article_images(topic_summary: str, meta: Optional[Dict] = None, used_ima
     img1 = None
     img2 = None
     
-    # 動画生成で使用した画像から2枚をランダムに選択
+    # 動画生成で使用した画像から2枚をスコアリングして選択
     if image_paths and len(image_paths) >= 2:
         import random
-        selected_paths = random.sample(image_paths, min(2, len(image_paths)))
-        print(f"[DEBUG] Selected {len(selected_paths)} images from video generation: {selected_paths}")
+        
+        def get_domain_score(image_path: str) -> int:
+            """ドメインに基づいてスコアを付与"""
+            preferred_domains = [
+                'apple.com',
+                'microsoft.com',
+                'google.com',
+                'amazon.com',
+                'verge.com',
+                'cnet.com',
+                'techcrunch.com',
+                'engadget.com',
+                'arstechnica.com',
+                'wired.com',
+                'theverge.com',
+                'zdnet.com',
+                'pcmag.com',
+                'tomshardware.com',
+                'anandtech.com'
+            ]
+            
+            # パスからURLを抽出（S3パスの場合はファイル名から推測）
+            url_lower = image_path.lower()
+            
+            # 優先ドメインのスコアリング
+            for domain in preferred_domains:
+                if domain in url_lower:
+                    print(f"[SCORE] High score for preferred domain: {domain} in {image_path}")
+                    return 10
+            
+            # 一般的な企業ドメイン
+            if any(company in url_lower for company in ['nvidia', 'amd', 'intel', 'qualcomm', 'samsung']):
+                return 8
+            
+            # ニュースメディア系
+            if any(media in url_lower for media in ['news', 'reuters', 'bloomberg', 'wsj']):
+                return 7
+            
+            # 公式サイト
+            if any(official in url_lower for official in ['official', 'press', 'media']):
+                return 6
+            
+            # その他
+            return 3
+        
+        # スコアリングして上位2枚を選択
+        scored_paths = []
+        for path in image_paths:
+            score = get_domain_score(path)
+            # 同点の場合はランダム性を加える
+            score += random.randint(0, 2)
+            scored_paths.append((score, path))
+        
+        # スコアで降順にソートして上位2枚を選択
+        scored_paths.sort(key=lambda x: x[0], reverse=True)
+        selected_paths = [path for score, path in scored_paths[:2]]
+        
+        print(f"[DEBUG] Selected {len(selected_paths)} images with scoring: {[(score, path) for score, path in scored_paths[:2]]}")
         
         try:
             img1 = Image.open(selected_paths[0]).convert("RGBA")
