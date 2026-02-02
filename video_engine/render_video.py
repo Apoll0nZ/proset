@@ -2484,8 +2484,12 @@ async def build_video_with_subtitles(
                             color="black",
                             font=font_path,
                             method="caption",
-                            size=(1700, None),
-                            bg_color="white"  # 白背景
+                            size=(1600, None),  # 幅を少し狭めて余白を増加
+                            bg_color="white",  # 白背景
+                            align="center",    # 中央揃えで余白を確保
+                            stroke_color="black",  # 枠線で視認性向上
+                            stroke_width=1,  # 細い枠線
+                            # paddingを追加（MoviePyのcaption methodで自動的に余白が確保される）
                         )
                         # 字幕エリアを1.2倍に拡大して下に配置（VIDEO_HEIGHT - 360）
                         clip_start = current_time + chunk_idx * chunk_duration
