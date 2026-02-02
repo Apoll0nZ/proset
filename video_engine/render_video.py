@@ -522,6 +522,7 @@ def download_background_music() -> str:
 
 # グローバル変数
 _used_image_hashes = set()  # 動画全体で使用した画像のハッシュ値を記録
+_used_image_paths = []  # 動画全体で使用した画像のパスを記録（サムネイル用）
 
 def get_image_hash(image_path: str) -> str:
     """画像ファイルのハッシュ値を計算"""
@@ -539,6 +540,8 @@ def is_duplicate_image(image_path: str) -> bool:
         print(f"[DUPLICATE] Image already used: {image_path}")
         return True
     _used_image_hashes.add(image_hash)
+    # サムネイル用に画像パスを記録
+    _used_image_paths.append(image_path)
     return False
 
 
@@ -2087,8 +2090,12 @@ async def build_video_with_subtitles(
                         if image_path and os.path.exists(image_path):
                             # 重複チェック
                             if is_duplicate_image(image_path):
-                                continue  # 重複画像はスキップ
-                            part_images.append(image_path)
+                                print(f"[SKIP] Duplicate image: {image_url}")
+                                continue
+                            else:
+                                # サムネイル用に画像パスを記録（重複でない場合のみ）
+                                _used_image_paths.append(image_path)
+                                _images.append(image_path)
                             total_images_collected += 1
                             print(
                                 f"[DEBUG] Image list updated: total={total_images_collected}, "
@@ -2821,6 +2828,7 @@ async def main() -> None:
                     thumbnail_data=thumbnail_data,
                     output_path=thumbnail_path,
                     meta=meta,
+                    used_image_paths=_used_image_paths,
                 )
                 print(f"[SUCCESS] サムネイル生成完了: {thumbnail_path}")
             except Exception as e:
