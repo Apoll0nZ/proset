@@ -521,7 +521,6 @@ def download_background_music() -> str:
 
 
 # グローバル変数
-search_images_with_playwright._cache = {}
 _used_image_hashes = set()  # 動画全体で使用した画像のハッシュ値を記録
 
 def get_image_hash(image_path: str) -> str:
