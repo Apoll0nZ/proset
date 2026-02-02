@@ -2812,7 +2812,8 @@ async def main() -> None:
 
             # 4. サムネイル生成
             print("Generating thumbnail...")
-            thumbnail_path = os.path.join(tmpdir, "thumbnail.png")
+            workspace_root = os.environ.get('GITHUB_WORKSPACE', '.')
+            thumbnail_path = os.path.join(workspace_root, "thumbnail.png")
             try:
                 create_thumbnail(
                     title=title,
@@ -2821,8 +2822,11 @@ async def main() -> None:
                     output_path=thumbnail_path,
                     meta=meta,
                 )
+                print(f"[SUCCESS] サムネイル生成完了: {thumbnail_path}")
             except Exception as e:
-                print(f"サムネイル生成に失敗しましたが、処理を続行します: {e}")
+                import traceback
+                print(f"[ERROR] サムネイル生成中に致命的なエラーが発生しました:")
+                print(traceback.format_exc())
                 thumbnail_path = None
 
             # 4.5. 成果物をカレントディレクトリにコピー（GitHub Actions用）
@@ -2830,29 +2834,23 @@ async def main() -> None:
             try:
                 import shutil
                 
-                # GitHub Actionsのワークスペースルートを取得（なければカレントディレクトリ）
-                workspace_root = os.environ.get('GITHUB_WORKSPACE', '.')
-                print(f"[INFO] Workspace root: {workspace_root}")
-                
                 # 動画ファイルをプロジェクトルートにコピー
-                video_dest = os.path.join(workspace_root, "video.mp4")
-                if os.path.exists(video_path):
+                if video_path and os.path.exists(video_path):
+                    video_dest = os.path.join(workspace_root, "video.mp4")
                     shutil.copy2(video_path, video_dest)
                     print(f"[INFO] Copied video to: {video_dest}")
                 else:
                     print(f"[WARNING] Video file not found: {video_path}")
                 
-                # サムネイルファイルをプロジェクトルートにコピー
+                # サムネイルファイルの確認（既にworkspace_rootに存在）
                 if thumbnail_path and os.path.exists(thumbnail_path):
-                    thumbnail_dest = os.path.join(workspace_root, "thumbnail.png")
-                    shutil.copy2(thumbnail_path, thumbnail_dest)
-                    print(f"[INFO] Copied thumbnail to: {thumbnail_dest}")
+                    print(f"[INFO] Thumbnail already exists at: {thumbnail_path}")
                 else:
                     print("[WARNING] Thumbnail file not found")
                     
             except Exception as e:
                 print(f"[ERROR] Failed to copy artifacts: {e}")
-
+            
             # 5. YouTube へアップロード
             if DEBUG_MODE:
                 print(f"[DEBUG_MODE] YouTubeアップロードをスキップします。Artifactsに保存済みです。")
@@ -2922,24 +2920,33 @@ async def main() -> None:
             if DEBUG_MODE:
                 print("[DEBUG] DEBUG_MODE: Artifacts 転送のため一時ファイル削除をスキップします")
             else:
+                # プロジェクトルートに生成された動画とサムネイルファイルを削除
                 try:
-                    if tmpdir and os.path.exists(tmpdir):
-                        files = []
-                        for root, _, filenames in os.walk(tmpdir):
-                            for name in filenames:
-                                files.append(os.path.join(root, name))
-                        if files:
-                            print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
-                        shutil.rmtree(tmpdir, ignore_errors=True)
-                        print(f"Cleaned up temporary directory: {tmpdir}")
+                    video_file = "video.mp4"
+                    thumbnail_file = "thumbnail.png"
+                    
+                    if os.path.exists(video_file):
+                        os.remove(video_file)
+                        print(f"[INFO] Removed video file: {video_file}")
+                    
+                    if os.path.exists(thumbnail_file):
+                        os.remove(thumbnail_file)
+                        print(f"[INFO] Removed thumbnail file: {thumbnail_file}")
+                        
                 except Exception as e:
-                    print(f"Failed to cleanup temporary directory: {e}")
+                    print(f"[WARNING] Failed to remove project root files: {e}")
+                try:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                    print(f"[INFO] Cleaned up temporary directory: {tmpdir}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to cleanup temp directory: {e}")
                 try:
                     if os.path.exists(LOCAL_TEMP_DIR):
                         files = [os.path.join(LOCAL_TEMP_DIR, name) for name in os.listdir(LOCAL_TEMP_DIR)]
                         if files:
                             print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
                         shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
+                        print(f"[INFO] Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
                         print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
                 except Exception as e:
                     print(f"Failed to cleanup image temp directory: {e}")
