@@ -6,8 +6,7 @@ on:
 
 jobs:
   render-and-upload:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60  # タイムアウトを60分に設定
+    runs-on: ubuntu-latest
 
     env:
       MY_AWS_REGION: ${{ secrets.MY_AWS_REGION }}
