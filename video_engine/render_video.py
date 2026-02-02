@@ -2109,6 +2109,8 @@ async def build_video_with_subtitles(
 
             # 1枚あたり最低7秒表示のハイブリッド・ロジック
             min_duration = 7.0  # 最低表示時間
+            seg_start = current_time
+            seg_end = seg_start + duration  # セグメント終了時間
             available_time = seg_end - seg_start
             
             # セグメント時間を最低7秒で等分
@@ -2121,15 +2123,24 @@ async def build_video_with_subtitles(
                 current_time += duration
                 continue
             
-            # 実際の1枚あたり表示時間を計算
-            actual_image_duration = available_time / num_images_to_use
+            # 実際の1枚あたり表示時間を計算（最低7秒を保証）
+            if num_images_to_use > 0:
+                actual_image_duration = max(available_time / num_images_to_use, min_duration)
+            else:
+                actual_image_duration = min_duration
             
             print(f"[DEBUG] Segment {i}: available_time={available_time}s, images_to_use={num_images_to_use}, duration_per_image={actual_image_duration:.2f}s")
             
-            # 各画像を配置（0.5秒オーバーラップでクロスフェード）
+            # 各画像を配置（0.5秒オーバーラップで隙間を完全に埋める）
             images_scheduled = 0
             for img_idx in range(num_images_to_use):
-                img_start = current_time + img_idx * (actual_image_duration - 0.5)  # 0.5秒オーバーラップ
+                if img_idx == 0:
+                    # 最初の画像はセグメント開始から
+                    img_start = seg_start
+                else:
+                    # 2枚目以降は0.5秒オーバーラップで配置
+                    img_start = seg_start + img_idx * (actual_image_duration - 0.5)
+                
                 img_end = img_start + actual_image_duration + 0.5  # 0.5秒延長して次の画像と重複
                 
                 # 画像がセグメント終了時間を超える場合は調整
@@ -2166,15 +2177,9 @@ async def build_video_with_subtitles(
             if images_scheduled == 0:
                 print(f"[WARNING] No valid images scheduled for segment {i}")
 
-            # current_timeを厳密に管理（オーバーラップを考慮）
+            # current_timeを厳密に管理（セグメント終了時間に同期）
             print(f"[DEBUG] Segment {i} completed. Current time before update: {current_time:.2f}s")
-            if images_scheduled > 0:
-                # 最後の画像の終了時間を次の開始時間に設定
-                last_img_idx = images_scheduled - 1
-                last_img_start = current_time + last_img_idx * (actual_image_duration - 0.5)
-                current_time = last_img_start + actual_image_duration
-            else:
-                current_time += duration
+            current_time = seg_end  # セグメント終了時間に同期して隙間をなくす
             print(f"[DEBUG] Segment {i} completed. Current time after update: {current_time:.2f}s")
 
             # メモリ解放：各セグメント処理後にクリーンアップ
