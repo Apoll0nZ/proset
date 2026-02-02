@@ -1394,12 +1394,18 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
     return None
 
 
-def split_subtitle_text(text: str, max_chars: int = 60) -> List[str]:
-    """字幕を60文字以内で分割する。句点（。）で区切り、短文は結合する。"""
+def split_subtitle_text(text: str, max_chars: int = 90) -> List[str]:
+    """字幕を90文字以内で分割し、読みやすく改行を挿入する。ネットの反応はコメント単位で区切る。"""
     if len(text) <= max_chars:
-        return [text]
+        return [add_line_breaks(text)]
 
     import re
+    
+    # ネットの反応パート（コメント）を検出
+    if "ネットの反応" in text or "コメント" in text:
+        return split_network_reactions(text, max_chars)
+    
+    # 通常のニュースパートの処理
     # 句点（。）で分割
     parts = re.split(r"([。])", text)
     
@@ -1412,50 +1418,104 @@ def split_subtitle_text(text: str, max_chars: int = 60) -> List[str]:
             sentence = parts[i]
         sentences.append(sentence.strip())
     
-    # 短文（15文字未満）を次の文と結合
-    merged_sentences = []
-    i = 0
-    while i < len(sentences):
-        current = sentences[i]
-        
-        # 現在の文が15文字未満で、次の文がある場合は結合
-        while len(current) < 15 and i + 1 < len(sentences):
-            next_sentence = sentences[i + 1]
-            combined = current + next_sentence
-            if len(combined) <= max_chars:
-                current = combined
-                i += 1
-            else:
-                break
-        
-        merged_sentences.append(current)
-        i += 1
+    # 結合ロジックの強化：max_charsに達するまで複数の文章を結合
+    merged_chunks = []
+    current_chunk = ""
     
-    # 45文字を超える場合は適切な位置で分割
-    final_chunks = []
-    for sentence in merged_sentences:
-        if len(sentence) <= max_chars:
-            final_chunks.append(sentence)
+    for sentence in sentences:
+        if len(current_chunk + sentence) <= max_chars:
+            current_chunk += sentence
         else:
-            # 長い文は適切な位置で分割
-            words = re.split(r'([、])', sentence)
-            current_chunk = ""
-            for j in range(0, len(words), 2):
-                if j + 1 < len(words):
-                    word = words[j] + words[j + 1]
-                else:
-                    word = words[j]
-                
-                if len(current_chunk + word) > max_chars and current_chunk:
-                    final_chunks.append(current_chunk.strip())
-                    current_chunk = word
-                else:
-                    current_chunk += word
-            
-            if current_chunk.strip():
-                final_chunks.append(current_chunk.strip())
+            if current_chunk:
+                merged_chunks.append(add_line_breaks(current_chunk.strip()))
+            current_chunk = sentence
     
-    return [chunk.strip() for chunk in final_chunks if chunk.strip()]
+    if current_chunk:
+        merged_chunks.append(add_line_breaks(current_chunk.strip()))
+    
+    return merged_chunks
+
+
+def add_line_breaks(text: str) -> str:
+    """20〜25文字ごとに適切な位置で改行を挿入する（最大3〜4行）"""
+    if len(text) <= 25:
+        return text
+    
+    import re
+    
+    # 読点「、」や文の区切りで改行を挿入
+    lines = []
+    current_line = ""
+    
+    # 優先順位：読点 > 文末 > 25文字超えの適当な位置
+    for char in text:
+        current_line += char
+        
+        # 25文字を超えたら改行位置を検索
+        if len(current_line) > 25:
+            # 読点で改行
+            if '、' in current_line:
+                last_comma_pos = current_line.rfind('、')
+                if last_comma_pos >= 20:  # 20文字以降の読点で改行
+                    lines.append(current_line[:last_comma_pos + 1])
+                    current_line = current_line[last_comma_pos + 1:]
+                    continue
+            
+            # 句点で改行
+            if '。' in current_line:
+                last_period_pos = current_line.rfind('。')
+                if last_period_pos >= 20:  # 20文字以降の句点で改行
+                    lines.append(current_line[:last_period_pos + 1])
+                    current_line = current_line[last_period_pos + 1:]
+                    continue
+            
+            # 強制改行（最大4行制限）
+            if len(lines) >= 3:
+                lines.append(current_line)
+                current_line = ""
+    
+    if current_line:
+        lines.append(current_line)
+    
+    return '\n'.join(lines)
+
+
+def split_network_reactions(text: str, max_chars: int) -> List[str]:
+    """ネットの反応パートをコメント単位で分割する"""
+    import re
+    
+    # コメントを抽出（「」や（）で囲まれた部分）
+    comments = re.findall(r'「([^」]+)」|（([^）]+)）', text)
+    
+    if not comments:
+        # コメントが見つからない場合は通常処理
+        return [add_line_breaks(text)]
+    
+    # コメントをフラットなリストに変換
+    comment_list = []
+    for match in comments:
+        if match[0]:  # 「」の場合
+            comment_list.append(match[0])
+        elif match[1]:  # （）の場合
+            comment_list.append(match[1])
+    
+    # コメントを結合して字幕を作成
+    chunks = []
+    current_chunk = ""
+    
+    for comment in comment_list:
+        formatted_comment = f"「{comment}」"
+        if len(current_chunk + formatted_comment) <= max_chars:
+            current_chunk += formatted_comment + " "
+        else:
+            if current_chunk:
+                chunks.append(add_line_breaks(current_chunk.strip()))
+            current_chunk = formatted_comment + " "
+    
+    if current_chunk:
+        chunks.append(add_line_breaks(current_chunk.strip()))
+    
+    return chunks if chunks else [add_line_breaks(text)]
 
 
 async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
@@ -2415,7 +2475,7 @@ async def build_video_with_subtitles(
                 
                 # 字幕クリップを作成（1920x1080用に調整）
                 try:
-                    chunks = split_subtitle_text(text, max_chars=60)
+                    chunks = split_subtitle_text(text, max_chars=90)
                     chunk_duration = subtitle_duration / max(len(chunks), 1)
                     for chunk_idx, chunk in enumerate(chunks):
                         txt_clip = TextClip(
