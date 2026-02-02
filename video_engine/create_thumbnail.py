@@ -365,45 +365,74 @@ def create_thumbnail(
         fill=main_color, outline_color="white", outline_width=4
     )
     
-    # サブ/煽り字幕（1つのみ、メイン字幕左上に配置）
-    sub_texts = thumbnail_data.get("sub_texts", ["これマジ？"])
-    if not sub_texts:
-        sub_texts = ["これマジ？"]
+    # サブ/煽り字幕（条件付き表示）
+    sub_texts = thumbnail_data.get("sub_texts")
     
-    # 最初の1つのみ使用
-    sub_text = sub_texts[0]
-    
-    # メイン字幕の左上位置を計算
-    sub_x = text_x - 20  # メイン字幕より少し左
-    sub_y = text_y - 50  # メイン字幕より少し上
-    
-    # 白背景の四角形を描画
-    try:
-        # テキストサイズを取得
-        sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
-        sub_text_width = sub_bbox[2] - sub_bbox[0]
-        sub_text_height = sub_bbox[3] - sub_bbox[1]
+    # sub_textsが空またはNoneの場合は描画を完全にスキップ
+    if sub_texts and len(sub_texts) > 0:
+        # 最初の1つのみ使用
+        sub_text = sub_texts[0]
         
-        # パディングを追加
-        padding = 8
-        bg_x1 = sub_x - padding
-        bg_y1 = sub_y - padding
-        bg_x2 = sub_x + sub_text_width + padding
-        bg_y2 = sub_y + sub_text_height + padding
+        # メイン字幕の左上位置を基準に配置
+        sub_x = text_x - 30  # メイン字幕より左にオフセット
+        sub_y = text_y - 60  # メイン字幕より上にオフセット
         
-        # 白背景を描画
-        draw.rectangle([(bg_x1, bg_y1), (bg_x2, bg_y2)], fill="white")
-        
-        # 黒文字で描画（斜め回転効果を出すために少し傾いた位置に）
-        draw.text((sub_x + 2, sub_y + 2), sub_text, font=sub_font, fill="black", encoding='unic')
-        
-    except Exception as e:
-        print(f"[DEBUG] Sub text drawing failed: {e}")
-        # フォールバック：通常の描画
-        draw_text_with_outline(
-            draw, sub_text, (sub_x, sub_y), sub_font,
-            fill="black", outline_color="white", outline_width=1
-        )
+        try:
+            # テキストサイズを取得
+            sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
+            sub_text_width = sub_bbox[2] - sub_bbox[0]
+            sub_text_height = sub_bbox[3] - sub_bbox[1]
+            
+            # パディングを追加
+            padding = 10
+            bg_width = sub_text_width + padding * 2
+            bg_height = sub_text_height + padding * 2
+            
+            # 透明な画像を作成してサブタイトルを描画
+            sub_img = Image.new("RGBA", (bg_width, bg_height), (0, 0, 0, 0))
+            sub_draw = ImageDraw.Draw(sub_img)
+            
+            # 白背景の四角形を描画
+            sub_draw.rectangle([(0, 0), (bg_width, bg_height)], fill="white")
+            
+            # 黒色または赤色の太字で描画（ランダム選択）
+            text_color = random.choice(["black", "red"])
+            sub_draw.text((padding, padding), sub_text, font=sub_font, fill=text_color, encoding='unic')
+            
+            # -15度で回転
+            rotated_sub_img = sub_img.rotate(-15, expand=True, fillcolor=(0, 0, 0, 0))
+            
+            # 回転後の画像をメイン字幕の左上に配置
+            paste_x = sub_x - (rotated_sub_img.width - bg_width) // 2
+            paste_y = sub_y - (rotated_sub_img.height - bg_height) // 2
+            
+            # 画像を貼り付け（透過対応）
+            img.paste(rotated_sub_img, (paste_x, paste_y), rotated_sub_img)
+            
+            print(f"[DEBUG] Subtitle placed: text='{sub_text}', pos=({paste_x},{paste_y}), color={text_color}")
+            
+        except Exception as e:
+            print(f"[DEBUG] Sub text drawing failed: {e}")
+            # フォールバック：通常の描画
+            try:
+                # 白背景を直接描画
+                sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
+                sub_text_width = sub_bbox[2] - sub_bbox[0]
+                sub_text_height = sub_bbox[3] - sub_bbox[1]
+                
+                padding = 8
+                bg_x1 = sub_x - padding
+                bg_y1 = sub_y - padding
+                bg_x2 = sub_x + sub_text_width + padding
+                bg_y2 = sub_y + sub_text_height + padding
+                
+                draw.rectangle([(bg_x1, bg_y1), (bg_x2, bg_y2)], fill="white")
+                draw.text((sub_x, sub_y), sub_text, font=sub_font, fill="black", encoding='unic')
+                
+            except Exception as fallback_e:
+                print(f"[DEBUG] Fallback also failed: {fallback_e}")
+    else:
+        print("[DEBUG] No sub_texts provided, skipping subtitle rendering")
     
     # 保存
     img.save(output_path, "PNG", quality=95)
