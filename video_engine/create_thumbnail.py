@@ -365,22 +365,44 @@ def create_thumbnail(
         fill=main_color, outline_color="white", outline_width=4
     )
     
-    # サブ/煽り字幕（画像上に斜め配置）
-    sub_texts = thumbnail_data.get("sub_texts", ["これマジ？", "逝ったああ"])
+    # サブ/煽り字幕（1つのみ、メイン字幕左上に配置）
+    sub_texts = thumbnail_data.get("sub_texts", ["これマジ？"])
     if not sub_texts:
         sub_texts = ["これマジ？"]
     
-    # 各サブテキストをランダム位置に配置
-    for i, sub_text in enumerate(sub_texts[:3]):  # 最大3個
-        # ランダム位置（上部エリア内）
-        sub_x = random.randint(50, THUMBNAIL_WIDTH - 200)
-        sub_y = random.randint(50, TOP_AREA_HEIGHT - 100)
+    # 最初の1つのみ使用
+    sub_text = sub_texts[0]
+    
+    # メイン字幕の左上位置を計算
+    sub_x = text_x - 20  # メイン字幕より少し左
+    sub_y = text_y - 50  # メイン字幕より少し上
+    
+    # 白背景の四角形を描画
+    try:
+        # テキストサイズを取得
+        sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
+        sub_text_width = sub_bbox[2] - sub_bbox[0]
+        sub_text_height = sub_bbox[3] - sub_bbox[1]
         
-        # 斜めに回転（簡易版: 実際にはImage.rotateを使用）
-        # ここでは斜め配置の見た目を出すため、位置をずらす
+        # パディングを追加
+        padding = 8
+        bg_x1 = sub_x - padding
+        bg_y1 = sub_y - padding
+        bg_x2 = sub_x + sub_text_width + padding
+        bg_y2 = sub_y + sub_text_height + padding
+        
+        # 白背景を描画
+        draw.rectangle([(bg_x1, bg_y1), (bg_x2, bg_y2)], fill="white")
+        
+        # 黒文字で描画（斜め回転効果を出すために少し傾いた位置に）
+        draw.text((sub_x + 2, sub_y + 2), sub_text, font=sub_font, fill="black", encoding='unic')
+        
+    except Exception as e:
+        print(f"[DEBUG] Sub text drawing failed: {e}")
+        # フォールバック：通常の描画
         draw_text_with_outline(
             draw, sub_text, (sub_x, sub_y), sub_font,
-            fill="white", outline_color="black", outline_width=2
+            fill="black", outline_color="white", outline_width=1
         )
     
     # 保存
