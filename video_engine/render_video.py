@@ -520,17 +520,9 @@ def download_background_music() -> str:
         return None
 
 
-async def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """Bing Image SearchからJSONメタデータで画像URLを取得（固有名詞のみ・直接抽出）"""
-    
-    import time
-    import json
-    import hashlib
-    
-    # グローバルキャッシュ（同一セッション内で再利用）
-    if not hasattr(search_images_with_playwright, '_cache'):
-        search_images_with_playwright._cache = {}
-    _used_image_hashes = set()  # 動画全体で使用した画像のハッシュ値を記録
+# グローバル変数
+search_images_with_playwright._cache = {}
+_used_image_hashes = set()  # 動画全体で使用した画像のハッシュ値を記録
 
 def get_image_hash(image_path: str) -> str:
     """画像ファイルのハッシュ値を計算"""
@@ -550,6 +542,18 @@ def is_duplicate_image(image_path: str) -> bool:
     _used_image_hashes.add(image_hash)
     return False
 
+
+async def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """Bing Image SearchからJSONメタデータで画像URLを取得（固有名詞のみ・直接抽出）"""
+    
+    import time
+    import json
+    import hashlib
+    
+    # グローバルキャッシュ（同一セッション内で再利用）
+    if not hasattr(search_images_with_playwright, '_cache'):
+        search_images_with_playwright._cache = {}
+    
     cache = search_images_with_playwright._cache
     cache_key = f"{keyword}_{max_results}"
     
