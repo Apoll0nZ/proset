@@ -1,6 +1,6 @@
 import os
 import random
-from typing import Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont, ImageFilter  # type: ignore
 import requests
 from io import BytesIO
