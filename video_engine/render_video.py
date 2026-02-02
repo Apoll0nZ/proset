@@ -4,6 +4,7 @@ import sys
 import tempfile
 import math
 import time
+import hashlib
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 import random
@@ -524,11 +525,31 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
     
     import time
     import json
+    import hashlib
     
     # グローバルキャッシュ（同一セッション内で再利用）
     if not hasattr(search_images_with_playwright, '_cache'):
         search_images_with_playwright._cache = {}
-    
+    _used_image_hashes = set()  # 動画全体で使用した画像のハッシュ値を記録
+
+def get_image_hash(image_path: str) -> str:
+    """画像ファイルのハッシュ値を計算"""
+    try:
+        with open(image_path, 'rb') as f:
+            return hashlib.md5(f.read()).hexdigest()
+    except Exception as e:
+        print(f"[ERROR] Failed to calculate hash for {image_path}: {e}")
+        return ""
+
+def is_duplicate_image(image_path: str) -> bool:
+    """画像が既に使用されているかチェック"""
+    image_hash = get_image_hash(image_path)
+    if image_hash in _used_image_hashes:
+        print(f"[DUPLICATE] Image already used: {image_path}")
+        return True
+    _used_image_hashes.add(image_hash)
+    return False
+
     cache = search_images_with_playwright._cache
     cache_key = f"{keyword}_{max_results}"
     
@@ -2052,7 +2073,7 @@ async def build_video_with_subtitles(
                 print(f"[DEBUG] Original keyword: '{keyword}' (length: {len(keyword)})")
                 
                 try:
-                    images = await search_images_with_playwright(search_keyword, max_results=2)
+                    images = await search_images_with_playwright(search_keyword, max_results=10)
                     print(f"[DEBUG] Found {len(images)} images for keyword: '{keyword}'")
                     
                     for image in images:
@@ -2061,6 +2082,9 @@ async def build_video_with_subtitles(
                             continue
                         image_path = download_image_from_url(image_url)
                         if image_path and os.path.exists(image_path):
+                            # 重複チェック
+                            if is_duplicate_image(image_path):
+                                continue  # 重複画像はスキップ
                             part_images.append(image_path)
                             total_images_collected += 1
                             print(
