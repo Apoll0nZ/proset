@@ -1209,11 +1209,15 @@ def generate_keywords_with_gemini(text: str, max_keywords: int = 5) -> List[str]
         
         print(f"[DEBUG] Gemini API からの生の返答: {raw_response}")
         
-        # バリデーション・洗浄
-        cleaned_keywords = validate_and_clean_keywords(raw_response, text)
-        print(f"[DEBUG] 洗浄後のキーワード: {cleaned_keywords}")
-        
-        return cleaned_keywords
+        # 生の返答をそのまま使用（洗浄処理を削除）
+        # カンマ区切りで分割してリスト化
+        if isinstance(raw_response, str):
+            keywords = [kw.strip() for kw in raw_response.split(',') if kw.strip()]
+            print(f"[DEBUG] 分割後のキーワード: {keywords}")
+            return keywords
+        else:
+            print(f"[DEBUG] 生の返答が文字列ではありません: {type(raw_response)}")
+            return [str(raw_response)] if raw_response else []
         
     except Exception as e:
         print(f"[ERROR] Gemini API call failed: {e}")
