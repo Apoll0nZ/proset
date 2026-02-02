@@ -104,10 +104,35 @@ def create_placeholder_image(width: int, height: int, color: tuple = (200, 200, 
     return img
 
 
-def get_article_images(topic_summary: str, meta: Optional[Dict] = None) -> Tuple[Image.Image, Image.Image]:
+def get_article_images(topic_summary: str, meta: Optional[Dict] = None, used_image_paths: List[str] = None) -> Tuple[Image.Image, Image.Image]:
     """
-    記事関連画像を2枚取得（S3からダウンロード）。
+    記事関連画像を2枚取得（動画生成で使用した画像から再利用）。
     """
+    # 使用された画像パスのリストを取得
+    image_paths = used_image_paths or []
+    
+    img1 = None
+    img2 = None
+    
+    # 動画生成で使用した画像から2枚をランダムに選択
+    if image_paths and len(image_paths) >= 2:
+        import random
+        selected_paths = random.sample(image_paths, min(2, len(image_paths)))
+        print(f"[DEBUG] Selected {len(selected_paths)} images from video generation: {selected_paths}")
+        
+        try:
+            img1 = Image.open(selected_paths[0]).convert("RGBA")
+            print(f"[DEBUG] Loaded video image 1: {selected_paths[0]}")
+        except Exception as e:
+            print(f"[DEBUG] Failed to load video image 1: {e}")
+        
+        if len(selected_paths) > 1:
+            try:
+                img2 = Image.open(selected_paths[1]).convert("RGBA")
+                print(f"[DEBUG] Loaded video image 2: {selected_paths[1]}")
+            except Exception as e:
+                print(f"[DEBUG] Failed to load video image 2: {e}")
+    
     # IT系汎用背景素材（チップ風）をフォールバックに使用
     fallback_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "background.png")
     fallback_image = None
@@ -122,15 +147,6 @@ def get_article_images(topic_summary: str, meta: Optional[Dict] = None) -> Tuple
     else:
         print("[DEBUG] Fallback image not found, using dark blue background")
         fallback_image = create_dark_blue_background(1920, 1080).convert("RGBA")
-    # S3から画像をダウンロード
-    img1 = None
-    img2 = None
-    
-    if meta and "source_url" in meta:
-        # 実運用ではmeta.source_urlからOGP画像を取得
-        source_url = meta["source_url"]
-        print(f"[DEBUG] Attempting to get images from source: {source_url}")
-        # ここでは簡易的にプレースホルダーを使用
     
     # 画像がない場合はフォールバック素材を使用
     if img1 is None and fallback_image is not None:
@@ -194,6 +210,7 @@ def create_thumbnail(
     thumbnail_data: Dict[str, Any],
     output_path: str,
     meta: Optional[Dict] = None,
+    used_image_paths: List[str] = None,
 ) -> None:
     """
     PC猫スタイル（2chスレタイ風）サムネイルを生成。
@@ -216,7 +233,7 @@ def create_thumbnail(
     left_width = int(THUMBNAIL_WIDTH * ratio)
     right_width = THUMBNAIL_WIDTH - left_width
     
-    img1, img2 = get_article_images(topic_summary, meta)
+    img1, img2 = get_article_images(topic_summary, meta, used_image_paths)
     
     # 画像をリサイズして配置
     img1_resized = img1.resize((left_width, TOP_AREA_HEIGHT), Image.Resampling.LANCZOS)
