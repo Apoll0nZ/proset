@@ -2120,7 +2120,7 @@ async def build_video_with_subtitles(
                             else:
                                 # サムネイル用に画像パスを記録（重複でない場合のみ）
                                 _used_image_paths.append(image_path)
-                                _images.append(image_path)
+                                part_images.append(image_path)
                             total_images_collected += 1
                             print(
                                 f"[DEBUG] Image list updated: total={total_images_collected}, "
