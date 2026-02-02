@@ -1239,23 +1239,10 @@ def generate_keywords_with_gemini(text: str, max_keywords: int = 3) -> List[str]
         return [text[:10]]  # フォールバック
 
 
-def extract_fallback_keywords(text: str, title: str, topic_summary: str) -> List[str]:
-    combined = f"{title} {topic_summary} {text}"
-    candidates = []
-    for word in ["AI", "人工知能", "テクノロジー", "半導体", "ソフトウェア", "デバイス"]:
-        if word in combined:
-            candidates.append(word)
-    if not candidates:
-        for token in combined.split():
-            if len(token) >= 3:
-                candidates.append(token)
-    return candidates[:3] if candidates else ["テクノロジー"]
-
-
 def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List[str]:
     keywords = generate_keywords_with_gemini(part_text)
     if not keywords:
-        keywords = extract_fallback_keywords(part_text, title, topic_summary)
+        raise RuntimeError(f"Failed to generate keywords for segment: {part_text[:50]}...")
     return keywords
 
 
