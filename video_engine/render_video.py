@@ -1181,10 +1181,10 @@ def validate_and_clean_keywords(keywords: str, fallback_text: str) -> List[str]:
     if not result:
         return [fallback_text[:10]]
     
-    return result[:3]  # 最大3つ
+    return result[:5]  # 最大5つ（プロンプトで最低3つを要求）
 
 
-def generate_keywords_with_gemini(text: str, max_keywords: int = 3) -> List[str]:
+def generate_keywords_with_gemini(text: str, max_keywords: int = 5) -> List[str]:
     """Geminiでセグメントごとのキーワードを生成（失敗時はフォールバック）。"""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
