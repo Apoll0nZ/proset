@@ -2010,7 +2010,7 @@ async def build_video_with_subtitles(
         topic_summary = content.get("topic_summary", "")
         image_schedule = []
         total_images_collected = 0
-        current_time = 0.0  # 開始時点から画像を配置
+        current_time = 1.0  # 画像を1.0秒後に開始
 
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
@@ -2107,45 +2107,42 @@ async def build_video_with_subtitles(
             # 画像が1枚でも取得できた場合は続行
             print(f"[DEBUG] Found {len(part_images)} images for segment {i}")
 
-            # 1枚あたり10秒固定で配置（簡素化ロジック）
-            fixed_duration = 10.0  # 1枚あたり10秒固定
-            seg_start = current_time  # セグメント開始時間（3秒固定を廃止）
-            seg_end = seg_start + duration  # セグメント終了時間
-            num_images = len(part_images)
-            
-            print(f"[DEBUG] Segment {i}: start={seg_start}s, end={seg_end}s, duration={duration}s")
-            print(f"[DEBUG] Available images: {num_images}")
-            
-            # セグメントの有効時間を計算
+            # 1枚あたり最低7秒表示のハイブリッド・ロジック
+            min_duration = 7.0  # 最低表示時間
             available_time = seg_end - seg_start
-            max_images_in_segment = int(available_time / fixed_duration)
-            print(f"[DEBUG] Available time: {available_time}s, Max images: {max_images_in_segment}")
             
-            # 各画像を10秒固定で配置、セグメント終了時間を超える場合は配置しない
+            # セグメント時間を最低7秒で等分
+            max_images_possible = int(available_time / min_duration)
+            num_images_to_use = min(len(part_images), max_images_possible)
+            
+            if num_images_to_use == 0:
+                print(f"[WARNING] セグメント {i} は時間不足のため画像なし")
+                image_schedule.append({"start": current_time, "duration": duration, "path": None})
+                current_time += duration
+                continue
+            
+            # 実際の1枚あたり表示時間を計算
+            actual_image_duration = available_time / num_images_to_use
+            
+            print(f"[DEBUG] Segment {i}: available_time={available_time}s, images_to_use={num_images_to_use}, duration_per_image={actual_image_duration:.2f}s")
+            
+            # 各画像を配置（0.5秒オーバーラップでクロスフェード）
             images_scheduled = 0
-            for img_idx in range(min(num_images, max_images_in_segment)):
-                img_start = seg_start + img_idx * fixed_duration
-                img_end = img_start + fixed_duration
+            for img_idx in range(num_images_to_use):
+                img_start = current_time + img_idx * (actual_image_duration - 0.5)  # 0.5秒オーバーラップ
+                img_end = img_start + actual_image_duration + 0.5  # 0.5秒延長して次の画像と重複
                 
-                # 画像がセグメント終了時間を超える場合は配置しない
+                # 画像がセグメント終了時間を超える場合は調整
                 if img_start >= seg_end:
                     print(f"[DEBUG] Image {img_idx} skipped: start={img_start}s >= seg_end={seg_end}s")
                     break
                 
-                # 最後の画像がセグメントを超える場合も配置しない
-                if img_end > seg_end:
-                    print(f"[DEBUG] Image {img_idx} skipped: end={img_end}s > seg_end={seg_end}s")
-                    break
-                
-                # 画像パスの有効性を確認
-                image_path = part_images[img_idx]
-                if not image_path or not os.path.exists(image_path):
-                    print(f"[DEBUG] Image {img_idx} skipped: invalid or missing file - {image_path}")
-                    continue
+                # 使用する画像を選択（循環利用）
+                selected_image = part_images[img_idx % len(part_images)]
                 
                 # 画像ファイルの有効性を再確認
                 try:
-                    with Image.open(image_path) as img:
+                    with Image.open(selected_image) as img:
                         width, height = img.size
                         if width < 100 or height < 100:
                             print(f"[DEBUG] Image {img_idx} skipped: too small ({width}x{height})")
@@ -2154,24 +2151,14 @@ async def build_video_with_subtitles(
                     print(f"[DEBUG] Image {img_idx} skipped: invalid image file - {e}")
                     continue
                 
-                # 有効な画像のみスケジュールに追加
-                actual_duration = min(fixed_duration, seg_end - img_start)
-                if actual_duration <= 0:
-                    print(f"[DEBUG] Image {img_idx} skipped: invalid duration {actual_duration}s")
-                    continue
-                
-                # 画像スケジュールに追加（0.05秒間隔で切り替え）
-                img_start = current_time
-                actual_duration = fixed_duration - 0.05  # 0.05秒短くして次の画像との間隔を確保
-                
+                # 画像スケジュールに追加（0.5秒オーバーラップでクロスフェード）
                 image_schedule.append({
                     "start": img_start,
-                    "duration": actual_duration,
-                    "path": image_path,
+                    "duration": actual_image_duration + 0.5,  # 0.5秒延長してオーバーラップ
+                    "path": selected_image,
                 })
-                
-                current_time += fixed_duration  # 次の画像は0.05秒後から開始
-                print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={actual_duration}s")
+                images_scheduled += 1
+                print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={actual_image_duration + 0.5}s")
             
             print(f"[DEBUG] Scheduled {images_scheduled} images for segment {i}")
             
@@ -2179,9 +2166,15 @@ async def build_video_with_subtitles(
             if images_scheduled == 0:
                 print(f"[WARNING] No valid images scheduled for segment {i}")
 
-            # current_timeを厳密に管理（セグメント間の重複を防止）
+            # current_timeを厳密に管理（オーバーラップを考慮）
             print(f"[DEBUG] Segment {i} completed. Current time before update: {current_time:.2f}s")
-            current_time += duration
+            if images_scheduled > 0:
+                # 最後の画像の終了時間を次の開始時間に設定
+                last_img_idx = images_scheduled - 1
+                last_img_start = current_time + last_img_idx * (actual_image_duration - 0.5)
+                current_time = last_img_start + actual_image_duration
+            else:
+                current_time += duration
             print(f"[DEBUG] Segment {i} completed. Current time after update: {current_time:.2f}s")
 
             # メモリ解放：各セグメント処理後にクリーンアップ
@@ -2332,8 +2325,7 @@ async def build_video_with_subtitles(
 
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             
-            # 固定位置に配置（スライド・フェードなし）
-            # 60%→100%拡大アニメーションで表示
+            # 固定位置に配置し、60%→100%拡大アニメーションで表示
             clip = transition_scale_animation(clip, is_fade_out=False)
 
             # 座標を中央に固定
