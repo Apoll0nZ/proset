@@ -383,33 +383,54 @@ def create_thumbnail(
             sub_text_width = sub_bbox[2] - sub_bbox[0]
             sub_text_height = sub_bbox[3] - sub_bbox[1]
             
-            # パディングを追加
-            padding = 10
+            # パディングを増やして余裕を持たせる
+            padding = 12
             bg_width = sub_text_width + padding * 2
             bg_height = sub_text_height + padding * 2
             
-            # 透明な画像を作成してサブタイトルを描画
-            sub_img = Image.new("RGBA", (bg_width, bg_height), (0, 0, 0, 0))
+            # 2倍のサイズで高解像度描画（オーバーサンプリング）
+            scale_factor = 2
+            high_res_width = bg_width * scale_factor
+            high_res_height = bg_height * scale_factor
+            
+            # 高解像度の透明な画像を作成
+            sub_img = Image.new("RGBA", (high_res_width, high_res_height), (0, 0, 0, 0))
             sub_draw = ImageDraw.Draw(sub_img)
             
-            # 白背景の四角形を描画
-            sub_draw.rectangle([(0, 0), (bg_width, bg_height)], fill="white")
+            # 高解像度用のフォントを2倍サイズで作成
+            high_res_font_size = sub_font.size * scale_factor
+            high_res_font = ImageFont.truetype(FONT_PATH_SUB, high_res_font_size)
             
-            # 黒色または赤色の太字で描画（ランダム選択）
+            # 白背景の四角形を描画（高解像度）
+            sub_draw.rectangle([(0, 0), (high_res_width, high_res_height)], fill="white")
+            
+            # 水色の枠線を追加
+            border_color = (100, 150, 255)  # 水色
+            sub_draw.rectangle([(0, 0), (high_res_width, high_res_height)], outline=border_color, width=2)
+            
+            # 黒色または赤色の太字で描画（高解像度）
             text_color = random.choice(["black", "red"])
-            sub_draw.text((padding, padding), sub_text, font=sub_font, fill=text_color, encoding='unic')
+            high_res_padding = padding * scale_factor
+            sub_draw.text((high_res_padding, high_res_padding), sub_text, font=high_res_font, fill=text_color, encoding='unic')
             
-            # -15度で回転
-            rotated_sub_img = sub_img.rotate(-15, expand=True, fillcolor=(0, 0, 0, 0))
+            # -15度で回転（BICUBICアンチエイリアス適用）
+            rotated_sub_img = sub_img.rotate(-15, expand=True, fillcolor=(0, 0, 0, 0), resample=Image.Resampling.BICUBIC)
+            
+            # 元のサイズにリサイズ（LANCZOSで高品質）
+            final_sub_img = rotated_sub_img.resize((rotated_sub_img.width // scale_factor, rotated_sub_img.height // scale_factor), Image.Resampling.LANCZOS)
+            
+            # 配置をさらに左上へ調整
+            adjusted_sub_x = text_x - 60  # さらに左へ
+            adjusted_sub_y = text_y - 80  # さらに上へ
             
             # 回転後の画像をメイン字幕の左上に配置
-            paste_x = sub_x - (rotated_sub_img.width - bg_width) // 2
-            paste_y = sub_y - (rotated_sub_img.height - bg_height) // 2
+            paste_x = adjusted_sub_x - (final_sub_img.width - bg_width) // 2
+            paste_y = adjusted_sub_y - (final_sub_img.height - bg_height) // 2
             
             # 画像を貼り付け（透過対応）
-            img.paste(rotated_sub_img, (paste_x, paste_y), rotated_sub_img)
+            img.paste(final_sub_img, (paste_x, paste_y), final_sub_img)
             
-            print(f"[DEBUG] Subtitle placed: text='{sub_text}', pos=({paste_x},{paste_y}), color={text_color}")
+            print(f"[DEBUG] Subtitle placed: text='{sub_text}', pos=({paste_x},{paste_y}), color={text_color}, scale={scale_factor}x")
             
         except Exception as e:
             print(f"[DEBUG] Sub text drawing failed: {e}")
