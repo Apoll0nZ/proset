@@ -1097,7 +1097,7 @@ def extract_image_keywords_list(script_data: Dict[str, Any]) -> List[str]:
 
 
 def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
-    """台本から画像検索キーワードを抽出（固有名詞中心）"""
+    """台本から画像検索キーワードを抽出（LLMキーワードを優先）"""
     try:
         title = script_data.get("title", "")
         content = script_data.get("content", {})
@@ -1109,65 +1109,46 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
         for part in script_parts:
             all_text += f" {part.get('text', '')}"
         
-        # 固有名詞・重要キーワードリスト（優先順位順）
-        # 企業名・ブランド名
-        company_keywords = [
-            "ドコモ", "NTT", "KDDI", "ソフトバンク", "楽天", "Google", "Apple", "Microsoft", 
-            "Amazon", "Meta", "Tesla", "Sony", "Panasonic", "Sharp", "富士通", "NEC", "日立",
-            "東芝", "三菱", "住友", "三井", "VAIO", "富士通", "IBM", "Oracle", "Cisco", "Intel",
-            "AMD", "NVIDIA", "Qualcomm", "Samsung", "LG", "Huawei", "Xiaomi"
-        ]
+        # LLMからキーワードを生成して優先使用
+        print("[DEBUG] Generating keywords with LLM for image search...")
+        llm_keywords = generate_keywords_with_gemini(all_text)
         
-        # 製品名・サービス名
-        product_keywords = [
-            "iPhone", "Android", "Windows", "Mac", "iPad", "Galaxy", "Pixel", "Surface",
-            "PlayStation", "Xbox", "Switch", "ChatGPT", "Gemini", "Copilot", "Siri", "Alexa",
-            "YouTube", "TikTok", "Instagram", "Twitter", "Facebook", "LINE", "Zoom", "Teams",
-            "Slack", "Dropbox", "GitHub", "AWS", "Azure", "GCP", "Firebase"
-        ]
+        if llm_keywords:
+            # LLMキーワードをバリデーションして使用
+            validated_keywords = validate_and_clean_keywords(llm_keywords, topic_summary)
+            if validated_keywords:
+                selected_keyword = validated_keywords[0]  # 最初のキーワードを使用
+                print(f"Using LLM-generated keyword: {selected_keyword}")
+                print(f"[DEBUG] All LLM keywords: {validated_keywords}")
+                return selected_keyword
         
-        # 技術・IT用語
-        tech_keywords = [
-            "AI", "人工知能", "機械学習", "ディープラーニング", "データサイエンス", "プログラミング",
-            "ソフトウェア", "テクノロジー", "コンピュータ", "デジタル", "イノベーション", "5G", "6G",
-            "IoT", "ブロックチェーン", "クラウド", "サイバーセキュリティ", "VR", "AR", "メタバース",
-            "SaaS", "PaaS", "IaaS", "API", "SDK", "フレームワーク", "アルゴリズム", "データベース"
-        ]
+        # LLMキーワードがない場合はテキストから動的に抽出
+        print("[DEBUG] No LLM keywords available, extracting from text...")
+        import re
         
-        # 優先順位でキーワードを検索
-        all_keywords = company_keywords + product_keywords + tech_keywords
         found_keywords = []
         
-        for keyword in all_keywords:
-            if keyword in all_text:
-                found_keywords.append(keyword)
-                print(f"[DEBUG] Found keyword: {keyword}")
+        # カタカナ語（3文字以上）を抽出
+        katakana_pattern = r'[ァ-ヶー]{3,}'
+        katakana_words = re.findall(katakana_pattern, all_text)
+        found_keywords.extend(katakana_words)
         
-        # キーワードが見つからない場合はカタカナ語や英単語を抽出
-        if not found_keywords:
-            import re
-            
-            # カタカナ語（3文字以上）を抽出
-            katakana_pattern = r'[ァ-ヶー]{3,}'
-            katakana_words = re.findall(katakana_pattern, all_text)
-            found_keywords.extend(katakana_words)
-            
-            # 英単語（3文字以上）を抽出
-            english_pattern = r'[A-Za-z]{3,}'
-            english_words = re.findall(english_pattern, all_text)
-            found_keywords.extend(english_words)
-            
-            # 一般的な日本語名詞（3文字以上）を抽出
-            japanese_words = [word for word in all_text.split() if len(word) >= 3 and word.isalpha()]
-            found_keywords.extend(japanese_words)
+        # 英単語（3文字以上）を抽出
+        english_pattern = r'[A-Za-z]{3,}'
+        english_words = re.findall(english_pattern, all_text)
+        found_keywords.extend(english_words)
+        
+        # 一般的な日本語名詞（3文字以上）を抽出
+        japanese_words = [word for word in all_text.split() if len(word) >= 3 and word.isalpha()]
+        found_keywords.extend(japanese_words)
         
         # 重複を除去して最初のキーワードを使用
         if found_keywords:
             # 重複除去
             unique_keywords = list(dict.fromkeys(found_keywords))
             selected_keyword = unique_keywords[0]
-            print(f"Extracted keyword: {selected_keyword}")
-            print(f"[DEBUG] All found keywords: {unique_keywords[:5]}")  # 最初の5つを表示
+            print(f"Using extracted keyword: {selected_keyword}")
+            print(f"[DEBUG] All extracted keywords: {unique_keywords[:5]}")  # 最初の5つを表示
             return selected_keyword
         else:
             # フォールバックキーワード
