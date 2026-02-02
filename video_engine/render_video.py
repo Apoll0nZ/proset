@@ -1113,13 +1113,14 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
         print("[DEBUG] Generating keywords with LLM for image search...")
         llm_keywords = generate_keywords_with_gemini(all_text)
         
-        if llm_keywords:
-            # LLMキーワードをバリデーションして使用
-            validated_keywords = validate_and_clean_keywords(llm_keywords, topic_summary)
+        if llm_keywords and isinstance(llm_keywords, list) and len(llm_keywords) > 0:
+            # LLMキーワードリストの最初の要素を文字列として使用
+            first_keyword = llm_keywords[0] if isinstance(llm_keywords[0], str) else str(llm_keywords[0])
+            validated_keywords = validate_and_clean_keywords(first_keyword, topic_summary)
             if validated_keywords:
                 selected_keyword = validated_keywords[0]  # 最初のキーワードを使用
                 print(f"Using LLM-generated keyword: {selected_keyword}")
-                print(f"[DEBUG] All LLM keywords: {validated_keywords}")
+                print(f"[DEBUG] All LLM keywords: {llm_keywords}")
                 return selected_keyword
         
         # LLMキーワードがない場合はテキストから動的に抽出
@@ -1138,6 +1139,11 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
         english_words = re.findall(english_pattern, all_text)
         found_keywords.extend(english_words)
         
+        # 漢字の連続（2文字以上）を抽出
+        kanji_pattern = r'[\u4e00-\u9faf]{2,}'
+        kanji_words = re.findall(kanji_pattern, all_text)
+        found_keywords.extend(kanji_words)
+        
         # 一般的な日本語名詞（3文字以上）を抽出
         japanese_words = [word for word in all_text.split() if len(word) >= 3 and word.isalpha()]
         found_keywords.extend(japanese_words)
@@ -1151,14 +1157,14 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
             print(f"[DEBUG] All extracted keywords: {unique_keywords[:5]}")  # 最初の5つを表示
             return selected_keyword
         else:
-            # フォールバックキーワード
-            fallback_keyword = "technology"
+            # 動的フォールバックキーワード（タイトルの冒頭10文字）
+            fallback_keyword = title[:10] if title else "technology"
             print(f"Using fallback keyword: {fallback_keyword}")
             return fallback_keyword
             
     except Exception as e:
         print(f"Failed to extract keywords: {e}")
-        return "technology"  # 最終フォールバック
+        return title[:10] if title else "technology"  # 最終フォールバック
 
 
 def load_keyword_prompt() -> str:
@@ -1181,11 +1187,10 @@ def validate_and_clean_keywords(keywords: str, fallback_text: str) -> List[str]:
     if not keywords:
         return [fallback_text[:10]]
     
-    # 不要語を除去
-    forbidden_words = ['AI', 'IT', 'テクノロジー', 'ニュース', '技術', 'サービス']
-    cleaned = keywords
-    for word in forbidden_words:
-        cleaned = cleaned.replace(word, '').replace(word.lower(), '').replace(word.upper(), '')
+    # 記号のみを除去（LLMが選んだキーワードを最大限活かす）
+    import re
+    # 不要な記号を除去
+    cleaned = re.sub(r'[#*<>|]', '', keywords)
     
     # カンマ区切りで分割
     result = [kw.strip() for kw in cleaned.split(',') if kw.strip()]
