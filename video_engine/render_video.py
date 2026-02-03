@@ -1387,7 +1387,7 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
     return None
 
 
-def split_subtitle_text(text: str, max_chars: int = 120) -> List[str]:
+def split_subtitle_text(text: str, max_chars: int = 130) -> List[str]:
     """字幕を120文字以内で分割し、読みやすく改行を挿入する。ネットの反応はコメント単位で区切る。"""
     if len(text) <= max_chars:
         return [add_line_breaks(text)]
@@ -1431,7 +1431,7 @@ def split_subtitle_text(text: str, max_chars: int = 120) -> List[str]:
 
 def add_line_breaks(text: str) -> str:
     """30〜35文字ごとに適切な位置で改行を挿入する（最大5〜6行）"""
-    if len(text) <= 35:
+    if len(text) <= 32:
         return text
     
     import re
@@ -1449,7 +1449,7 @@ def add_line_breaks(text: str) -> str:
             # 読点で改行
             if '、' in current_line:
                 last_comma_pos = current_line.rfind('、')
-                if last_comma_pos >= 30:  # 30文字以降の読点で改行
+                if last_comma_pos >= 32:  # 30文字以降の読点で改行
                     lines.append(current_line[:last_comma_pos + 1])
                     current_line = current_line[last_comma_pos + 1:]
                     continue
@@ -1457,7 +1457,7 @@ def add_line_breaks(text: str) -> str:
             # 句点で改行
             if '。' in current_line:
                 last_period_pos = current_line.rfind('。')
-                if last_period_pos >= 30:  # 30文字以降の句点で改行
+                if last_period_pos >= 32:  # 30文字以降の句点で改行
                     lines.append(current_line[:last_period_pos + 1])
                     current_line = current_line[last_period_pos + 1:]
                     continue
@@ -1665,7 +1665,7 @@ def split_text_for_voicevox(text: str) -> List[str]:
             sentence = sentences[i]
         
         # 200文字を超える場合はさらに分割
-        if len(sentence) > 200:
+        if len(sentence) > 120:
             # 半角スペースや全角スペースで分割
             words = re.split(r'([\s　])', sentence)
             temp = ""
@@ -1675,7 +1675,7 @@ def split_text_for_voicevox(text: str) -> List[str]:
                 else:
                     word = words[j]
                 
-                if len(temp + word) > 200 and temp:
+                if len(temp + word) > 120 and temp:
                     result.append(temp.strip())
                     temp = word
                 else:
@@ -2490,16 +2490,16 @@ async def build_video_with_subtitles(
                         
                         txt_clip = TextClip(
                             text=padded_chunk,
-                            font_size=44,  # 200文字対応のためサイズを縮小
+                            font_size=48,  # 200文字対応のためサイズを縮小
                             color="black",
                             font=font_path,
                             method="caption",  # caption methodで自動改行
-                            size=(1300, None),  # 横幅1300pxで左右の画面端から距離を確保
+                            size=(1600, None),  # 横幅1300pxで左右の画面端から距離を確保
                             bg_color="white",  # 白背景
                             text_align="left",  # 文章を左揃えに
                             stroke_color="black",  # 枠線で視認性向上
                             stroke_width=1,  # 細い枠線
-                        )
+                        ).with_margin(30)
                         
                         # caption methodが自動的に幅を制限するため、手動リサイズは不要
                         
