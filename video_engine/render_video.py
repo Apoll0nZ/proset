@@ -2474,7 +2474,7 @@ async def build_video_with_subtitles(
                 
                 # 字幕クリップを作成（1920x1080用に調整）
                 try:
-                    chunks = split_subtitle_text(text, max_chars=150)
+                    chunks = split_subtitle_text(text, max_chars=100)
                     
                     for chunk_idx, chunk in enumerate(chunks):
                         # 1文字あたり0.15秒を確保する計算式
@@ -2494,7 +2494,7 @@ async def build_video_with_subtitles(
                             color="black",
                             font=font_path,
                             method="caption",  # caption methodで自動改行
-                            size=(1400, None),  # 横幅1400pxで左右に十分な余白
+                            size=(1300, None),  # 横幅1300pxで左右の画面端から距離を確保
                             bg_color="white",  # 白背景
                             text_align="left",  # 文章を左揃えに
                             stroke_color="black",  # 枠線で視認性向上
@@ -2508,8 +2508,15 @@ async def build_video_with_subtitles(
                             txt_clip = subtitle_slide_scale_animation(txt_clip)
                         except Exception as anim_error:
                             print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
-                            # 位置を明示的に指定（クリップを中央に配置）
-                            txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 400))
+                            # 位置を明示的に指定（画面下部に安定配置）
+                            txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
+                        
+                        # マージンを適用して文字が背景端に張り付かないようにする
+                        try:
+                            txt_clip = txt_clip.with_margin(30)
+                        except Exception as margin_error:
+                            print(f"[DEBUG] Margin application failed: {margin_error}")
+                            # マージン適用に失敗しても続行
                         
                         # 字幕エリアを下に配置（VIDEO_HEIGHT - 360）
                         clip_start = current_time + chunk_idx * chunk_duration
