@@ -123,51 +123,43 @@ def transition_scale_animation(clip, is_fade_out=False):
 
 # 字幕スライドイン・拡大アニメーション関数
 def subtitle_slide_scale_animation(clip):
-    """字幕をY座標-0.5からスライドインしながら90%→100%に拡大"""
+    """字幕をスライドインしながら90%→100%に拡大"""
+    base_y = VIDEO_HEIGHT - 360
+    
     def animate(t):
         duration = 0.5  # 0.5秒でアニメーション完了
         if t >= duration:
-            return (0, 1.0)  # 最終状態：Y座標0、100%サイズ
+            return ("center", base_y, 1.0)  # 最終状態：中央揃え、基準座標、100%サイズ
         
         progress = t / duration  # 0-1の進捗
         
-        # Y座標：-0.5 → 0 へスライド
-        y_offset = -0.5 + 0.5 * progress
+        # Y座標：base_y - 50px → base_y へスライド
+        y_pos = base_y - 50 + 50 * progress
         
         # サイズ：90% → 100% へ拡大
         scale = 0.9 + 0.1 * progress
         
-        return (y_offset, scale)
+        return ("center", y_pos, scale)
     
     try:
-        # 位置とスケールを同時にアニメーション
-        def position_func(t):
-            y_offset, scale = animate(t)
-            return (150, VIDEO_HEIGHT - 360 + y_offset)
-        
+        # スケールアニメーション
         def scale_func(t):
-            y_offset, scale = animate(t)
+            _, _, scale = animate(t)
             return scale
         
+        # 位置アニメーション
+        def position_func(t):
+            x_pos, y_pos, _ = animate(t)
+            return (x_pos, y_pos)
+        
+        # スケールを適用
         clip = clip.with_effects([vfx.Resize(scale_func)])
+        # 位置を適用
         return clip.with_position(position_func)
-    except:
-        # フォールバック：シンプルなアニメーション
-        def position_fallback(t):
-            if t >= 0.5:
-                return (150, VIDEO_HEIGHT - 360)
-            progress = t / 0.5
-            y_offset = -0.5 + 0.5 * progress
-            return (150, VIDEO_HEIGHT - 360 + y_offset)
-        
-        def scale_fallback(t):
-            if t >= 0.5:
-                return 1.0
-            progress = t / 0.5
-            return 0.9 + 0.1 * progress
-        
-        clip = clip.resize(scale_fallback)
-        return clip.with_position(position_fallback)
+    except Exception as e:
+        print(f"[DEBUG] Animation error: {e}")
+        # フォールバック：静止状態で配置
+        return clip.with_position(("center", base_y))
 
 # loop関数の安全なインポート
 try:
@@ -2483,19 +2475,31 @@ async def build_video_with_subtitles(
                             font_size=58,  # 1.2倍に拡大（48→58）
                             color="black",
                             font=font_path,
-                            method="caption",
-                            size=(1600, None),  # 幅を少し狭めて余白を増加
+                            method="label",  # label methodでテキストサイズに合わせる
                             bg_color="white",  # 白背景
-                            align="center",    # 中央揃えで余白を確保
                             stroke_color="black",  # 枠線で視認性向上
                             stroke_width=1,  # 細い枠線
-                            # paddingを追加（MoviePyのcaption methodで自動的に余白が確保される）
                         )
-                        # 字幕エリアを1.2倍に拡大して下に配置（VIDEO_HEIGHT - 360）
+                        
+                        # 幅を1600pxに制限（必要な場合のみ）
+                        if txt_clip.w > 1600:
+                            txt_clip = txt_clip.with_set_size(width=1600)
+                        
+                        # 字幕エリアを下に配置（VIDEO_HEIGHT - 360）
                         clip_start = current_time + chunk_idx * chunk_duration
                         txt_clip = txt_clip.with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
-                        # Y座標-0.5からスライドインしながら90%→100%に拡大
-                        txt_clip = subtitle_slide_scale_animation(txt_clip)
+                        
+                        # 位置を明示的に指定（中央揃え、下部配置）
+                        txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 360))
+                        
+                        # アニメーションを適用（フォールバック付き）
+                        try:
+                            txt_clip = subtitle_slide_scale_animation(txt_clip)
+                        except Exception as anim_error:
+                            print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
+                            # アニメーション失敗時は静止状態で配置
+                            txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 360))
+                        
                         text_clips.append(txt_clip)
                 except Exception as e:
                     print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
