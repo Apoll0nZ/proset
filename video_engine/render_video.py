@@ -117,9 +117,9 @@ def transition_scale_animation(clip, is_fade_out=False):
     except:
         # フォールバック：シンプルなスケールアニメーション
         if is_fade_out:
-            return clip.resize(lambda t: max(0.6, 1.0 - 0.8 * t))
+            return clip.with_effects([vfx.Resize(lambda t: max(0.6, 1.0 - 0.8 * t))])
         else:
-            return clip.resize(lambda t: min(1.0, 0.6 + 0.8 * t))
+            return clip.with_effects([vfx.Resize(lambda t: min(1.0, 0.6 + 0.8 * t))])
 
 # 字幕スライドイン・拡大アニメーション関数
 def subtitle_slide_scale_animation(clip):
@@ -136,7 +136,7 @@ def subtitle_slide_scale_animation(clip):
         # Y座標：base_y - 50px → base_y へスライド（絶対ピクセル値）
         y_pos = base_y - 50 + 50 * progress
         
-        # 絶対ピクセル値のタプルを返す（中央揃え、画面外防止）
+        # 絶対ピクセル値のタプルを返す（箱ごとスライド）
         safe_y_pos = min(y_pos, VIDEO_HEIGHT - 100)  # 画面外防止
         return ("center", safe_y_pos)
     
@@ -161,18 +161,19 @@ def subtitle_slide_scale_animation(clip):
         safe_base_y = min(base_y, VIDEO_HEIGHT - 100)  # 画面外防止
         return clip.with_position(("center", safe_base_y))
 
-# loop関数の安全なインポート
+# loop関数の安全なインポート（MoviePy 2.0対応）
 try:
-    from moviepy.video.fx import loop
+    from moviepy.video.fx import loop as vfx_loop
 except ImportError:
     try:
-        from moviepy.video.fx.all import loop
+        from moviepy.video.fx.all import loop as vfx_loop
     except ImportError:
-        def loop(clip, duration):
+        def vfx_loop(clip, duration):
             try:
                 return clip.with_effects([vfx.Loop(duration)])
             except:
-                return clip  # エラー時はループなしで返す
+                # フォールバック：単純なループ
+                return clip * int(duration / clip.duration)
 
 # resize関数の安全なインポート
 try:
@@ -2483,15 +2484,19 @@ async def build_video_with_subtitles(
                         # 利用可能な時間と計算時間の小さい方を採用
                         calculated_duration = min(subtitle_duration / max(len(chunks), 1), max_display_time)
                         chunk_duration = max(calculated_duration, min_display_time)
+                        
+                        # テキストの先頭と末尾に余白を追加
+                        padded_chunk = f" {chunk} "
+                        
                         txt_clip = TextClip(
-                            text=chunk,
+                            text=padded_chunk,
                             font_size=52,  # 長文向けにサイズ調整
                             color="black",
                             font=font_path,
                             method="caption",  # caption methodで自動改行
-                            size=(1500, None),  # 横幅1500pxでパディングを確保
+                            size=(1400, None),  # 横幅1400pxで左右に十分な余白
                             bg_color="white",  # 白背景
-                            text_align="center",  # 中央揃えで実質的なパディングを確保
+                            text_align="left",  # 文章を左揃えに
                             stroke_color="black",  # 枠線で視認性向上
                             stroke_width=1,  # 細い枠線
                         )
@@ -2503,7 +2508,7 @@ async def build_video_with_subtitles(
                             txt_clip = subtitle_slide_scale_animation(txt_clip)
                         except Exception as anim_error:
                             print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
-                            # 位置を明示的に指定（中央揃え、下部配置、余裕を持った高さ）
+                            # 位置を明示的に指定（クリップを中央に配置）
                             txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 400))
                         
                         # 字幕エリアを下に配置（VIDEO_HEIGHT - 360）
