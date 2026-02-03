@@ -124,7 +124,7 @@ def transition_scale_animation(clip, is_fade_out=False):
 # 字幕スライドイン・拡大アニメーション関数
 def subtitle_slide_scale_animation(clip):
     """字幕をスライドインしながら90%→100%に拡大"""
-    base_y = VIDEO_HEIGHT - 360
+    base_y = VIDEO_HEIGHT - 400  # 長文対応でマージンを増加
     
     def animate(t):
         duration = 0.5  # 0.5秒でアニメーション完了
@@ -1384,8 +1384,8 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
     return None
 
 
-def split_subtitle_text(text: str, max_chars: int = 90) -> List[str]:
-    """字幕を90文字以内で分割し、読みやすく改行を挿入する。ネットの反応はコメント単位で区切る。"""
+def split_subtitle_text(text: str, max_chars: int = 200) -> List[str]:
+    """字幕を200文字以内で分割し、読みやすく改行を挿入する。ネットの反応はコメント単位で区切る。"""
     if len(text) <= max_chars:
         return [add_line_breaks(text)]
 
@@ -1427,8 +1427,8 @@ def split_subtitle_text(text: str, max_chars: int = 90) -> List[str]:
 
 
 def add_line_breaks(text: str) -> str:
-    """20〜25文字ごとに適切な位置で改行を挿入する（最大3〜4行）"""
-    if len(text) <= 25:
+    """30〜35文字ごとに適切な位置で改行を挿入する（最大5〜6行）"""
+    if len(text) <= 35:
         return text
     
     import re
@@ -1437,16 +1437,16 @@ def add_line_breaks(text: str) -> str:
     lines = []
     current_line = ""
     
-    # 優先順位：読点 > 文末 > 25文字超えの適当な位置
+    # 優先順位：読点 > 文末 > 35文字超えの適当な位置
     for char in text:
         current_line += char
         
-        # 25文字を超えたら改行位置を検索
-        if len(current_line) > 25:
+        # 35文字を超えたら改行位置を検索
+        if len(current_line) > 35:
             # 読点で改行
             if '、' in current_line:
                 last_comma_pos = current_line.rfind('、')
-                if last_comma_pos >= 20:  # 20文字以降の読点で改行
+                if last_comma_pos >= 30:  # 30文字以降の読点で改行
                     lines.append(current_line[:last_comma_pos + 1])
                     current_line = current_line[last_comma_pos + 1:]
                     continue
@@ -1454,13 +1454,13 @@ def add_line_breaks(text: str) -> str:
             # 句点で改行
             if '。' in current_line:
                 last_period_pos = current_line.rfind('。')
-                if last_period_pos >= 20:  # 20文字以降の句点で改行
+                if last_period_pos >= 30:  # 30文字以降の句点で改行
                     lines.append(current_line[:last_period_pos + 1])
                     current_line = current_line[last_period_pos + 1:]
                     continue
             
-            # 強制改行（最大4行制限）
-            if len(lines) >= 3:
+            # 強制改行（最大6行制限）
+            if len(lines) >= 5:
                 lines.append(current_line)
                 current_line = ""
     
@@ -2465,27 +2465,30 @@ async def build_video_with_subtitles(
                 
                 # 字幕クリップを作成（1920x1080用に調整）
                 try:
-                    chunks = split_subtitle_text(text, max_chars=90)
-                    chunk_duration = subtitle_duration / max(len(chunks), 1)
+                    chunks = split_subtitle_text(text, max_chars=200)
+                    
                     for chunk_idx, chunk in enumerate(chunks):
+                        # 1文字あたり0.15秒を確保する計算式
+                        min_display_time = max(len(chunk) * 0.15, 2.0)  # 最低2秒
+                        max_display_time = max(len(chunk) * 0.20, 3.0)  # 最低3秒
+                        
+                        # 利用可能な時間と計算時間の小さい方を採用
+                        calculated_duration = min(subtitle_duration / max(len(chunks), 1), max_display_time)
+                        chunk_duration = max(calculated_duration, min_display_time)
                         txt_clip = TextClip(
                             text=chunk,
-                            font_size=58,  # 1.2倍に拡大（48→58）
+                            font_size=52,  # 長文向けにサイズ調整
                             color="black",
                             font=font_path,
-                            method="label",  # label methodでテキストサイズに合わせる
+                            method="caption",  # caption methodで自動改行
+                            size=(1600, None),  # 横幅1600pxで自動改行
                             bg_color="white",  # 白背景
+                            text_align="center",  # 複数行時も中央揃え
                             stroke_color="black",  # 枠線で視認性向上
                             stroke_width=1,  # 細い枠線
                         )
                         
-                        # 幅を1600pxに制限（必要な場合のみ）
-                        if txt_clip.w > 1600:
-                            if hasattr(txt_clip, 'resized'):
-                                txt_clip = txt_clip.resized(width=1600)
-                            else:
-                                # MoviePy v1.x用のフォールバック
-                                txt_clip = txt_clip.resize(width=1600)
+                        # caption methodが自動的に幅を制限するため、手動リサイズは不要
                         
                         # アニメーションを適用（フォールバック付き）- 位置指定の競合を回避するため先に実行
                         try:
