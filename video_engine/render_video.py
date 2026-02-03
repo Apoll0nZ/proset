@@ -2389,15 +2389,17 @@ async def build_video_with_subtitles(
                             )
                 except UnidentifiedImageError as e:
                     print(f"[DEBUG] Image decode failed (UnidentifiedImageError): {e}")
-                    print("[DEBUG] Using dark blue background as fallback")
-                    image_array = create_dark_blue_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
+                    print("[DEBUG] Skipping this image due to decode failure")
+                    continue  # 画像をスキップして次の画像へ
                 except Exception as e:
                     print(f"[DEBUG] Failed to load image {image_path}: {e}")
-                    print("[DEBUG] Using dark blue background as fallback")
-                    image_array = create_dark_blue_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
+                    print("[DEBUG] Skipping this image due to load failure")
+                    continue  # 画像をスキップして次の画像へ
             else:
-                image_array = create_gradient_background(int(VIDEO_WIDTH * 0.8), int(VIDEO_HEIGHT * 0.6))
+                print("[DEBUG] No valid image path provided, skipping")
+                continue  # 画像パスがない場合はスキップ
 
+            # 有効な画像のみクリップを作成
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             
             # 座標を中央に固定
@@ -2409,10 +2411,12 @@ async def build_video_with_subtitles(
             # 画像クリップ生存確認（作成直後）
             if hasattr(clip, 'size') and clip.size == (0, 0):
                 print(f"[TRACE] ❌ 画像クリップ作成直後にサイズ(0,0)を検出: セグメント{i}")
+                continue  # サイズが異常な場合はスキップ
             elif hasattr(clip, 'size'):
                 print(f"[TRACE] ✅ 画像クリップ作成成功: セグメント{i}, サイズ={clip.size}")
             else:
                 print(f"[TRACE] ❌ 画像クリップにサイズ属性なし: セグメント{i}")
+                continue  # サイズ属性がない場合はスキップ
             
             image_clips.append(clip)
 
