@@ -124,7 +124,6 @@ def transition_scale_animation(clip, is_fade_out=False):
 # 字幕スライドイン・拡大アニメーション関数
 def subtitle_slide_scale_animation(clip):
     """字幕をスライドインしながら90%→100%に拡大"""
-    base_y = VIDEO_HEIGHT - 400  # 長文対応でマージンを増加
     
     def animate(t):
         duration = 0.5  # 0.5秒でアニメーション完了
@@ -133,8 +132,10 @@ def subtitle_slide_scale_animation(clip):
         else:
             progress = t / duration  # 0-1の進捗
         
-        # Y座標：base_y - 50px → base_y へスライド（絶対ピクセル値）
-        y_pos = base_y - 50 + 50 * progress
+        # ボトム基準でY座標を計算：クリップの下端から50px浮かせた位置
+        base_y = VIDEO_HEIGHT - clip.h - 50
+        y_offset = -30 + 30 * progress  # -30px → 0px へスライド
+        y_pos = base_y + y_offset
         
         # 絶対ピクセル値のタプルを返す（箱ごとスライド）
         safe_y_pos = min(y_pos, VIDEO_HEIGHT - 100)  # 画面外防止
@@ -157,8 +158,8 @@ def subtitle_slide_scale_animation(clip):
         return clip.with_position(animate)
     except Exception as e:
         print(f"[DEBUG] Animation error: {e}")
-        # フォールバック：静止状態で配置（中央揃え、画面外防止）
-        safe_base_y = min(base_y, VIDEO_HEIGHT - 100)  # 画面外防止
+        # フォールバック：静止状態で配置（ボトム基準）
+        safe_base_y = VIDEO_HEIGHT - clip.h - 50  # ボトム基準
         return clip.with_position(("center", safe_base_y))
 
 # loop関数の安全なインポート（MoviePy 2.0対応）
@@ -1387,8 +1388,8 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
     return None
 
 
-def split_subtitle_text(text: str, max_chars: int = 200) -> List[str]:
-    """字幕を200文字以内で分割し、読みやすく改行を挿入する。ネットの反応はコメント単位で区切る。"""
+def split_subtitle_text(text: str, max_chars: int = 120) -> List[str]:
+    """字幕を120文字以内で分割し、読みやすく改行を挿入する。ネットの反応はコメント単位で区切る。"""
     if len(text) <= max_chars:
         return [add_line_breaks(text)]
 
@@ -2474,7 +2475,7 @@ async def build_video_with_subtitles(
                 
                 # 字幕クリップを作成（1920x1080用に調整）
                 try:
-                    chunks = split_subtitle_text(text, max_chars=200)
+                    chunks = split_subtitle_text(text, max_chars=120)
                     
                     for chunk_idx, chunk in enumerate(chunks):
                         # 1文字あたり0.15秒を確保する計算式
@@ -2490,7 +2491,7 @@ async def build_video_with_subtitles(
                         
                         txt_clip = TextClip(
                             text=padded_chunk,
-                            font_size=52,  # 長文向けにサイズ調整
+                            font_size=44,  # 200文字対応のためサイズを縮小
                             color="black",
                             font=font_path,
                             method="caption",  # caption methodで自動改行
@@ -2499,6 +2500,7 @@ async def build_video_with_subtitles(
                             text_align="left",  # 文章を左揃えに
                             stroke_color="black",  # 枠線で視認性向上
                             stroke_width=1,  # 細い枠線
+                            line_spacing=5,  # 行間を調整して詰まりすぎないように
                         )
                         
                         # caption methodが自動的に幅を制限するため、手動リサイズは不要
@@ -2508,8 +2510,8 @@ async def build_video_with_subtitles(
                             txt_clip = subtitle_slide_scale_animation(txt_clip)
                         except Exception as anim_error:
                             print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
-                            # 位置を明示的に指定（クリップを中央に配置）
-                            txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 400))
+                            # 位置を明示的に指定（ボトム基準で配置）
+                            txt_clip = txt_clip.with_position(lambda t: ("center", VIDEO_HEIGHT - txt_clip.h - 50))
                         
                         # 字幕エリアを下に配置（VIDEO_HEIGHT - 360）
                         clip_start = current_time + chunk_idx * chunk_duration
