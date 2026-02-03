@@ -136,8 +136,8 @@ def subtitle_slide_scale_animation(clip):
         # Y座標：base_y - 50px → base_y へスライド（絶対ピクセル値）
         y_pos = base_y - 50 + 50 * progress
         
-        # 絶対ピクセル値のタプルを返す
-        return ("center", y_pos)
+        # 絶対ピクセル値のタプルを返す（左揃え、左マージン100px）
+        return (100, y_pos)
     
     def scale_animate(t):
         duration = 0.5  # 0.5秒でアニメーション完了
@@ -156,8 +156,8 @@ def subtitle_slide_scale_animation(clip):
         return clip.with_position(animate)
     except Exception as e:
         print(f"[DEBUG] Animation error: {e}")
-        # フォールバック：静止状態で配置
-        return clip.with_position(("center", base_y))
+        # フォールバック：静止状態で配置（左揃え、左マージン100px）
+        return clip.with_position((100, base_y))
 
 # loop関数の安全なインポート
 try:
@@ -2485,7 +2485,7 @@ async def build_video_with_subtitles(
                             method="caption",  # caption methodで自動改行
                             size=(1600, None),  # 横幅1600pxで自動改行
                             bg_color="white",  # 白背景
-                            text_align="center",  # 複数行時も中央揃え
+                            text_align="left",  # 複数行時も左揃え
                             stroke_color="black",  # 枠線で視認性向上
                             stroke_width=1,  # 細い枠線
                         )
@@ -2497,8 +2497,8 @@ async def build_video_with_subtitles(
                             txt_clip = subtitle_slide_scale_animation(txt_clip)
                         except Exception as anim_error:
                             print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
-                            # アニメーション失敗時は静止状態で配置
-                            txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 360))
+                            # 位置を明示的に指定（左揃え、下部配置、左マージン100px）
+                            txt_clip = txt_clip.with_position((100, VIDEO_HEIGHT - 360))
                         
                         # 字幕エリアを下に配置（VIDEO_HEIGHT - 360）
                         clip_start = current_time + chunk_idx * chunk_duration
