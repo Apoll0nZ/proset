@@ -2488,6 +2488,7 @@ async def build_video_with_subtitles(
                             text_align="left",  # 複数行時も左揃え
                             stroke_color="black",  # 枠線で視認性向上
                             stroke_width=1,  # 細い枠線
+                            padding=(20, 15),  # 上下20px、左右15pxのパディング
                         )
                         
                         # caption methodが自動的に幅を制限するため、手動リサイズは不要
