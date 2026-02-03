@@ -133,9 +133,10 @@ def subtitle_slide_scale_animation(clip):
         else:
             progress = t / duration  # 0-1の進捗
         
-        # Y座標：base_y - 50px → base_y へスライド
+        # Y座標：base_y - 50px → base_y へスライド（絶対ピクセル値）
         y_pos = base_y - 50 + 50 * progress
         
+        # 絶対ピクセル値のタプルを返す
         return ("center", y_pos)
     
     def scale_animate(t):
@@ -2480,14 +2481,15 @@ async def build_video_with_subtitles(
                         
                         # 幅を1600pxに制限（必要な場合のみ）
                         if txt_clip.w > 1600:
-                            txt_clip = txt_clip.with_set_size(width=1600)
+                            if hasattr(txt_clip, 'resized'):
+                                txt_clip = txt_clip.resized(width=1600)
+                            else:
+                                # MoviePy v1.x用のフォールバック
+                                txt_clip = txt_clip.resize(width=1600)
                         
                         # 字幕エリアを下に配置（VIDEO_HEIGHT - 360）
                         clip_start = current_time + chunk_idx * chunk_duration
                         txt_clip = txt_clip.with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
-                        
-                        # 位置を明示的に指定（中央揃え、下部配置）
-                        txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 360))
                         
                         # アニメーションを適用（フォールバック付き）
                         try:
