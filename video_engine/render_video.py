@@ -61,7 +61,7 @@ def slide_in_right(clip, duration=0.5):
     except:
         # フォールバック：positionをアニメーション
         w, h = clip.size
-        return clip.set_position(lambda t: (VIDEO_WIDTH - VIDEO_WIDTH * max(0, min(1, t/duration)), 'center'))
+        return clip.with_position(lambda t: (VIDEO_WIDTH - VIDEO_WIDTH * max(0, min(1, t/duration)), 'center'))
 
 def slide_out_left(clip, duration=0.5):
     """左へ素早くスライドアウトする関数"""
@@ -71,7 +71,7 @@ def slide_out_left(clip, duration=0.5):
     except:
         # フォールバック：positionをアニメーション
         w, h = clip.size
-        return clip.set_position(lambda t: (-VIDEO_WIDTH * max(0, min(1, t/duration)), 'center'))
+        return clip.with_position(lambda t: (-VIDEO_WIDTH * max(0, min(1, t/duration)), 'center'))
 
 # 拡大縮小アニメーション関数（95%-100%）
 def scale_animation_95_100(clip):
@@ -2487,17 +2487,17 @@ async def build_video_with_subtitles(
                                 # MoviePy v1.x用のフォールバック
                                 txt_clip = txt_clip.resize(width=1600)
                         
-                        # 字幕エリアを下に配置（VIDEO_HEIGHT - 360）
-                        clip_start = current_time + chunk_idx * chunk_duration
-                        txt_clip = txt_clip.with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
-                        
-                        # アニメーションを適用（フォールバック付き）
+                        # アニメーションを適用（フォールバック付き）- 位置指定の競合を回避するため先に実行
                         try:
                             txt_clip = subtitle_slide_scale_animation(txt_clip)
                         except Exception as anim_error:
                             print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
                             # アニメーション失敗時は静止状態で配置
                             txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 360))
+                        
+                        # 字幕エリアを下に配置（VIDEO_HEIGHT - 360）
+                        clip_start = current_time + chunk_idx * chunk_duration
+                        txt_clip = txt_clip.with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
                         
                         text_clips.append(txt_clip)
                 except Exception as e:
