@@ -2175,14 +2175,16 @@ async def build_video_with_subtitles(
             # 画像が1枚でも取得できた場合は続行
             print(f"[DEBUG] Found {len(part_images)} images for segment {i}")
 
-            # 1枚あたり最低7秒表示のハイブリッド・ロジック
+            # 1枚あたり最低7秒表示、切り替えに0.5秒のフェードアウト時間を確保
             min_duration = 7.0  # 最低表示時間
+            fade_out_duration = 0.5  # フェードアウト時間
             seg_start = current_time
             seg_end = seg_start + duration  # セグメント終了時間
             available_time = seg_end - seg_start
             
-            # セグメント時間を最低7秒で等分
-            max_images_possible = int(available_time / min_duration)
+            # 画像1枚あたりの時間 = 表示時間 + フェードアウト時間
+            time_per_image = min_duration + fade_out_duration
+            max_images_possible = int(available_time / time_per_image)
             num_images_to_use = min(len(part_images), max_images_possible)
             
             if num_images_to_use == 0:
@@ -2199,17 +2201,17 @@ async def build_video_with_subtitles(
             
             print(f"[DEBUG] Segment {i}: available_time={available_time}s, images_to_use={num_images_to_use}, duration_per_image={actual_image_duration:.2f}s")
             
-            # 各画像を配置（0.5秒オーバーラップで隙間を完全に埋める）
+            # 各画像を配置（重複なしで順番に表示）
             images_scheduled = 0
             for img_idx in range(num_images_to_use):
                 if img_idx == 0:
                     # 最初の画像はセグメント開始から
                     img_start = seg_start
                 else:
-                    # 2枚目以降は0.5秒オーバーラップで配置
-                    img_start = seg_start + img_idx * (actual_image_duration - 0.5)
+                    # 2枚目以降は前画像の終了から開始（重複なし）
+                    img_start = seg_start + img_idx * actual_image_duration
                 
-                img_end = img_start + actual_image_duration + 0.5  # 0.5秒延長して次の画像と重複
+                img_end = img_start + actual_image_duration  # 重複なし
                 
                 # 画像がセグメント終了時間を超える場合は調整
                 if img_start >= seg_end:
@@ -2398,11 +2400,11 @@ async def build_video_with_subtitles(
 
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
             
-            # 固定位置に配置し、60%→100%拡大アニメーションで表示
-            clip = transition_scale_animation(clip, is_fade_out=False)
-
             # 座標を中央に固定
             clip = clip.with_position("center")  # 画像は中央配置
+            
+            # 60%→100%拡大アニメーションで表示（ズームは最後）
+            clip = transition_scale_animation(clip, is_fade_out=False)
 
             # 画像クリップ生存確認（作成直後）
             if hasattr(clip, 'size') and clip.size == (0, 0):
