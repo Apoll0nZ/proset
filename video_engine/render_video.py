@@ -129,33 +129,30 @@ def subtitle_slide_scale_animation(clip):
     def animate(t):
         duration = 0.5  # 0.5秒でアニメーション完了
         if t >= duration:
-            return ("center", base_y, 1.0)  # 最終状態：中央揃え、基準座標、100%サイズ
-        
-        progress = t / duration  # 0-1の進捗
+            progress = 1.0
+        else:
+            progress = t / duration  # 0-1の進捗
         
         # Y座標：base_y - 50px → base_y へスライド
         y_pos = base_y - 50 + 50 * progress
         
+        return ("center", y_pos)
+    
+    def scale_animate(t):
+        duration = 0.5  # 0.5秒でアニメーション完了
+        if t >= duration:
+            progress = 1.0
+        else:
+            progress = t / duration  # 0-1の進捗
+        
         # サイズ：90% → 100% へ拡大
         scale = 0.9 + 0.1 * progress
         
-        return ("center", y_pos, scale)
+        return scale
     
     try:
-        # スケールアニメーション
-        def scale_func(t):
-            _, _, scale = animate(t)
-            return scale
-        
-        # 位置アニメーション
-        def position_func(t):
-            x_pos, y_pos, _ = animate(t)
-            return (x_pos, y_pos)
-        
-        # スケールを適用
-        clip = clip.with_effects([vfx.Resize(scale_func)])
-        # 位置を適用
-        return clip.with_position(position_func)
+        # 位置アニメーションのみ適用（スケールアニメーションは一旦外す）
+        return clip.with_position(animate)
     except Exception as e:
         print(f"[DEBUG] Animation error: {e}")
         # フォールバック：静止状態で配置
