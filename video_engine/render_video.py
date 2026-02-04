@@ -2668,33 +2668,66 @@ async def build_video_with_subtitles(
         
         # 4. まとめ部分（owner_comment以降） - 本編に含まれているので別途作成不要
         
-        # 暗転を除去するためconcatenate_videoclipsを使用（最も安全な方法）
-        if len(video_clips) > 1:
-            # 各クリップのdurationチェック
-            for i, clip in enumerate(video_clips):
-                if clip.duration is None:
-                    print(f"[ERROR] Clip {i} has None duration, setting to 5s")
-                    clip = clip.with_duration(5.0)
-            
-            try:
-                # concatenate_videoclipsで隙間なく連結（method="compose"で安全に合成）
-                final_video = concatenate_videoclips(video_clips, method="compose")
-                print(f"[VIDEO STRUCTURE] Concatenated {len(video_clips)} clips without gaps using method='compose'")
-                print(f"[VIDEO STRUCTURE] Final video duration: {final_video.duration}s")
-            except Exception as e:
-                print(f"[ERROR] concatenate_videoclips failed: {e}")
-                # フォールバック：CompositeVideoClipを使用
-                max_duration = max(clip.duration + (clip.start or 0) for clip in video_clips)
-                final_video = CompositeVideoClip(video_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
-                final_video = final_video.with_duration(max_duration)
-                print(f"[VIDEO STRUCTURE] Fallback to CompositeVideoClip: duration={max_duration}s")
-        else:
-            final_video = video_clips[0] if video_clips else main_video
+        # --- 修正箇所：ビデオクリップの最終合成 ---
+        # 背景、画像、ヘッダー、字幕はすべて「タイトル動画終了後」から開始するように設定
+        main_content_elements = []
         
-        video = final_video
+        # 各画像クリップの開始時間を「タイトル動画後」にシフト（既に計算済みの場合は確認のみ）
+        for img_c in image_clips:
+            # もし image_schedule 作成時に title_duration を足していなければここで足す
+            current_start = getattr(img_c, 'start', 0)
+            if current_start < title_duration:
+                # title_durationを足して正しい位置に設定
+                img_c = img_c.with_start(current_start + title_duration)
+            main_content_elements.append(img_c)
+        
+        # 字幕も同様
+        for txt_c in text_clips:
+            current_start = getattr(txt_c, 'start', 0)
+            if current_start < title_duration:
+                txt_c = txt_c.with_start(current_start + title_duration)
+            main_content_elements.append(txt_c)
+        
+        # ヘッダーも追加
+        if heading_clip:
+            current_start = getattr(heading_clip, 'start', 0)
+            if current_start < title_duration:
+                heading_clip = heading_clip.with_start(current_start + title_duration)
+            main_content_elements.append(heading_clip)
+        
+        # クリップリストの再構築
+        final_video_layers = []
+        
+        # Layer 0: タイトル動画 (0秒から)
+        if title_video_clip:
+            final_video_layers.append(title_video_clip.with_start(0))
+            print(f"[LAYERING] Added title video: start=0s, duration={title_video_clip.duration}s")
+        
+        # Layer 1: 背景動画 (タイトル終了後から)
+        bg_clip_with_start = bg_clip.with_start(title_duration)
+        final_video_layers.append(bg_clip_with_start)
+        print(f"[LAYERING] Added background video: start={title_duration}s, duration={bg_clip.duration}s")
+        
+        # Layer 2: メインコンテンツ（画像・字幕・ヘッダー）
+        final_video_layers.extend(main_content_elements)
+        print(f"[LAYERING] Added main content: {len(main_content_elements)} elements")
+        
+        # Layer 3: Modulation動画 (計算した開始時間から)
+        if modulation_video_clip:
+            final_video_layers.append(modulation_video_clip.with_start(modulation_start_time))
+            print(f"[LAYERING] Added modulation video: start={modulation_start_time}s, duration={modulation_video_clip.duration}s")
+        
+        # 合成
+        video = CompositeVideoClip(final_video_layers, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        
+        # 全体の長さを音声に合わせる
+        final_audio_duration = final_audio.duration if 'final_audio' in locals() else video.duration
+        video = video.with_duration(final_audio_duration)
+        print(f"[LAYERING] Final video duration set to: {final_audio_duration}s")
+        print(f"[LAYERING] Total layers: {len(final_video_layers)}")
         
         # デバッグ用にall_clips変数を定義（旧コード互換性）
-        all_clips = video_clips
+        all_clips = final_video_layers
         
         # デバッグ用中間保存ログ
         print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + ヘッダー{1 if heading_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
