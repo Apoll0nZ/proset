@@ -513,6 +513,36 @@ def download_background_music() -> str:
         return None
 
 
+def download_title_video() -> str:
+    """S3からオープニング動画（assets/Title.mp4）をダウンロード"""
+    title_key = "assets/Title.mp4"
+    local_path = os.path.join(LOCAL_TEMP_DIR, "Title.mp4")
+    
+    try:
+        print(f"Downloading title video from S3: s3://{S3_BUCKET}/{title_key}")
+        s3_client.download_file(S3_BUCKET, title_key, local_path)
+        print(f"Successfully downloaded title video to: {local_path}")
+        return local_path
+    except Exception as e:
+        print(f"Failed to download title video: {e}")
+        return None
+
+
+def download_modulation_video() -> str:
+    """S3からブリッジ動画（assets/Modulation.mp4）をダウンロード"""
+    modulation_key = "assets/Modulation.mp4"
+    local_path = os.path.join(LOCAL_TEMP_DIR, "Modulation.mp4")
+    
+    try:
+        print(f"Downloading modulation video from S3: s3://{S3_BUCKET}/{modulation_key}")
+        s3_client.download_file(S3_BUCKET, modulation_key, local_path)
+        print(f"Successfully downloaded modulation video to: {local_path}")
+        return local_path
+    except Exception as e:
+        print(f"Failed to download modulation video: {e}")
+        return None
+
+
 # グローバル変数
 _used_image_hashes = set()  # 動画全体で使用した画像のハッシュ値を記録
 _used_image_paths = []  # 動画全体で使用した画像のパスを記録（サムネイル用）
@@ -1975,14 +2005,18 @@ async def build_video_with_subtitles(
                 bgm_clip = AudioFileClip(bgm_path)
                 print(f"BGM original duration: {bgm_clip.duration:.2f} seconds")
                 
+                # 動画の総時間を計算（オープニング + 本編 + ブリッジ）
+                total_video_duration = total_duration + title_duration + modulation_duration
+                print(f"Total video duration: {total_video_duration:.2f} seconds (audio: {total_duration:.2f}s + title: {title_duration:.2f}s + modulation: {modulation_duration:.2f}s)")
+                
                 # BGMを動画長に合わせてループまたはトリミング
-                if bgm_clip.duration < total_duration:
+                if bgm_clip.duration < total_video_duration:
                     # BGMが短い場合はループ
-                    bgm_clip = loop(bgm_clip, duration=total_duration)
+                    bgm_clip = loop(bgm_clip, duration=total_video_duration)
                     print("BGM looped to match video duration")
-                elif bgm_clip.duration > total_duration:
+                elif bgm_clip.duration > total_video_duration:
                     # BGMが長い場合はトリミング
-                    bgm_clip = bgm_clip.subclipped(0, total_duration)
+                    bgm_clip = bgm_clip.subclipped(0, total_video_duration)
                     print("BGM trimmed to match video duration")
                 
                 # 音量を10%に下げてナレーションを主役に
@@ -1990,12 +2024,12 @@ async def build_video_with_subtitles(
                 print("BGM volume reduced to 10%")
                 
                 # 最初の2秒でフェードイン
-                if total_duration > 2:
+                if total_video_duration > 2:
                     bgm_clip = bgm_clip.audio_fadein(2)
                     print("Applied 2-second fadein to BGM")
                 
                 # 最後の2秒でフェードアウト
-                if total_duration > 4:  # フェードインと重ならないように
+                if total_video_duration > 4:  # フェードインと重ならないように
                     bgm_clip = bgm_clip.audio_fadeout(2)
                     print("Applied 2-second fadeout to BGM")
                 
@@ -2004,6 +2038,43 @@ async def build_video_with_subtitles(
                 bgm_clip = None
         else:
             print("No BGM available, continuing without background music")
+
+        # オープニング動画とブリッジ動画の準備
+        title_video_path = download_title_video()
+        modulation_video_path = download_modulation_video()
+        
+        title_video_clip = None
+        modulation_video_clip = None
+        
+        # オープニング動画の読み込み
+        if title_video_path and os.path.exists(title_video_path):
+            try:
+                print("Loading title video")
+                title_video_clip = VideoFileClip(title_video_path).without_audio()
+                title_duration = title_video_clip.duration
+                print(f"Title video duration: {title_duration:.2f} seconds")
+            except Exception as e:
+                print(f"Failed to load title video: {e}")
+                title_video_clip = None
+                title_duration = 0
+        else:
+            print("No title video available")
+            title_duration = 0
+            
+        # ブリッジ動画の読み込み
+        if modulation_video_path and os.path.exists(modulation_video_path):
+            try:
+                print("Loading modulation video")
+                modulation_video_clip = VideoFileClip(modulation_video_path).without_audio()
+                modulation_duration = modulation_video_clip.duration
+                print(f"Modulation video duration: {modulation_duration:.2f} seconds")
+            except Exception as e:
+                print(f"Failed to load modulation video: {e}")
+                modulation_video_clip = None
+                modulation_duration = 0
+        else:
+            print("No modulation video available")
+            modulation_duration = 0
 
         # Layer 1: 背景動画の準備（インテリジェント・リサイズ）
         bg_video_path = download_random_background_video()
@@ -2073,7 +2144,8 @@ async def build_video_with_subtitles(
         topic_summary = content.get("topic_summary", "")
         image_schedule = []
         total_images_collected = 0
-        current_time = 1.0  # 画像を1.0秒後に開始
+        # 数珠つなぎロジック：画像もtitle_durationから開始
+        current_image_time = title_duration + 1.0  # オープニング動画の後、1.0秒後に画像を開始
 
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
@@ -2164,15 +2236,15 @@ async def build_video_with_subtitles(
                     print(f"[INFO] セグメント {i} に既存画像を再利用: {os.path.basename(selected_image)}")
                 else:
                     print(f"[WARNING] セグメント {i} に画像を割り当てられません（背景のみ）")
-                    image_schedule.append({"start": current_time, "duration": duration, "path": None})
-                    current_time += duration
+                    image_schedule.append({"start": current_image_time, "duration": duration, "path": None})
+                    current_image_time += duration
                     continue
 
             if not part_images:
                 print(f"[WARNING] No images found for segment {i}, keyword: {search_keyword}")
                 print(f"[INFO] セグメント {i} は背景のみで続行します")
-                image_schedule.append({"start": current_time, "duration": duration, "path": None})
-                current_time += duration
+                image_schedule.append({"start": current_image_time, "duration": duration, "path": None})
+                current_image_time += duration
                 continue
 
             # 画像が1枚でも取得できた場合は続行
@@ -2181,7 +2253,7 @@ async def build_video_with_subtitles(
             # 1枚あたり最低7秒表示、切り替えに0.5秒のフェードアウト時間を確保
             min_duration = 7.0  # 最低表示時間
             fade_out_duration = 0.5  # フェードアウト時間
-            seg_start = current_time
+            seg_start = current_image_time
             seg_end = seg_start + duration  # セグメント終了時間
             available_time = seg_end - seg_start
             
@@ -2192,8 +2264,8 @@ async def build_video_with_subtitles(
             
             if num_images_to_use == 0:
                 print(f"[WARNING] セグメント {i} は時間不足のため画像なし")
-                image_schedule.append({"start": current_time, "duration": duration, "path": None})
-                current_time += duration
+                image_schedule.append({"start": current_image_time, "duration": duration, "path": None})
+                current_image_time += duration
                 continue
             
             # 実際の1枚あたり表示時間を計算（最低7秒を保証）
@@ -2250,10 +2322,10 @@ async def build_video_with_subtitles(
             if images_scheduled == 0:
                 print(f"[WARNING] No valid images scheduled for segment {i}")
 
-            # current_timeを厳密に管理（セグメント終了時間に同期）
-            print(f"[DEBUG] Segment {i} completed. Current time before update: {current_time:.2f}s")
-            current_time = seg_end  # セグメント終了時間に同期して隙間をなくす
-            print(f"[DEBUG] Segment {i} completed. Current time after update: {current_time:.2f}s")
+            # current_image_timeを厳密に管理（セグメント終了時間に同期）
+            print(f"[DEBUG] Segment {i} completed. Current image time before update: {current_image_time:.2f}s")
+            current_image_time = seg_end  # セグメント終了時間に同期して隙間をなくす
+            print(f"[DEBUG] Segment {i} completed. Current image time after update: {current_image_time:.2f}s")
 
             # メモリ解放：各セグメント処理後にクリーンアップ
             del part_images
@@ -2460,17 +2532,26 @@ async def build_video_with_subtitles(
             heading_clip = None
 
         # Layer 4: 下部字幕 - 1920x1080用に調整
-        current_time = 0.0
+        # 数珠つなぎロジック：current_timeの初期値をtitle_durationに設定
+        current_time = title_duration
+        
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             try:
+                part_type = part.get("part", "")
                 text = part.get("text", "")
                 if not text:
                     continue
 
-                print(f"[DEBUG] Starting subtitle creation for part {i}...")
-                subtitle_duration = min(duration, total_duration - current_time)
-                if subtitle_duration <= 0:
-                    break
+                print(f"[DEBUG] Processing part {i}: {part_type} at time {current_time:.2f}")
+                
+                # owner_commentの直前にブリッジ動画を挿入
+                if part_type == "owner_comment" and modulation_video_clip:
+                    print(f"[DEBUG] Inserting modulation video before owner_comment at time {current_time}")
+                    # ブリッジ動画をcurrent_timeの位置に配置
+                    modulation_video_clip = modulation_video_clip.with_start(current_time).with_duration(modulation_duration).with_position("center")
+                    # current_timeにmodulation_durationを加算
+                    current_time += modulation_duration
+                    print(f"[DEBUG] Adjusted owner_comment start time to: {current_time}")
                 
                 # 字幕クリップを作成（1920x1080用に調整）
                 try:
@@ -2482,7 +2563,7 @@ async def build_video_with_subtitles(
                         max_display_time = max(len(chunk) * 0.20, 3.0)  # 最低3秒
                         
                         # 利用可能な時間と計算時間の小さい方を採用
-                        calculated_duration = min(subtitle_duration / max(len(chunks), 1), max_display_time)
+                        calculated_duration = min(duration / max(len(chunks), 1), max_display_time)
                         chunk_duration = max(calculated_duration, min_display_time)
                         
                         # テキストの先頭と末尾に余白を追加
@@ -2501,56 +2582,85 @@ async def build_video_with_subtitles(
                             stroke_width=1,  # 細い枠線
                         ).with_margin(30)
                         
-                        # caption methodが自動的に幅を制限するため、手動リサイズは不要
-                        
-                        # アニメーションを適用（フォールバック付き）- 位置指定の競合を回避するため先に実行
+                        # アニメーションを適用（フォールバック付き）
                         try:
                             txt_clip = subtitle_slide_scale_animation(txt_clip)
                         except Exception as anim_error:
                             print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
-                            # 位置を明示的に指定（画面下部に安定配置）
                             txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
                         
-                        # マージンを適用して文字が背景端に張り付かないようにする
-                        try:
-                            txt_clip = txt_clip.with_margin(30)
-                        except Exception as margin_error:
-                            print(f"[DEBUG] Margin application failed: {margin_error}")
-                            # マージン適用に失敗しても続行
+                        # 数珠つなぎロジック：current_timeの位置に字幕を配置
+                        txt_clip = txt_clip.with_start(current_time).with_duration(chunk_duration).with_opacity(1.0)
                         
-                        # 字幕エリアを下に配置（VIDEO_HEIGHT - 360）
-                        clip_start = current_time + chunk_idx * chunk_duration
-                        txt_clip = txt_clip.with_start(clip_start).with_duration(chunk_duration).with_opacity(1.0)
+                        # current_timeをchunk_durationだけ更新
+                        current_time += chunk_duration
                         
-                        # 生存確認ログの強化
-                        print(f"[DEBUG] Subtitle Size: {txt_clip.size}, Pos: {getattr(txt_clip, 'pos', 'N/A')}")
+                        print(f"[DEBUG] Added subtitle chunk at {current_time - chunk_duration:.2f}s, duration: {chunk_duration:.2f}s")
                         
-                        # サイズと座標の最終チェック
+                        # 生存確認ログ
                         if hasattr(txt_clip, 'size') and txt_clip.size == (0, 0):
                             print(f"[ERROR] Subtitle clip has invalid size (0,0), skipping")
                             continue
                         
                         text_clips.append(txt_clip)
+                        
                 except Exception as e:
                     print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
                     print(f"[DEBUG] Text: {text[:50]}...")
                     print(f"[DEBUG] Font path: {font_path}")
                     print(f"[DEBUG] Error type: {type(e).__name__}")
                     print("Continuing without subtitle for this part...")
-                    # 字幕なしで続行（審査用動画として優先）
                 
-                current_time += subtitle_duration
+                # パート全体の時間をcurrent_timeに加算（字幕がない場合も）
+                if not text or len(text_clips) == 0:
+                    current_time += duration
+                    print(f"[DEBUG] No text for part {i}, advancing time by {duration:.2f}s")
                 
             except Exception as e:
                 print(f"Error creating subtitle for part {i}: {e}")
                 continue
 
-        # すべてのレイヤーを合成（厳格な順序: 背景動画 -> 画像 -> ヘッダー画像 -> 字幕）
-        # bg_clip が最背面（インデックス0）、text_clips が最前面になるように厳格化
+        # すべてのレイヤーを合成（厳格な順序: [背景動画, 生成画像, 字幕クリップ, Title動画, Modulation動画]）
+        # bg_clip が最背面（インデックス0）、素材動画が最前面になるように厳格化
         all_clips = [bg_clip] + image_clips
         if heading_clip:
             all_clips.append(heading_clip)
         all_clips.extend(text_clips)
+        
+        # Title動画を追加（最前面に配置）
+        if title_video_clip:
+            title_video_clip = title_video_clip.with_start(0).with_position("center")
+            all_clips.append(title_video_clip)
+            print(f"[DEBUG] Added title video to layers (start=0, duration={title_video_clip.duration}s)")
+        
+        # Modulation動画を追加（最前面に配置）
+        if modulation_video_clip:
+            all_clips.append(modulation_video_clip)
+            print(f"[DEBUG] Added modulation video to layers (start={modulation_video_clip.start}, duration={modulation_video_clip.duration}s)")
+        
+        # レイヤー順序の最終確認
+        print(f"[LAYER ORDER] Final layer sequence (bottom to top):")
+        for i, clip in enumerate(all_clips):
+            clip_type = type(clip).__name__
+            if clip == bg_clip:
+                print(f"  Layer {i}: Background Video (最背面)")
+            elif clip in image_clips:
+                print(f"  Layer {i}: Image Clip")
+            elif clip == heading_clip:
+                print(f"  Layer {i}: Heading Image")
+            elif clip in text_clips:
+                print(f"  Layer {i}: Subtitle Text")
+            elif clip == title_video_clip:
+                print(f"  Layer {i}: Title Video (素材動画)")
+            elif clip == modulation_video_clip:
+                print(f"  Layer {i}: Modulation Video (素材動画・最前面)")
+            else:
+                print(f"  Layer {i}: {clip_type}")
+        
+        # 厳格なレイヤー順序でCompositeVideoClipを生成
+        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
+        print(f"[DEBUG] CompositeVideoClip created with {len(all_clips)} layers, size=(1920, 1080)")
+        print(f"[DEBUG] Layer order enforced: Background -> Images -> Heading -> Subtitles -> Title -> Modulation")
         
         # デバッグ用中間保存ログ
         print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + ヘッダー{1 if heading_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
@@ -2636,6 +2746,7 @@ async def build_video_with_subtitles(
                 print(f"[SUCCESS] Background clip size matches target")
         
         # 音声トラックを結合（メイン音声 + BGM）
+        # オープニング動画の分だけ無音を追加して音声を同期
         if bgm_clip:
             # DEBUG_MODEなら音声も30秒にカット
             if DEBUG_MODE:
@@ -2643,21 +2754,93 @@ async def build_video_with_subtitles(
                 bgm_clip = bgm_clip.subclipped(0, 30)
                 print("DEBUG_MODE: Audio clips trimmed to 30s")
             
+            # オープニング動画の分だけ無音クリップを作成
+            if title_duration > 0:
+                from moviepy import AudioFileClip
+                # 無音クリップを作成
+                silence_clip = AudioFileClip.__new__(AudioFileClip)
+                silence_clip.fps = 44100
+                silence_clip.duration = title_duration
+                silence_clip.nchannels = 2
+                
+                # オープニング無音 + メイン音声 + ブリッジ無音を結合
+                audio_parts = []
+                if title_duration > 0:
+                    # オープニング期間は無音
+                    opening_silence = AudioFileClip.__new__(AudioFileClip)
+                    opening_silence.fps = 44100
+                    opening_silence.duration = title_duration
+                    opening_silence.nchannels = 2
+                    audio_parts.append(opening_silence)
+                
+                # メイン音声（ナレーション）
+                audio_parts.append(audio_clip)
+                
+                # ブリッジ期間は無音
+                if modulation_duration > 0:
+                    bridge_silence = AudioFileClip.__new__(AudioFileClip)
+                    bridge_silence.fps = 44100
+                    bridge_silence.duration = modulation_duration
+                    bridge_silence.nchannels = 2
+                    audio_parts.append(bridge_silence)
+                
+                # 音声パーツを結合
+                if len(audio_parts) > 1:
+                    final_main_audio = concatenate_audioclips(audio_parts)
+                else:
+                    final_main_audio = audio_parts[0] if audio_parts else audio_clip
+            else:
+                final_main_audio = audio_clip
+            
             # CompositeAudioClipでメイン音声とBGMをミックス
-            final_audio = CompositeAudioClip([audio_clip, bgm_clip])
-            print("Mixed main audio with BGM")
+            final_audio = CompositeAudioClip([final_main_audio, bgm_clip])
+            print("Mixed main audio with BGM (including title and modulation silence)")
         else:
             # DEBUG_MODEならメイン音声も30秒にカット
             if DEBUG_MODE:
                 audio_clip = audio_clip.subclipped(0, 30)
                 print("DEBUG_MODE: Main audio trimmed to 30s")
             
-            # BGMがない場合はメイン音声のみ
-            final_audio = audio_clip
-            print("Using main audio only (no BGM)")
+            # BGMがない場合もオープニングとブリッジの無音を追加
+            audio_parts = []
+            if title_duration > 0:
+                opening_silence = AudioFileClip.__new__(AudioFileClip)
+                opening_silence.fps = 44100
+                opening_silence.duration = title_duration
+                opening_silence.nchannels = 2
+                audio_parts.append(opening_silence)
+            
+            audio_parts.append(audio_clip)
+            
+            if modulation_duration > 0:
+                bridge_silence = AudioFileClip.__new__(AudioFileClip)
+                bridge_silence.fps = 44100
+                bridge_silence.duration = modulation_duration
+                bridge_silence.nchannels = 2
+                audio_parts.append(bridge_silence)
+            
+            if len(audio_parts) > 1:
+                final_audio = concatenate_audioclips(audio_parts)
+            else:
+                final_audio = audio_parts[0] if audio_parts else audio_clip
+            
+            print("Using main audio only (no BGM, with title and modulation silence)")
         
         # 最終音声を動画に設定
         video = video.with_audio(final_audio)
+        
+        # 動画の最終長さを音声と完全同期させる
+        final_audio_duration = final_audio.duration
+        print(f"[SYNC] Final audio duration: {final_audio_duration:.2f}s")
+        print(f"[SYNC] Current video duration: {video.duration:.2f}s")
+        
+        # 動画の長さを音声に合わせて調整
+        if video.duration != final_audio_duration:
+            print(f"[SYNC] Adjusting video duration to match audio: {final_audio_duration:.2f}s")
+            video = video.subclipped(0, final_audio_duration)
+            print(f"[SYNC] Video duration adjusted to: {video.duration:.2f}s")
+        else:
+            print(f"[SYNC] Video and audio durations already synchronized: {final_audio_duration:.2f}s")
         
         if DEBUG_MODE:
             debug_duration = min(30, video.duration)
