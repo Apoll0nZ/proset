@@ -29,6 +29,11 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from moviepy import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, CompositeAudioClip
 
+# MoviePy v2.0のAudioFileClip.memoize属性欠落エラーを回避するモンキーパッチ
+from moviepy.audio.io.AudioFileClip import AudioFileClip as AudioClipClass
+if not hasattr(AudioClipClass, 'memoize'):
+    AudioClipClass.memoize = False
+
 # MoviePyバージョンに依存しない安全なインポート
 try:
     # MoviePy v2.x
