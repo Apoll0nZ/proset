@@ -463,8 +463,8 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
             print(f"Background video trimmed to {total_duration:.2f}s")
         
         # 中央配置設定（1920x1080キャンバスの中央に）
-        bg_clip = bg_clip.with_position("center").with_start(0).with_opacity(1.0)
-        print(f"[DEBUG] Background positioned at center, start=0, opacity=1.0")
+        bg_clip = bg_clip.with_position("center").with_start(0).with_opacity(1.0).with_fps(FPS)
+        print(f"[DEBUG] Background positioned at center, start=0, opacity=1.0, fps={FPS}")
         
         # 型チェックを緩和：hasattrで映像機能を判定
         if hasattr(bg_clip, 'get_frame'):
@@ -2474,7 +2474,7 @@ async def build_video_with_subtitles(
                 continue  # 画像パスがない場合はスキップ
 
             # 有効な画像のみクリップを作成
-            clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0)
+            clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0).with_fps(FPS)
             
             # 座標を中央に固定
             clip = clip.with_position("center")  # 画像は中央配置
@@ -2511,7 +2511,7 @@ async def build_video_with_subtitles(
                     heading_img = heading_img.resized(width=target_width, height=target_height)
                 
                 # 左上に固定配置（スライドインなし）
-                heading_clip = heading_img.with_position((30, 30)).with_start(0.0).with_duration(total_duration).with_opacity(1.0)
+                heading_clip = heading_img.with_position((30, 30)).with_start(0.0).with_duration(total_duration).with_opacity(1.0).with_fps(FPS)
                 print(f"[SUCCESS] Heading image loaded at top-left: {heading_img.size}")
             else:
                 print("[WARNING] Heading image not available, using text fallback")
@@ -2523,7 +2523,7 @@ async def build_video_with_subtitles(
                     font=font_path,
                     bg_color="white",
                     size=(250, 60)
-                ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0)
+                ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0).with_fps(FPS)
         except Exception as e:
             print(f"[ERROR] Failed to create heading clip: {e}")
             print(f"[DEBUG] Error type: {type(e).__name__}")
@@ -2589,7 +2589,7 @@ async def build_video_with_subtitles(
                             txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
                         
                         # 数珠つなぎロジック：current_timeの位置に字幕を配置
-                        txt_clip = txt_clip.with_start(current_time).with_duration(chunk_duration).with_opacity(1.0)
+                        txt_clip = txt_clip.with_start(current_time).with_duration(chunk_duration).with_opacity(1.0).with_fps(FPS)
                         
                         # current_timeをchunk_durationだけ更新
                         current_time += chunk_duration
@@ -2628,30 +2628,32 @@ async def build_video_with_subtitles(
         
         # Title動画を追加（最前面に配置）
         if title_video_clip:
-            title_video_clip = title_video_clip.with_start(0).with_position("center")
+            title_video_clip = title_video_clip.with_start(0).with_position("center").with_fps(FPS)
             all_clips.append(title_video_clip)
-            print(f"[DEBUG] Added title video to layers (start=0, duration={title_video_clip.duration}s)")
+            print(f"[DEBUG] Added title video to layers (start=0, duration={title_video_clip.duration}s, fps={FPS})")
         
         # Modulation動画を追加（最前面に配置）
         if modulation_video_clip:
+            modulation_video_clip = modulation_video_clip.with_fps(FPS)
             all_clips.append(modulation_video_clip)
-            print(f"[DEBUG] Added modulation video to layers (start={modulation_video_clip.start}, duration={modulation_video_clip.duration}s)")
+            print(f"[DEBUG] Added modulation video to layers (start={modulation_video_clip.start}, duration={modulation_video_clip.duration}s, fps={FPS})")
         
         # レイヤー順序の最終確認
         print(f"[LAYER ORDER] Final layer sequence (bottom to top):")
         for i, clip in enumerate(all_clips):
             clip_type = type(clip).__name__
-            if clip is bg_clip:
+            # ID比較で同一性判定（v2.0の等価比較エラー回避）
+            if id(clip) == id(bg_clip):
                 print(f"  Layer {i}: Background Video (最背面)")
-            elif clip in image_clips:
+            elif any(id(clip) == id(img_clip) for img_clip in image_clips):
                 print(f"  Layer {i}: Image Clip")
-            elif clip is heading_clip:
+            elif heading_clip and id(clip) == id(heading_clip):
                 print(f"  Layer {i}: Heading Image")
-            elif clip in text_clips:
+            elif any(id(clip) == id(txt_clip) for txt_clip in text_clips):
                 print(f"  Layer {i}: Subtitle Text")
-            elif clip is title_video_clip:
+            elif title_video_clip and id(clip) == id(title_video_clip):
                 print(f"  Layer {i}: Title Video (素材動画)")
-            elif clip is modulation_video_clip:
+            elif modulation_video_clip and id(clip) == id(modulation_video_clip):
                 print(f"  Layer {i}: Modulation Video (素材動画・最前面)")
             else:
                 print(f"  Layer {i}: {clip_type}")
