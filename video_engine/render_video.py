@@ -2812,71 +2812,57 @@ async def build_video_with_subtitles(
             else:
                 print(f"[SUCCESS] Background clip size matches target")
         
-        # --- 音声トラックの再構築（同期ズレ解消版） ---
+        # --- 音声トラックの再構築（Title & BGM 復活版） ---
         final_audio_elements = []
         
-        # BGM準備（先に処理）
-        bgm_adjusted = None
+        # 1. BGMの準備（最初に行う）
+        bgm_to_mix = None
         if bgm_clip:
-            # BGMを動画全体に設定（ループ対応）
-            bgm_duration = video.duration
-            if bgm_duration > 0:
-                # BGMを動画の長さに合わせてループ
-                try:
-                    # MoviePy v2.0のAudioLoopを試す
-                    bgm_looped = bgm_clip.with_effects([vfx.AudioLoop()])
-                    bgm_adjusted = bgm_looped.with_duration(bgm_duration)
-                    print(f"[AUDIO] BGM looped using AudioLoop effect for {bgm_duration}s")
-                except:
-                    # フォールバック：手動ループ
-                    loops_needed = int(bgm_duration / bgm_clip.duration) + 1
-                    bgm_looped = concatenate_audioclips([bgm_clip] * loops_needed)
-                    bgm_adjusted = bgm_looped.with_duration(bgm_duration)
-                    print(f"[AUDIO] BGM manually looped {loops_needed} times for {bgm_duration}s")
-                
-                # BGMは全体に重ねるが音量を控えめに
-                bgm_adjusted = bgm_adjusted.with_volume_scaled(0.1)
-                print(f"[AUDIO] BGM prepared: duration={bgm_adjusted.duration}s, volume=10%")
+            try:
+                # 動画全体の長さに合わせてループ・カット
+                bgm_duration = video.duration
+                loops_needed = int(bgm_duration / bgm_clip.duration) + 1
+                bgm_to_mix = concatenate_audioclips([bgm_clip] * loops_needed)
+                bgm_to_mix = bgm_to_mix.with_duration(bgm_duration).with_volume_scaled(0.1)
+                # 重要：開始時間を0に固定し、他の音と重なるように設定
+                bgm_to_mix = bgm_to_mix.with_start(0)
+                final_audio_elements.append(bgm_to_mix)
+                print(f"[AUDIO] BGM mixed from 0s (duration: {bgm_duration:.2f}s)")
+            except Exception as e:
+                print(f"[AUDIO ERROR] BGM preparation failed: {e}")
+
+        # 2. Title動画の音声（絶対0秒から）
+        if title_video_clip:
+            # title_video_clip.audio が None の場合があるため、再取得を試みる
+            t_audio = getattr(title_video_clip, 'audio', None)
+            if t_audio:
+                t_audio = t_audio.with_start(0).with_volume_scaled(1.0)
+                final_audio_elements.append(t_audio)
+                print(f"[AUDIO] Title audio activated: 0s - {title_duration:.2f}s")
+            else:
+                print("[AUDIO WARNING] Title clip has no audio track. Check the source file.")
         
-        # 1. Title動画の音声（絶対0秒から開始）
-        if title_video_clip and hasattr(title_video_clip, 'audio') and title_video_clip.audio:
-            # .with_start(0) で先頭に固定
-            t_audio = title_video_clip.audio.with_start(0)
-            final_audio_elements.append(t_audio)
-            print(f"[AUDIO] Title audio added: 0.00s - {title_duration:.2f}s")
-        else:
-            print("[AUDIO] WARNING: Title audio clip not found. Silence will be at the start.")
-        
-        # 2. 本編ナレーション（Titleの尺分、確実に後ろにずらす）
+        # 3. 本編ナレーション（Title終了後から）
         if audio_clip:
-            # ここが重要：title_duration を開始時間に指定
             n_audio = audio_clip.with_start(title_duration).with_volume_scaled(1.2)
             final_audio_elements.append(n_audio)
-            print(f"[AUDIO] Narration offset by title_duration: starts at {title_duration:.2f}s")
+            print(f"[AUDIO] Narration mixed from {title_duration:.2f}s")
         
-        # 3. Modulation動画の音声（計算済みの絶対時間に配置）
+        # 4. Modulation動画の音声
         if modulation_video_clip and hasattr(modulation_video_clip, 'audio') and modulation_video_clip.audio:
             m_audio = modulation_video_clip.audio.with_start(modulation_start_time)
             final_audio_elements.append(m_audio)
-            print(f"[AUDIO] Modulation audio starts at: {modulation_start_time:.2f}s")
-        
-        # 4. BGM（0秒から背景としてミックス）
-        if bgm_adjusted:
-            final_audio_elements.append(bgm_adjusted.with_start(0))
-            print(f"[AUDIO] BGM mixed from 0.00s")
+            print(f"[AUDIO] Modulation audio mixed at {modulation_start_time:.2f}s")
 
-        # 最終合成
+        # 最終合成（CompositeAudioClip の挙動を安定させる）
         if final_audio_elements:
-            # すべての要素を重ね合わせる
+            # すべての音声成分を物理的に重ねる
             final_audio = CompositeAudioClip(final_audio_elements)
             
-            # [重要] 最後に終わるクリップに合わせて全体の長さを決定
-            # これをしないと MoviePy v2.0 は先頭に音声を詰めてしまうことがあります
-            audio_end_times = [(a.start + a.duration) for a in final_audio_elements]
-            total_audio_dur = max(audio_end_times) if audio_end_times else video.duration
-            
-            final_audio = final_audio.with_duration(total_audio_dur)
-            print(f"[AUDIO] Composite audio final duration: {total_audio_dur:.2f}s")
+            # 全体の長さを明示（これがないと一部の音がカットされることがある）
+            total_dur = max([(a.start + a.duration) for a in final_audio_elements])
+            final_audio = final_audio.with_duration(total_dur)
+            print(f"[AUDIO] Total layers: {len(final_audio_elements)}, Final duration: {total_dur:.2f}s")
         else:
             final_audio = AudioClip(lambda t: [0, 0], duration=video.duration, fps=44100)
             print("[AUDIO] No valid audio clips found, using silence")
