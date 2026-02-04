@@ -2838,40 +2838,45 @@ async def build_video_with_subtitles(
                 bgm_adjusted = bgm_adjusted.with_volume_scaled(0.1)
                 print(f"[AUDIO] BGM prepared: duration={bgm_adjusted.duration}s, volume=10%")
         
-        # 1. Title動画の音声（0秒から開始）
+        # 1. Title動画の音声（絶対0秒から開始）
         if title_video_clip and hasattr(title_video_clip, 'audio') and title_video_clip.audio:
-            # .with_start(0) を明示
+            # .with_start(0) で先頭に固定
             t_audio = title_video_clip.audio.with_start(0)
             final_audio_elements.append(t_audio)
             print(f"[AUDIO] Title audio added: 0.00s - {title_duration:.2f}s")
+        else:
+            print("[AUDIO] WARNING: Title audio clip not found. Silence will be at the start.")
         
-        # 2. 本編ナレーション（Title終了後から開始）
+        # 2. 本編ナレーション（Titleの尺分、確実に後ろにずらす）
         if audio_clip:
-            # title_duration 分だけ開始を遅らせる
+            # ここが重要：title_duration を開始時間に指定
             n_audio = audio_clip.with_start(title_duration).with_volume_scaled(1.2)
             final_audio_elements.append(n_audio)
-            print(f"[AUDIO] Narration starts at: {title_duration:.2f}s")
+            print(f"[AUDIO] Narration offset by title_duration: starts at {title_duration:.2f}s")
         
-        # 3. Modulation動画の音声
+        # 3. Modulation動画の音声（計算済みの絶対時間に配置）
         if modulation_video_clip and hasattr(modulation_video_clip, 'audio') and modulation_video_clip.audio:
-            # 計算済みの modulation_start_time を使用
             m_audio = modulation_video_clip.audio.with_start(modulation_start_time)
             final_audio_elements.append(m_audio)
             print(f"[AUDIO] Modulation audio starts at: {modulation_start_time:.2f}s")
         
-        # 4. BGM（動画全体）
+        # 4. BGM（0秒から背景としてミックス）
         if bgm_adjusted:
-            # BGMは0秒から開始
             final_audio_elements.append(bgm_adjusted.with_start(0))
             print(f"[AUDIO] BGM mixed from 0.00s")
 
         # 最終合成
         if final_audio_elements:
+            # すべての要素を重ね合わせる
             final_audio = CompositeAudioClip(final_audio_elements)
-            # 全体の長さを、全音声の終端に合わせる
-            max_dur = max([(a.start + a.duration) for a in final_audio_elements])
-            final_audio = final_audio.with_duration(max_dur)
-            print(f"[AUDIO] Composite audio duration: {max_dur:.2f}s")
+            
+            # [重要] 最後に終わるクリップに合わせて全体の長さを決定
+            # これをしないと MoviePy v2.0 は先頭に音声を詰めてしまうことがあります
+            audio_end_times = [(a.start + a.duration) for a in final_audio_elements]
+            total_audio_dur = max(audio_end_times) if audio_end_times else video.duration
+            
+            final_audio = final_audio.with_duration(total_audio_dur)
+            print(f"[AUDIO] Composite audio final duration: {total_audio_dur:.2f}s")
         else:
             final_audio = AudioClip(lambda t: [0, 0], duration=video.duration, fps=44100)
             print("[AUDIO] No valid audio clips found, using silence")
