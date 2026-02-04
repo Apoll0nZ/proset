@@ -27,7 +27,7 @@ import gc  # メモリ解放用
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from moviepy import AudioFileClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, CompositeAudioClip
+from moviepy import AudioFileClip, AudioClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, CompositeAudioClip
 
 # MoviePy v2.0のAudioFileClip.memoize属性欠落エラーを回避するモンキーパッチ
 from moviepy.audio.io.AudioFileClip import AudioFileClip as AudioClipClass
@@ -2760,42 +2760,28 @@ async def build_video_with_subtitles(
                 bgm_clip = bgm_clip.subclipped(0, 30)
                 print("DEBUG_MODE: Audio clips trimmed to 30s")
             
-            # オープニング動画の分だけ無音クリップを作成
+            # MoviePy v2.0推奨：AudioClipで無音を生成
+            audio_parts = []
             if title_duration > 0:
-                # 無音クリップを作成
-                silence_clip = AudioFileClip.__new__(AudioFileClip)
-                silence_clip.fps = 44100
-                silence_clip.duration = title_duration
-                silence_clip.nchannels = 2
-                
-                # オープニング無音 + メイン音声 + ブリッジ無音を結合
-                audio_parts = []
-                if title_duration > 0:
-                    # オープニング期間は無音
-                    opening_silence = AudioFileClip.__new__(AudioFileClip)
-                    opening_silence.fps = 44100
-                    opening_silence.duration = title_duration
-                    opening_silence.nchannels = 2
-                    audio_parts.append(opening_silence)
-                
-                # メイン音声（ナレーション）
-                audio_parts.append(audio_clip)
-                
-                # ブリッジ期間は無音
-                if modulation_duration > 0:
-                    bridge_silence = AudioFileClip.__new__(AudioFileClip)
-                    bridge_silence.fps = 44100
-                    bridge_silence.duration = modulation_duration
-                    bridge_silence.nchannels = 2
-                    audio_parts.append(bridge_silence)
-                
-                # 音声パーツを結合
-                if len(audio_parts) > 1:
-                    final_main_audio = concatenate_audioclips(audio_parts)
-                else:
-                    final_main_audio = audio_parts[0] if audio_parts else audio_clip
+                # オープニング期間は無音
+                opening_silence = AudioClip(lambda t: [0, 0], duration=title_duration, fps=44100)
+                audio_parts.append(opening_silence)
+                print(f"[AUDIO] Created opening silence: {title_duration}s")
+            
+            # メイン音声（ナレーション）
+            audio_parts.append(audio_clip)
+            
+            # ブリッジ期間は無音
+            if modulation_duration > 0:
+                bridge_silence = AudioClip(lambda t: [0, 0], duration=modulation_duration, fps=44100)
+                audio_parts.append(bridge_silence)
+                print(f"[AUDIO] Created bridge silence: {modulation_duration}s")
+            
+            # 音声パーツを結合
+            if len(audio_parts) > 1:
+                final_main_audio = concatenate_audioclips(audio_parts)
             else:
-                final_main_audio = audio_clip
+                final_main_audio = audio_parts[0] if audio_parts else audio_clip
             
             # CompositeAudioClipでメイン音声とBGMをミックス
             final_audio = CompositeAudioClip([final_main_audio, bgm_clip])
@@ -2809,20 +2795,16 @@ async def build_video_with_subtitles(
             # BGMがない場合もオープニングとブリッジの無音を追加
             audio_parts = []
             if title_duration > 0:
-                opening_silence = AudioFileClip.__new__(AudioFileClip)
-                opening_silence.fps = 44100
-                opening_silence.duration = title_duration
-                opening_silence.nchannels = 2
+                opening_silence = AudioClip(lambda t: [0, 0], duration=title_duration, fps=44100)
                 audio_parts.append(opening_silence)
+                print(f"[AUDIO] Created opening silence: {title_duration}s")
             
             audio_parts.append(audio_clip)
             
             if modulation_duration > 0:
-                bridge_silence = AudioFileClip.__new__(AudioFileClip)
-                bridge_silence.fps = 44100
-                bridge_silence.duration = modulation_duration
-                bridge_silence.nchannels = 2
+                bridge_silence = AudioClip(lambda t: [0, 0], duration=modulation_duration, fps=44100)
                 audio_parts.append(bridge_silence)
+                print(f"[AUDIO] Created bridge silence: {modulation_duration}s")
             
             if len(audio_parts) > 1:
                 final_audio = concatenate_audioclips(audio_parts)
@@ -2832,8 +2814,14 @@ async def build_video_with_subtitles(
             print("Using main audio only (no BGM, with title and modulation silence)")
         
         # MoviePy v2.0のバグ回避：CompositeAudioClipを一度ファイルに書き出して読み込む
-        temp_final_audio_path = os.path.join(LOCAL_TEMP_DIR, "temp_final_audio.wav")
+        import time
+        timestamp = int(time.time())
+        temp_final_audio_path = os.path.join(LOCAL_TEMP_DIR, f"temp_final_audio_{timestamp}.wav")
         print(f"[AUDIO BUG FIX] Writing final audio to temporary file: {temp_final_audio_path}")
+        
+        # 既存ファイルがあれば削除
+        if os.path.exists(temp_final_audio_path):
+            os.remove(temp_final_audio_path)
         
         try:
             # CompositeAudioClipをWAVファイルに書き出し
@@ -2846,7 +2834,7 @@ async def build_video_with_subtitles(
             # MoviePy v2.0のバグ封じ込め：属性を明示的に設定
             final_audio.memoize = False
             if not hasattr(final_audio, 'frame_function'):
-                final_audio.frame_function = final_audio.get_frame
+                final_audio.frame_function = lambda t: final_audio.get_frame(t)
             
             print(f"[AUDIO BUG FIX] Reloaded audio with bug fixes applied")
             print(f"[AUDIO BUG FIX] Final audio duration: {final_audio.duration:.2f}s")
@@ -2854,6 +2842,11 @@ async def build_video_with_subtitles(
         except Exception as e:
             print(f"[ERROR] Failed to write/reload audio file: {e}")
             print("[ERROR] Falling back to direct audio assignment (may cause MoviePy v2.0 issues)")
+            
+            # フォールバック：直接final_audioにframe_functionを設定
+            final_audio.memoize = False
+            if not hasattr(final_audio, 'frame_function'):
+                final_audio.frame_function = lambda t: final_audio.get_frame(t)
         
         # 最終音声を動画に設定
         video = video.with_audio(final_audio)
