@@ -27,7 +27,7 @@ import gc  # メモリ解放用
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from moviepy import AudioFileClip, AudioClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, CompositeAudioClip
+from moviepy import AudioFileClip, AudioClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, concatenate_videoclips, CompositeAudioClip
 
 # MoviePy v2.0のAudioFileClip.memoize属性欠落エラーを回避するモンキーパッチ
 from moviepy.audio.io.AudioFileClip import AudioFileClip as AudioClipClass
@@ -2645,13 +2645,6 @@ async def build_video_with_subtitles(
         main_video = CompositeVideoClip(main_content_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
         print(f"[VIDEO STRUCTURE] Created main content: duration={main_video.duration}s")
         
-        # 本編の開始時間をTitleの後に設定
-        if title_video_clip:
-            main_video = main_video.with_start(title_video_clip.duration)
-            print(f"[VIDEO STRUCTURE] Main content starts at: {title_video_clip.duration}s")
-        else:
-            main_video = main_video.with_start(0)
-        
         video_clips.append(main_video)
         
         # 3. Modulation動画（存在する場合）
@@ -2664,35 +2657,40 @@ async def build_video_with_subtitles(
                 part_duration = part.get("duration", 5.0)
                 modulation_start_time += part_duration
             
-            modulation_video_clip = modulation_video_clip.with_start(modulation_start_time).with_position("center").with_fps(FPS)
+            modulation_video_clip = modulation_video_clip.with_position("center").with_fps(FPS)
+            video_clips.append(modulation_video_clip)
             print(f"[VIDEO STRUCTURE] Calculated modulation start time: {modulation_start_time}s")
             print(f"[VIDEO STRUCTURE] Added modulation video: start={modulation_start_time}s, duration={modulation_video_clip.duration}s")
         
         # 4. まとめ部分（owner_comment以降） - 本編に含まれているので別途作成不要
         
-        # 最終動画を連結して合成（Z-orderを考慮）
+        # 暗転を除去するためconcatenate_videoclipsを使用
         if len(video_clips) > 1:
-            # Modulation動画が最前面に来るように順序を調整
-            ordered_clips = []
-            for clip in video_clips:
-                if clip != modulation_video_clip:
-                    ordered_clips.append(clip)
-            if modulation_video_clip:
-                ordered_clips.append(modulation_video_clip)  # 最前面に配置
+            # 各クリップのdurationチェック
+            for i, clip in enumerate(video_clips):
+                if clip.duration is None:
+                    print(f"[ERROR] Clip {i} has None duration, setting to 5s")
+                    clip = clip.with_duration(5.0)
             
-            # 重なり時間を考慮して最長の動画をベースに
-            max_duration = max(clip.duration + (clip.start or 0) for clip in ordered_clips)
-            final_video = CompositeVideoClip(ordered_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
-            final_video = final_video.with_duration(max_duration)
-            print(f"[VIDEO STRUCTURE] Final composite video: duration={max_duration}s")
-            print(f"[VIDEO STRUCTURE] Z-order ensured: Modulation video is frontmost")
+            try:
+                # concatenate_videoclipsで隙間なく連結
+                final_video = concatenate_videoclips(video_clips)
+                print(f"[VIDEO STRUCTURE] Concatenated {len(video_clips)} clips without gaps")
+                print(f"[VIDEO STRUCTURE] Final video duration: {final_video.duration}s")
+            except Exception as e:
+                print(f"[ERROR] concatenate_videoclips failed: {e}")
+                # フォールバック：CompositeVideoClipを使用
+                max_duration = max(clip.duration + (clip.start or 0) for clip in video_clips)
+                final_video = CompositeVideoClip(video_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
+                final_video = final_video.with_duration(max_duration)
+                print(f"[VIDEO STRUCTURE] Fallback to CompositeVideoClip: duration={max_duration}s")
         else:
             final_video = video_clips[0] if video_clips else main_video
         
         video = final_video
         
         # デバッグ用にall_clips変数を定義（旧コード互換性）
-        all_clips = ordered_clips
+        all_clips = video_clips
         
         # デバッグ用中間保存ログ
         print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + ヘッダー{1 if heading_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
@@ -2789,18 +2787,13 @@ async def build_video_with_subtitles(
         # 2. 本編の音声（ナレーション + BGM）
         main_audio_clips = []
         
-        # ナレーション音声
-        if title_duration > 0:
-            # Title期間は無音
-            narration_silence = AudioClip(lambda t: [0, 0], duration=title_duration, fps=44100)
-            main_audio_clips.append(narration_silence)
-        
-        main_audio_clips.append(audio_clip.with_start(title_duration).with_volume_scaled(1.2))  # ナレーション音量を20%増加
+        # ナレーション音声（無音時間を除去して即開始）
+        main_audio_clips.append(audio_clip.with_volume_scaled(1.2))  # ナレーション音量を20%増加
         
         # BGM（存在する場合）
         if bgm_clip:
-            # BGMをTitle終了後から動画終了まで設定（ループ対応）
-            bgm_duration = video.duration - title_duration
+            # BGMを動画全体に設定（ループ対応）
+            bgm_duration = video.duration
             if bgm_duration > 0:
                 # BGMを動画の長さに合わせてループ
                 try:
@@ -2815,9 +2808,9 @@ async def build_video_with_subtitles(
                     bgm_adjusted = bgm_looped.with_duration(bgm_duration)
                     print(f"[AUDIO] BGM manually looped {loops_needed} times for {bgm_duration}s")
                 
-                bgm_adjusted = bgm_adjusted.with_start(title_duration).with_volume_scaled(0.15)  # 音量15%
+                bgm_adjusted = bgm_adjusted.with_volume_scaled(0.2)  # 音量を20%に増加
                 main_audio_clips.append(bgm_adjusted)
-                print(f"[AUDIO] Added BGM: start={title_duration}s, duration={bgm_adjusted.duration}s, volume=15%")
+                print(f"[AUDIO] Added BGM: duration={bgm_adjusted.duration}s, volume=20%")
         
         # 本編音声を合成
         if len(main_audio_clips) > 1:
