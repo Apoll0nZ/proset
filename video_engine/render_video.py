@@ -2656,21 +2656,36 @@ async def build_video_with_subtitles(
         
         # 3. Modulation動画（存在する場合）
         if modulation_video_clip:
-            # Modulationの開始時間を計算（Title + 本編のowner_comment前）
-            modulation_start_time = title_duration + modulation_duration  # 既に計算済み
+            # Modulationの開始時間を正確に計算（Title + owner_comment直前までのナレーション時間）
+            modulation_start_time = title_duration
+            for i, part in enumerate(script_parts):
+                if part.get("part") == "owner_comment":
+                    break
+                part_duration = part.get("duration", 5.0)
+                modulation_start_time += part_duration
+            
             modulation_video_clip = modulation_video_clip.with_start(modulation_start_time).with_position("center").with_fps(FPS)
-            video_clips.append(modulation_video_clip)
+            print(f"[VIDEO STRUCTURE] Calculated modulation start time: {modulation_start_time}s")
             print(f"[VIDEO STRUCTURE] Added modulation video: start={modulation_start_time}s, duration={modulation_video_clip.duration}s")
         
         # 4. まとめ部分（owner_comment以降） - 本編に含まれているので別途作成不要
         
-        # 最終動画を連結して合成
+        # 最終動画を連結して合成（Z-orderを考慮）
         if len(video_clips) > 1:
+            # Modulation動画が最前面に来るように順序を調整
+            ordered_clips = []
+            for clip in video_clips:
+                if clip != modulation_video_clip:
+                    ordered_clips.append(clip)
+            if modulation_video_clip:
+                ordered_clips.append(modulation_video_clip)  # 最前面に配置
+            
             # 重なり時間を考慮して最長の動画をベースに
-            max_duration = max(clip.duration + (clip.start or 0) for clip in video_clips)
-            final_video = CompositeVideoClip(video_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
+            max_duration = max(clip.duration + (clip.start or 0) for clip in ordered_clips)
+            final_video = CompositeVideoClip(ordered_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
             final_video = final_video.with_duration(max_duration)
             print(f"[VIDEO STRUCTURE] Final composite video: duration={max_duration}s")
+            print(f"[VIDEO STRUCTURE] Z-order ensured: Modulation video is frontmost")
         else:
             final_video = video_clips[0] if video_clips else main_video
         
@@ -2781,13 +2796,22 @@ async def build_video_with_subtitles(
         
         # BGM（存在する場合）
         if bgm_clip:
-            # BGMをTitle終了後から動画終了まで設定
+            # BGMをTitle終了後から動画終了まで設定（ループ対応）
             bgm_duration = video.duration - title_duration
             if bgm_duration > 0:
-                bgm_adjusted = bgm_clip.subclipped(0, min(bgm_clip.duration, bgm_duration))
-                bgm_adjusted = bgm_adjusted.with_start(title_duration).with_volumex(0.1)  # 音量10%
+                # BGMが十分な長さか確認し、短い場合はループ
+                if bgm_clip.duration < bgm_duration:
+                    # BGMをループさせて十分な長さを確保
+                    loops_needed = int(bgm_duration / bgm_clip.duration) + 1
+                    bgm_looped = concatenate_audioclips([bgm_clip] * loops_needed)
+                    bgm_adjusted = bgm_looped.subclipped(0, bgm_duration)
+                    print(f"[AUDIO] BGM looped {loops_needed} times to cover {bgm_duration}s")
+                else:
+                    bgm_adjusted = bgm_clip.subclipped(0, bgm_duration)
+                
+                bgm_adjusted = bgm_adjusted.with_start(title_duration).with_volumex(0.15)  # 音量15%に増加
                 main_audio_clips.append(bgm_adjusted)
-                print(f"[AUDIO] Added BGM: start={title_duration}s, duration={bgm_adjusted.duration}s, volume=10%")
+                print(f"[AUDIO] Added BGM: start={title_duration}s, duration={bgm_adjusted.duration}s, volume=15%")
         
         # 本編音声を合成
         if len(main_audio_clips) > 1:
@@ -2795,13 +2819,25 @@ async def build_video_with_subtitles(
         else:
             main_final_audio = main_audio_clips[0] if main_audio_clips else audio_clip
         
+        # frame_functionパッチを適用
+        main_final_audio.memoize = False
+        if not hasattr(main_final_audio, 'frame_function'):
+            main_final_audio.frame_function = lambda t: main_final_audio.get_frame(t)
+        
         all_audio_clips.append(main_final_audio)
-        print(f"[AUDIO] Created main audio: duration={main_final_audio.duration}s")
+        print(f"[AUDIO] Created main audio with bug fix: duration={main_final_audio.duration}s")
         
         # 3. Modulation動画の音声（存在する場合）
         if modulation_video_clip and hasattr(modulation_video_clip, 'audio') and modulation_video_clip.audio:
             modulation_audio = modulation_video_clip.audio
-            modulation_start_time = title_duration + modulation_duration
+            # 正確なModulation開始時間を使用
+            modulation_start_time = title_duration
+            for i, part in enumerate(script_parts):
+                if part.get("part") == "owner_comment":
+                    break
+                part_duration = part.get("duration", 5.0)
+                modulation_start_time += part_duration
+            
             all_audio_clips.append(modulation_audio.with_start(modulation_start_time))
             print(f"[AUDIO] Added modulation video audio: start={modulation_start_time}s, duration={modulation_audio.duration}s")
         
@@ -2813,7 +2849,12 @@ async def build_video_with_subtitles(
         else:
             final_audio = all_audio_clips[0] if all_audio_clips else AudioClip(lambda t: [0, 0], duration=video.duration, fps=44100)
         
-        print(f"[AUDIO] Final mixed audio: duration={final_audio.duration}s")
+        # frame_functionパッチを最終音声にも適用
+        final_audio.memoize = False
+        if not hasattr(final_audio, 'frame_function'):
+            final_audio.frame_function = lambda t: final_audio.get_frame(t)
+        
+        print(f"[AUDIO] Final mixed audio with bug fix: duration={final_audio.duration}s")
         
         # MoviePy v2.0のバグ回避：CompositeAudioClipを一度ファイルに書き出して読み込む
         import time
