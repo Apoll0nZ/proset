@@ -2772,8 +2772,8 @@ async def build_video_with_subtitles(
             bg_size = getattr(bg_clip_check, 'size', None)
             print(f"[DEBUG] Background clip size: {bg_size}")
             print(f"[DEBUG] Target size: ({VIDEO_WIDTH}, {VIDEO_HEIGHT})")
-            if bg_size != (VIDEO_WIDTH, VIDEO_HEIGHT):
-                print(f"[WARNING] Background clip size mismatch! Expected: ({VIDEO_WIDTH}, {VIDEO_HEIGHT}), Got: {bg_size}")
+            if list(bg_size) != [VIDEO_WIDTH, VIDEO_HEIGHT]:
+                print(f"[WARNING] Background clip size mismatch! Expected: [{VIDEO_WIDTH}, {VIDEO_HEIGHT}], Got: {list(bg_size)}")
             else:
                 print(f"[SUCCESS] Background clip size matches target")
         
@@ -2795,7 +2795,7 @@ async def build_video_with_subtitles(
             narration_silence = AudioClip(lambda t: [0, 0], duration=title_duration, fps=44100)
             main_audio_clips.append(narration_silence)
         
-        main_audio_clips.append(audio_clip.with_start(title_duration).with_volumex(1.2))  # ナレーション音量を20%増加
+        main_audio_clips.append(audio_clip.with_start(title_duration).with_volume_scaled(1.2))  # ナレーション音量を20%増加
         
         # BGM（存在する場合）
         if bgm_clip:
@@ -2815,7 +2815,7 @@ async def build_video_with_subtitles(
                     bgm_adjusted = bgm_looped.with_duration(bgm_duration)
                     print(f"[AUDIO] BGM manually looped {loops_needed} times for {bgm_duration}s")
                 
-                bgm_adjusted = bgm_adjusted.with_start(title_duration).with_volumex(0.15)  # 音量15%
+                bgm_adjusted = bgm_adjusted.with_start(title_duration).with_volume_scaled(0.15)  # 音量15%
                 main_audio_clips.append(bgm_adjusted)
                 print(f"[AUDIO] Added BGM: start={title_duration}s, duration={bgm_adjusted.duration}s, volume=15%")
         
@@ -3268,6 +3268,28 @@ async def main() -> None:
             else:
                 # プロジェクトルートに生成された動画とサムネイルファイルを削除
                 try:
+                    # クリップを明示的にクローズしてファイルハンドルを解放
+                    if 'video' in locals() and hasattr(video, 'close'):
+                        try:
+                            video.close()
+                            print("[CLEANUP] Video clip closed")
+                        except:
+                            pass
+                    
+                    if 'final_audio' in locals() and hasattr(final_audio, 'close'):
+                        try:
+                            final_audio.close()
+                            print("[CLEANUP] Final audio clip closed")
+                        except:
+                            pass
+                    
+                    if 'bgm_clip' in locals() and hasattr(bgm_clip, 'close'):
+                        try:
+                            bgm_clip.close()
+                            print("[CLEANUP] BGM clip closed")
+                        except:
+                            pass
+                    
                     video_file = "video.mp4"
                     thumbnail_file = "thumbnail.png"
                     
