@@ -2691,6 +2691,9 @@ async def build_video_with_subtitles(
         
         video = final_video
         
+        # デバッグ用にall_clips変数を定義（旧コード互換性）
+        all_clips = ordered_clips
+        
         # デバッグ用中間保存ログ
         print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + ヘッダー{1 if heading_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
         if image_clips:
