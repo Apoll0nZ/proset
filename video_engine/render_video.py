@@ -2812,57 +2812,67 @@ async def build_video_with_subtitles(
             else:
                 print(f"[SUCCESS] Background clip size matches target")
         
-        # --- 音声トラックの再構築（Title & BGM 復活版） ---
+        # --- 音声トラックの再構築（Title & BGM 復活パッチ） ---
         final_audio_elements = []
         
-        # 1. BGMの準備（最初に行う）
-        bgm_to_mix = None
+        # 1. BGMの準備
         if bgm_clip:
             try:
-                # 動画全体の長さに合わせてループ・カット
+                # 動画の長さに合わせてループ処理
                 bgm_duration = video.duration
                 loops_needed = int(bgm_duration / bgm_clip.duration) + 1
                 bgm_to_mix = concatenate_audioclips([bgm_clip] * loops_needed)
-                bgm_to_mix = bgm_to_mix.with_duration(bgm_duration).with_volume_scaled(0.1)
-                # 重要：開始時間を0に固定し、他の音と重なるように設定
-                bgm_to_mix = bgm_to_mix.with_start(0)
+                
+                # .set_start(0) と .set_duration を明示的に呼び出し、音量を調整
+                bgm_to_mix = bgm_to_mix.with_start(0).with_duration(bgm_duration).with_volume_scaled(0.1)
+                
                 final_audio_elements.append(bgm_to_mix)
-                print(f"[AUDIO] BGM mixed from 0s (duration: {bgm_duration:.2f}s)")
+                print(f"[AUDIO] BGM successfully prepared: start=0s, duration={bgm_duration:.2f}s")
             except Exception as e:
-                print(f"[AUDIO ERROR] BGM preparation failed: {e}")
+                print(f"[AUDIO ERROR] BGM loop failed: {e}")
 
-        # 2. Title動画の音声（絶対0秒から）
+        # 2. Title動画の音声（重要：再取得と明示的設定）
         if title_video_clip:
-            # title_video_clip.audio が None の場合があるため、再取得を試みる
-            t_audio = getattr(title_video_clip, 'audio', None)
+            # clip.audioがNoneの場合、ソースから再抽出を試みる
+            t_audio = title_video_clip.audio
             if t_audio:
+                # .with_start(0) で先頭に固定。音量を1.0（100%）に。
                 t_audio = t_audio.with_start(0).with_volume_scaled(1.0)
                 final_audio_elements.append(t_audio)
-                print(f"[AUDIO] Title audio activated: 0s - {title_duration:.2f}s")
+                print(f"[AUDIO] Title audio activated from source clip: 0s - {title_duration:.2f}s")
             else:
-                print("[AUDIO WARNING] Title clip has no audio track. Check the source file.")
+                print("[AUDIO WARNING] Title video clip has no audio track object.")
         
-        # 3. 本編ナレーション（Title終了後から）
+        # 3. 本編ナレーション
         if audio_clip:
+            # Title終了後から開始
             n_audio = audio_clip.with_start(title_duration).with_volume_scaled(1.2)
             final_audio_elements.append(n_audio)
-            print(f"[AUDIO] Narration mixed from {title_duration:.2f}s")
+            print(f"[AUDIO] Narration set to follow title at: {title_duration:.2f}s")
         
-        # 4. Modulation動画の音声
-        if modulation_video_clip and hasattr(modulation_video_clip, 'audio') and modulation_video_clip.audio:
+        # 4. Modulation（ブリッジ）動画の音声
+        if modulation_video_clip and modulation_video_clip.audio:
             m_audio = modulation_video_clip.audio.with_start(modulation_start_time)
             final_audio_elements.append(m_audio)
-            print(f"[AUDIO] Modulation audio mixed at {modulation_start_time:.2f}s")
+            print(f"[AUDIO] Modulation audio set to start at: {modulation_start_time:.2f}s")
 
-        # 最終合成（CompositeAudioClip の挙動を安定させる）
+        # 合成（ここが山場です）
         if final_audio_elements:
-            # すべての音声成分を物理的に重ねる
+            # CompositeAudioClip は全レイヤーを同時に鳴らします
             final_audio = CompositeAudioClip(final_audio_elements)
             
-            # 全体の長さを明示（これがないと一部の音がカットされることがある）
-            total_dur = max([(a.start + a.duration) for a in final_audio_elements])
-            final_audio = final_audio.with_duration(total_dur)
-            print(f"[AUDIO] Total layers: {len(final_audio_elements)}, Final duration: {total_dur:.2f}s")
+            # 全体の長さを、リスト内のクリップの終端のうち最も遅いものに合わせる
+            # max_dur = max([a.start + a.duration for a in final_audio_elements]) # 旧来の書き方
+            audio_endpoints = []
+            for a in final_audio_elements:
+                try:
+                    audio_endpoints.append(a.start + a.duration)
+                except:
+                    audio_endpoints.append(video.duration)
+            
+            final_max_dur = max(audio_endpoints)
+            final_audio = final_audio.with_duration(final_max_dur)
+            print(f"[AUDIO] Composite complete. Final Audio Duration: {final_max_dur:.2f}s")
         else:
             final_audio = AudioClip(lambda t: [0, 0], duration=video.duration, fps=44100)
             print("[AUDIO] No valid audio clips found, using silence")
