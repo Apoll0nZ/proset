@@ -2837,7 +2837,7 @@ async def build_video_with_subtitles(
         
         try:
             # CompositeAudioClipをWAVファイルに書き出し
-            final_audio.write_audiofile(temp_final_audio_path, codec="pcm_s16le", fps=44100, verbose=False, logger=None)
+            final_audio.write_audiofile(temp_final_audio_path, codec="pcm_s16le", fps=44100, logger=None)
             print(f"[AUDIO BUG FIX] Successfully wrote final audio to: {temp_final_audio_path}")
             
             # 書き出したWAVファイルをAudioFileClipで読み込み直す
@@ -2845,8 +2845,8 @@ async def build_video_with_subtitles(
             
             # MoviePy v2.0のバグ封じ込め：属性を明示的に設定
             final_audio.memoize = False
-            if hasattr(final_audio, 'frame_function'):
-                final_audio.frame_function = None
+            if not hasattr(final_audio, 'frame_function'):
+                final_audio.frame_function = final_audio.get_frame
             
             print(f"[AUDIO BUG FIX] Reloaded audio with bug fixes applied")
             print(f"[AUDIO BUG FIX] Final audio duration: {final_audio.duration:.2f}s")
