@@ -2132,9 +2132,9 @@ async def build_video_with_subtitles(
             print("Creating BLACK background fallback")
             # 黒い背景動画を生成
             from moviepy import ColorClip
-            bg_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=total_duration)
+            bg_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=total_duration).with_fps(FPS)
             bg_clip = bg_clip.with_start(0).with_opacity(1.0)
-            print(f"[DEBUG] Created BLACK background: {VIDEO_WIDTH}x{VIDEO_HEIGHT} for {total_duration}s")
+            print(f"[DEBUG] Created BLACK background: {VIDEO_WIDTH}x{VIDEO_HEIGHT} for {total_duration}s with {FPS} fps")
 
         # Layer 2: 画像スライド（セグメント連動）
         image_clips = []
@@ -2579,7 +2579,7 @@ async def build_video_with_subtitles(
                             text_align="left",  # 文章を左揃えに
                             stroke_color="black",  # 枠線で視認性向上
                             stroke_width=1,  # 細い枠線
-                        ).with_margin(30)
+                        )
                         
                         # アニメーションを適用（フォールバック付き）
                         try:
@@ -2641,17 +2641,17 @@ async def build_video_with_subtitles(
         print(f"[LAYER ORDER] Final layer sequence (bottom to top):")
         for i, clip in enumerate(all_clips):
             clip_type = type(clip).__name__
-            if clip == bg_clip:
+            if clip is bg_clip:
                 print(f"  Layer {i}: Background Video (最背面)")
             elif clip in image_clips:
                 print(f"  Layer {i}: Image Clip")
-            elif clip == heading_clip:
+            elif clip is heading_clip:
                 print(f"  Layer {i}: Heading Image")
             elif clip in text_clips:
                 print(f"  Layer {i}: Subtitle Text")
-            elif clip == title_video_clip:
+            elif clip is title_video_clip:
                 print(f"  Layer {i}: Title Video (素材動画)")
-            elif clip == modulation_video_clip:
+            elif clip is modulation_video_clip:
                 print(f"  Layer {i}: Modulation Video (素材動画・最前面)")
             else:
                 print(f"  Layer {i}: {clip_type}")
