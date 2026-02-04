@@ -2374,8 +2374,8 @@ async def build_video_with_subtitles(
             
             print(f"[DEBUG] Image schedule validation completed")
             image_schedule.append({
-                "start": current_time,
-                "duration": total_duration - current_time,
+                "start": current_image_time,
+                "duration": total_duration - current_image_time,
                 "path": None,
             })
 
