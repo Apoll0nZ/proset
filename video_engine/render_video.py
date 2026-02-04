@@ -2649,17 +2649,21 @@ async def build_video_with_subtitles(
         
         # 3. Modulation動画（存在する場合）
         if modulation_video_clip:
-            # Modulationの開始時間を正確に計算（Title + owner_comment直前までのナレーション時間）
-            modulation_start_time = title_duration
-            for i, part in enumerate(script_parts):
+            # --- 修正箇所：Modulationの正確な開始位置を特定 ---
+            # タイトル動画の長さからスタート
+            current_pos = title_duration 
+            
+            # owner_comment（まとめパート）の直前までのナレーション実測時間を加算
+            for i, (part, dur) in enumerate(zip(script_parts, part_durations)):
                 if part.get("part") == "owner_comment":
                     break
-                part_duration = part.get("duration", 5.0)
-                modulation_start_time += part_duration
+                current_pos += dur
+
+            modulation_start_time = current_pos
+            print(f"[FIX] Modulation start time calculated from actual durations: {modulation_start_time:.2f}s")
             
             modulation_video_clip = modulation_video_clip.with_position("center").with_fps(FPS)
             video_clips.append(modulation_video_clip)
-            print(f"[VIDEO STRUCTURE] Calculated modulation start time: {modulation_start_time}s")
             print(f"[VIDEO STRUCTURE] Added modulation video: start={modulation_start_time}s, duration={modulation_video_clip.duration}s")
         
         # 4. まとめ部分（owner_comment以降） - 本編に含まれているので別途作成不要
@@ -2830,13 +2834,18 @@ async def build_video_with_subtitles(
         # 3. Modulation動画の音声（存在する場合）
         if modulation_video_clip and hasattr(modulation_video_clip, 'audio') and modulation_video_clip.audio:
             modulation_audio = modulation_video_clip.audio
-            # 正確なModulation開始時間を使用
-            modulation_start_time = title_duration
-            for i, part in enumerate(script_parts):
+            # --- 修正箇所：音声も同じ実測値を使用 ---
+            # タイトル動画の長さからスタート
+            current_pos = title_duration
+            
+            # owner_comment（まとめパート）の直前までのナレーション実測時間を加算
+            for i, (part, dur) in enumerate(zip(script_parts, part_durations)):
                 if part.get("part") == "owner_comment":
                     break
-                part_duration = part.get("duration", 5.0)
-                modulation_start_time += part_duration
+                current_pos += dur
+            
+            modulation_start_time = current_pos
+            print(f"[AUDIO FIX] Modulation audio start time calculated from actual durations: {modulation_start_time:.2f}s")
             
             all_audio_clips.append(modulation_audio.with_start(modulation_start_time))
             print(f"[AUDIO] Added modulation video audio: start={modulation_start_time}s, duration={modulation_audio.duration}s")
