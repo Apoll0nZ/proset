@@ -2831,6 +2831,30 @@ async def build_video_with_subtitles(
             
             print("Using main audio only (no BGM, with title and modulation silence)")
         
+        # MoviePy v2.0のバグ回避：CompositeAudioClipを一度ファイルに書き出して読み込む
+        temp_final_audio_path = os.path.join(LOCAL_TEMP_DIR, "temp_final_audio.wav")
+        print(f"[AUDIO BUG FIX] Writing final audio to temporary file: {temp_final_audio_path}")
+        
+        try:
+            # CompositeAudioClipをWAVファイルに書き出し
+            final_audio.write_audiofile(temp_final_audio_path, codec="pcm_s16le", fps=44100, verbose=False, logger=None)
+            print(f"[AUDIO BUG FIX] Successfully wrote final audio to: {temp_final_audio_path}")
+            
+            # 書き出したWAVファイルをAudioFileClipで読み込み直す
+            final_audio = AudioFileClip(temp_final_audio_path)
+            
+            # MoviePy v2.0のバグ封じ込め：属性を明示的に設定
+            final_audio.memoize = False
+            if hasattr(final_audio, 'frame_function'):
+                final_audio.frame_function = None
+            
+            print(f"[AUDIO BUG FIX] Reloaded audio with bug fixes applied")
+            print(f"[AUDIO BUG FIX] Final audio duration: {final_audio.duration:.2f}s")
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to write/reload audio file: {e}")
+            print("[ERROR] Falling back to direct audio assignment (may cause MoviePy v2.0 issues)")
+        
         # 最終音声を動画に設定
         video = video.with_audio(final_audio)
         
