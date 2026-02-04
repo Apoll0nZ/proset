@@ -2792,24 +2792,27 @@ async def build_video_with_subtitles(
             narration_silence = AudioClip(lambda t: [0, 0], duration=title_duration, fps=44100)
             main_audio_clips.append(narration_silence)
         
-        main_audio_clips.append(audio_clip.with_start(title_duration))
+        main_audio_clips.append(audio_clip.with_start(title_duration).with_volumex(1.2))  # ナレーション音量を20%増加
         
         # BGM（存在する場合）
         if bgm_clip:
             # BGMをTitle終了後から動画終了まで設定（ループ対応）
             bgm_duration = video.duration - title_duration
             if bgm_duration > 0:
-                # BGMが十分な長さか確認し、短い場合はループ
-                if bgm_clip.duration < bgm_duration:
-                    # BGMをループさせて十分な長さを確保
+                # BGMを動画の長さに合わせてループ
+                try:
+                    # MoviePy v2.0のAudioLoopを試す
+                    bgm_looped = bgm_clip.with_effects([vfx.AudioLoop()])
+                    bgm_adjusted = bgm_looped.with_duration(bgm_duration)
+                    print(f"[AUDIO] BGM looped using AudioLoop effect for {bgm_duration}s")
+                except:
+                    # フォールバック：手動ループ
                     loops_needed = int(bgm_duration / bgm_clip.duration) + 1
                     bgm_looped = concatenate_audioclips([bgm_clip] * loops_needed)
-                    bgm_adjusted = bgm_looped.subclipped(0, bgm_duration)
-                    print(f"[AUDIO] BGM looped {loops_needed} times to cover {bgm_duration}s")
-                else:
-                    bgm_adjusted = bgm_clip.subclipped(0, bgm_duration)
+                    bgm_adjusted = bgm_looped.with_duration(bgm_duration)
+                    print(f"[AUDIO] BGM manually looped {loops_needed} times for {bgm_duration}s")
                 
-                bgm_adjusted = bgm_adjusted.with_start(title_duration).with_volumex(0.15)  # 音量15%に増加
+                bgm_adjusted = bgm_adjusted.with_start(title_duration).with_volumex(0.15)  # 音量15%
                 main_audio_clips.append(bgm_adjusted)
                 print(f"[AUDIO] Added BGM: start={title_duration}s, duration={bgm_adjusted.duration}s, volume=15%")
         
@@ -2819,10 +2822,11 @@ async def build_video_with_subtitles(
         else:
             main_final_audio = main_audio_clips[0] if main_audio_clips else audio_clip
         
-        # frame_functionパッチを適用
+        # 属性パッチを徹底適用（CompositeAudioClip直後）
         main_final_audio.memoize = False
         if not hasattr(main_final_audio, 'frame_function'):
             main_final_audio.frame_function = lambda t: main_final_audio.get_frame(t)
+            print(f"[AUDIO] Applied frame_function patch to main_final_audio")
         
         all_audio_clips.append(main_final_audio)
         print(f"[AUDIO] Created main audio with bug fix: duration={main_final_audio.duration}s")
@@ -2849,12 +2853,13 @@ async def build_video_with_subtitles(
         else:
             final_audio = all_audio_clips[0] if all_audio_clips else AudioClip(lambda t: [0, 0], duration=video.duration, fps=44100)
         
-        # frame_functionパッチを最終音声にも適用
+        # 属性パッチを徹底適用（CompositeAudioClip直後）
         final_audio.memoize = False
         if not hasattr(final_audio, 'frame_function'):
             final_audio.frame_function = lambda t: final_audio.get_frame(t)
+            print(f"[AUDIO] Applied frame_function patch to final_audio")
         
-        print(f"[AUDIO] Final mixed audio with bug fix: duration={final_audio.duration}s")
+        print(f"[AUDIO] Final mixed audio with complete bug fix: duration={final_audio.duration}s")
         
         # MoviePy v2.0のバグ回避：CompositeAudioClipを一度ファイルに書き出して読み込む
         import time
