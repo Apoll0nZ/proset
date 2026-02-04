@@ -444,8 +444,7 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         bg_clip = VideoFileClip(bg_path)
         
         # VideoFileClipであることを確認
-        from moviepy.video.io.VideoFileClip import VideoFileClip as VFCCheck
-        if not isinstance(bg_clip, VFCCheck):
+        if not isinstance(bg_clip, VideoFileClip):
             raise RuntimeError(f"背景動画がVideoFileClipではありません: {type(bg_clip)}")
         
         print(f"[SUCCESS] VideoFileClip生成成功: {type(bg_clip)}")
@@ -2756,7 +2755,6 @@ async def build_video_with_subtitles(
             
             # オープニング動画の分だけ無音クリップを作成
             if title_duration > 0:
-                from moviepy import AudioFileClip
                 # 無音クリップを作成
                 silence_clip = AudioFileClip.__new__(AudioFileClip)
                 silence_clip.fps = 44100
