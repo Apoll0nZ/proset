@@ -2664,7 +2664,7 @@ async def build_video_with_subtitles(
         
         # 4. まとめ部分（owner_comment以降） - 本編に含まれているので別途作成不要
         
-        # 暗転を除去するためconcatenate_videoclipsを使用
+        # 暗転を除去するためconcatenate_videoclipsを使用（最も安全な方法）
         if len(video_clips) > 1:
             # 各クリップのdurationチェック
             for i, clip in enumerate(video_clips):
@@ -2673,9 +2673,9 @@ async def build_video_with_subtitles(
                     clip = clip.with_duration(5.0)
             
             try:
-                # concatenate_videoclipsで隙間なく連結
-                final_video = concatenate_videoclips(video_clips)
-                print(f"[VIDEO STRUCTURE] Concatenated {len(video_clips)} clips without gaps")
+                # concatenate_videoclipsで隙間なく連結（method="compose"で安全に合成）
+                final_video = concatenate_videoclips(video_clips, method="compose")
+                print(f"[VIDEO STRUCTURE] Concatenated {len(video_clips)} clips without gaps using method='compose'")
                 print(f"[VIDEO STRUCTURE] Final video duration: {final_video.duration}s")
             except Exception as e:
                 print(f"[ERROR] concatenate_videoclips failed: {e}")
@@ -2843,9 +2843,9 @@ async def build_video_with_subtitles(
         
         # 4. まとめ部分の音声（本編に含まれているので不要）
         
-        # 最終音声を合成
+        # 最終音声を合成（動画の長さに明示的に合わせる）
         if len(all_audio_clips) > 1:
-            final_audio = CompositeAudioClip(all_audio_clips)
+            final_audio = CompositeAudioClip(all_audio_clips).with_duration(video.duration)
         else:
             final_audio = all_audio_clips[0] if all_audio_clips else AudioClip(lambda t: [0, 0], duration=video.duration, fps=44100)
         
@@ -2856,6 +2856,7 @@ async def build_video_with_subtitles(
             print(f"[AUDIO] Applied frame_function patch to final_audio")
         
         print(f"[AUDIO] Final mixed audio with complete bug fix: duration={final_audio.duration}s")
+        print(f"[AUDIO] Audio duration explicitly matched to video duration: {video.duration}s")
         
         # MoviePy v2.0のバグ回避：CompositeAudioClipを一度ファイルに書き出して読み込む
         import time
