@@ -455,9 +455,11 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         print(f"[SUCCESS] VideoFileClip生成成功: {type(bg_clip)}")
         print(f"[DEBUG] Duration: {bg_clip.duration}s, Original Size: {bg_clip.size}")
         
-        # 音声をミュート
-        bg_clip = bg_clip.without_audio()
-        print("Background video audio muted")
+        # 音声を保持（素材動画の音声をミックスするため）
+        if hasattr(bg_clip, 'audio') and bg_clip.audio:
+            print(f"[AUDIO] Background video has audio: duration={bg_clip.audio.duration}s")
+        else:
+            print("[AUDIO] Background video has no audio")
         
         # DEBUG_MODEなら30秒にカット
         if DEBUG_MODE:
@@ -2624,49 +2626,55 @@ async def build_video_with_subtitles(
                 print(f"Error creating subtitle for part {i}: {e}")
                 continue
 
-        # すべてのレイヤーを合成（厳格な順序: [背景動画, 生成画像, 字幕クリップ, Title動画, Modulation動画]）
-        # bg_clip が最背面（インデックス0）、素材動画が最前面になるように厳格化
-        all_clips = [bg_clip] + image_clips
-        if heading_clip:
-            all_clips.append(heading_clip)
-        all_clips.extend(text_clips)
+        # 時間軸に沿った動画構成：Title → 本編 → Modulation → まとめ
+        video_clips = []
         
-        # Title動画を追加（最前面に配置）
+        # 1. Title動画（存在する場合）
         if title_video_clip:
-            title_video_clip = title_video_clip.with_start(0).with_position("center").with_fps(FPS)
-            all_clips.append(title_video_clip)
-            print(f"[DEBUG] Added title video to layers (start=0, duration={title_video_clip.duration}s, fps={FPS})")
+            title_video_clip = title_video_clip.with_position("center").with_fps(FPS)
+            video_clips.append(title_video_clip)
+            print(f"[VIDEO STRUCTURE] Added title video: duration={title_video_clip.duration}s")
         
-        # Modulation動画を追加（最前面に配置）
+        # 2. 本編（背景 + 画像 + 字幕 + ヘッダー）
+        main_content_clips = [bg_clip] + image_clips
+        if heading_clip:
+            main_content_clips.append(heading_clip)
+        main_content_clips.extend(text_clips)
+        
+        # 本編をCompositeVideoClipで合成
+        main_video = CompositeVideoClip(main_content_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
+        print(f"[VIDEO STRUCTURE] Created main content: duration={main_video.duration}s")
+        
+        # 本編の開始時間をTitleの後に設定
+        if title_video_clip:
+            main_video = main_video.with_start(title_video_clip.duration)
+            print(f"[VIDEO STRUCTURE] Main content starts at: {title_video_clip.duration}s")
+        else:
+            main_video = main_video.with_start(0)
+        
+        video_clips.append(main_video)
+        
+        # 3. Modulation動画（存在する場合）
         if modulation_video_clip:
-            modulation_video_clip = modulation_video_clip.with_fps(FPS)
-            all_clips.append(modulation_video_clip)
-            print(f"[DEBUG] Added modulation video to layers (start={modulation_video_clip.start}, duration={modulation_video_clip.duration}s, fps={FPS})")
+            # Modulationの開始時間を計算（Title + 本編のowner_comment前）
+            modulation_start_time = title_duration + modulation_duration  # 既に計算済み
+            modulation_video_clip = modulation_video_clip.with_start(modulation_start_time).with_position("center").with_fps(FPS)
+            video_clips.append(modulation_video_clip)
+            print(f"[VIDEO STRUCTURE] Added modulation video: start={modulation_start_time}s, duration={modulation_video_clip.duration}s")
         
-        # レイヤー順序の最終確認
-        print(f"[LAYER ORDER] Final layer sequence (bottom to top):")
-        for i, clip in enumerate(all_clips):
-            clip_type = type(clip).__name__
-            # ID比較で同一性判定（v2.0の等価比較エラー回避）
-            if id(clip) == id(bg_clip):
-                print(f"  Layer {i}: Background Video (最背面)")
-            elif any(id(clip) == id(img_clip) for img_clip in image_clips):
-                print(f"  Layer {i}: Image Clip")
-            elif heading_clip and id(clip) == id(heading_clip):
-                print(f"  Layer {i}: Heading Image")
-            elif any(id(clip) == id(txt_clip) for txt_clip in text_clips):
-                print(f"  Layer {i}: Subtitle Text")
-            elif title_video_clip and id(clip) == id(title_video_clip):
-                print(f"  Layer {i}: Title Video (素材動画)")
-            elif modulation_video_clip and id(clip) == id(modulation_video_clip):
-                print(f"  Layer {i}: Modulation Video (素材動画・最前面)")
-            else:
-                print(f"  Layer {i}: {clip_type}")
+        # 4. まとめ部分（owner_comment以降） - 本編に含まれているので別途作成不要
         
-        # 厳格なレイヤー順序でCompositeVideoClipを生成
-        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
-        print(f"[DEBUG] CompositeVideoClip created with {len(all_clips)} layers, size=(1920, 1080)")
-        print(f"[DEBUG] Layer order enforced: Background -> Images -> Heading -> Subtitles -> Title -> Modulation")
+        # 最終動画を連結して合成
+        if len(video_clips) > 1:
+            # 重なり時間を考慮して最長の動画をベースに
+            max_duration = max(clip.duration + (clip.start or 0) for clip in video_clips)
+            final_video = CompositeVideoClip(video_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
+            final_video = final_video.with_duration(max_duration)
+            print(f"[VIDEO STRUCTURE] Final composite video: duration={max_duration}s")
+        else:
+            final_video = video_clips[0] if video_clips else main_video
+        
+        video = final_video
         
         # デバッグ用中間保存ログ
         print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + ヘッダー{1 if heading_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
@@ -2751,67 +2759,61 @@ async def build_video_with_subtitles(
             else:
                 print(f"[SUCCESS] Background clip size matches target")
         
-        # 音声トラックを結合（メイン音声 + BGM）
-        # オープニング動画の分だけ無音を追加して音声を同期
+        # 音声トラックの結合（素材動画音 + ナレーション + BGM）
+        all_audio_clips = []
+        
+        # 1. Title動画の音声（存在する場合）
+        if title_video_clip and hasattr(title_video_clip, 'audio') and title_video_clip.audio:
+            title_audio = title_video_clip.audio
+            all_audio_clips.append(title_audio.with_start(0))
+            print(f"[AUDIO] Added title video audio: duration={title_audio.duration}s")
+        
+        # 2. 本編の音声（ナレーション + BGM）
+        main_audio_clips = []
+        
+        # ナレーション音声
+        if title_duration > 0:
+            # Title期間は無音
+            narration_silence = AudioClip(lambda t: [0, 0], duration=title_duration, fps=44100)
+            main_audio_clips.append(narration_silence)
+        
+        main_audio_clips.append(audio_clip.with_start(title_duration))
+        
+        # BGM（存在する場合）
         if bgm_clip:
-            # DEBUG_MODEなら音声も30秒にカット
-            if DEBUG_MODE:
-                audio_clip = audio_clip.subclipped(0, 30)
-                bgm_clip = bgm_clip.subclipped(0, 30)
-                print("DEBUG_MODE: Audio clips trimmed to 30s")
-            
-            # MoviePy v2.0推奨：AudioClipで無音を生成
-            audio_parts = []
-            if title_duration > 0:
-                # オープニング期間は無音
-                opening_silence = AudioClip(lambda t: [0, 0], duration=title_duration, fps=44100)
-                audio_parts.append(opening_silence)
-                print(f"[AUDIO] Created opening silence: {title_duration}s")
-            
-            # メイン音声（ナレーション）
-            audio_parts.append(audio_clip)
-            
-            # ブリッジ期間は無音
-            if modulation_duration > 0:
-                bridge_silence = AudioClip(lambda t: [0, 0], duration=modulation_duration, fps=44100)
-                audio_parts.append(bridge_silence)
-                print(f"[AUDIO] Created bridge silence: {modulation_duration}s")
-            
-            # 音声パーツを結合
-            if len(audio_parts) > 1:
-                final_main_audio = concatenate_audioclips(audio_parts)
-            else:
-                final_main_audio = audio_parts[0] if audio_parts else audio_clip
-            
-            # CompositeAudioClipでメイン音声とBGMをミックス
-            final_audio = CompositeAudioClip([final_main_audio, bgm_clip])
-            print("Mixed main audio with BGM (including title and modulation silence)")
+            # BGMをTitle終了後から動画終了まで設定
+            bgm_duration = video.duration - title_duration
+            if bgm_duration > 0:
+                bgm_adjusted = bgm_clip.subclipped(0, min(bgm_clip.duration, bgm_duration))
+                bgm_adjusted = bgm_adjusted.with_start(title_duration).with_volumex(0.1)  # 音量10%
+                main_audio_clips.append(bgm_adjusted)
+                print(f"[AUDIO] Added BGM: start={title_duration}s, duration={bgm_adjusted.duration}s, volume=10%")
+        
+        # 本編音声を合成
+        if len(main_audio_clips) > 1:
+            main_final_audio = CompositeAudioClip(main_audio_clips)
         else:
-            # DEBUG_MODEならメイン音声も30秒にカット
-            if DEBUG_MODE:
-                audio_clip = audio_clip.subclipped(0, 30)
-                print("DEBUG_MODE: Main audio trimmed to 30s")
-            
-            # BGMがない場合もオープニングとブリッジの無音を追加
-            audio_parts = []
-            if title_duration > 0:
-                opening_silence = AudioClip(lambda t: [0, 0], duration=title_duration, fps=44100)
-                audio_parts.append(opening_silence)
-                print(f"[AUDIO] Created opening silence: {title_duration}s")
-            
-            audio_parts.append(audio_clip)
-            
-            if modulation_duration > 0:
-                bridge_silence = AudioClip(lambda t: [0, 0], duration=modulation_duration, fps=44100)
-                audio_parts.append(bridge_silence)
-                print(f"[AUDIO] Created bridge silence: {modulation_duration}s")
-            
-            if len(audio_parts) > 1:
-                final_audio = concatenate_audioclips(audio_parts)
-            else:
-                final_audio = audio_parts[0] if audio_parts else audio_clip
-            
-            print("Using main audio only (no BGM, with title and modulation silence)")
+            main_final_audio = main_audio_clips[0] if main_audio_clips else audio_clip
+        
+        all_audio_clips.append(main_final_audio)
+        print(f"[AUDIO] Created main audio: duration={main_final_audio.duration}s")
+        
+        # 3. Modulation動画の音声（存在する場合）
+        if modulation_video_clip and hasattr(modulation_video_clip, 'audio') and modulation_video_clip.audio:
+            modulation_audio = modulation_video_clip.audio
+            modulation_start_time = title_duration + modulation_duration
+            all_audio_clips.append(modulation_audio.with_start(modulation_start_time))
+            print(f"[AUDIO] Added modulation video audio: start={modulation_start_time}s, duration={modulation_audio.duration}s")
+        
+        # 4. まとめ部分の音声（本編に含まれているので不要）
+        
+        # 最終音声を合成
+        if len(all_audio_clips) > 1:
+            final_audio = CompositeAudioClip(all_audio_clips)
+        else:
+            final_audio = all_audio_clips[0] if all_audio_clips else AudioClip(lambda t: [0, 0], duration=video.duration, fps=44100)
+        
+        print(f"[AUDIO] Final mixed audio: duration={final_audio.duration}s")
         
         # MoviePy v2.0のバグ回避：CompositeAudioClipを一度ファイルに書き出して読み込む
         import time
