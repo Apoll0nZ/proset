@@ -2779,22 +2779,21 @@ async def build_video_with_subtitles(
             else:
                 print(f"[SUCCESS] Background clip size matches target")
         
-        # 音声トラックの結合（素材動画音 + ナレーション + BGM）
+        # 音声トラックの結合（オフセット修正）
         all_audio_clips = []
         
-        # 1. Title動画の音声（存在する場合）
+        # 1. タイトル動画の音声
         if title_video_clip and hasattr(title_video_clip, 'audio') and title_video_clip.audio:
-            title_audio = title_video_clip.audio
-            all_audio_clips.append(title_audio.with_start(0))
-            print(f"[AUDIO] Added title video audio: duration={title_audio.duration}s")
+            all_audio_clips.append(title_video_clip.audio.with_start(0))
+            print(f"[AUDIO] Added title video audio: duration={title_video_clip.audio.duration}s")
         
-        # 2. 本編の音声（ナレーション + BGM）
-        main_audio_clips = []
+        # 2. メインナレーション（タイトル動画の終了後から開始）
+        # with_start(title_duration) を追加して同期させる
+        narration_audio = audio_clip.with_volume_scaled(1.2).with_start(title_duration)
+        all_audio_clips.append(narration_audio)
+        print(f"[AUDIO] Added narration audio: start={title_duration}s, duration={audio_clip.duration}s, volume=1.2x")
         
-        # ナレーション音声（無音時間を除去して即開始）
-        main_audio_clips.append(audio_clip.with_volume_scaled(1.2))  # ナレーション音量を20%増加
-        
-        # BGM（存在する場合）
+        # 3. BGM（動画全体に重ねる）
         if bgm_clip:
             # BGMを動画全体に設定（ループ対応）
             bgm_duration = video.duration
@@ -2812,45 +2811,18 @@ async def build_video_with_subtitles(
                     bgm_adjusted = bgm_looped.with_duration(bgm_duration)
                     print(f"[AUDIO] BGM manually looped {loops_needed} times for {bgm_duration}s")
                 
-                bgm_adjusted = bgm_adjusted.with_volume_scaled(0.2)  # 音量を20%に増加
-                main_audio_clips.append(bgm_adjusted)
-                print(f"[AUDIO] Added BGM: duration={bgm_adjusted.duration}s, volume=20%")
+                bgm_adjusted = bgm_adjusted.with_volume_scaled(0.15)  # 音量15%
+                all_audio_clips.append(bgm_adjusted.with_start(0))
+                print(f"[AUDIO] Added BGM: duration={bgm_adjusted.duration}s, volume=15%, start=0")
         
-        # 本編音声を合成
-        if len(main_audio_clips) > 1:
-            main_final_audio = CompositeAudioClip(main_audio_clips)
-        else:
-            main_final_audio = main_audio_clips[0] if main_audio_clips else audio_clip
-        
-        # 属性パッチを徹底適用（CompositeAudioClip直後）
-        main_final_audio.memoize = False
-        if not hasattr(main_final_audio, 'frame_function'):
-            main_final_audio.frame_function = lambda t: main_final_audio.get_frame(t)
-            print(f"[AUDIO] Applied frame_function patch to main_final_audio")
-        
-        all_audio_clips.append(main_final_audio)
-        print(f"[AUDIO] Created main audio with bug fix: duration={main_final_audio.duration}s")
-        
-        # 3. Modulation動画の音声（存在する場合）
+        # 4. Modulation動画の音声
         if modulation_video_clip and hasattr(modulation_video_clip, 'audio') and modulation_video_clip.audio:
-            modulation_audio = modulation_video_clip.audio
-            # --- 修正箇所：音声も同じ実測値を使用 ---
-            # タイトル動画の長さからスタート
-            current_pos = title_duration
-            
-            # owner_comment（まとめパート）の直前までのナレーション実測時間を加算
-            for i, (part, dur) in enumerate(zip(script_parts, part_durations)):
-                if part.get("part") == "owner_comment":
-                    break
-                current_pos += dur
-            
-            modulation_start_time = current_pos
-            print(f"[AUDIO FIX] Modulation audio start time calculated from actual durations: {modulation_start_time:.2f}s")
-            
-            all_audio_clips.append(modulation_audio.with_start(modulation_start_time))
-            print(f"[AUDIO] Added modulation video audio: start={modulation_start_time}s, duration={modulation_audio.duration}s")
+            # 修正した開始時間を使用
+            mod_audio = modulation_video_clip.audio.with_start(modulation_start_time)
+            all_audio_clips.append(mod_audio)
+            print(f"[AUDIO] Added modulation video audio: start={modulation_start_time}s, duration={modulation_video_clip.audio.duration}s")
         
-        # 4. まとめ部分の音声（本編に含まれているので不要）
+        # 5. まとめ部分の音声（本編に含まれているので不要）
         
         # 最終音声を合成（動画の長さに明示的に合わせる）
         if len(all_audio_clips) > 1:
