@@ -132,7 +132,7 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
                            title_video_clip: VideoFileClip, title_duration: float,
                            modulation_video_clip: VideoFileClip, modulation_duration: float,
                            audio_clip: AudioFileClip, bgm_clip: AudioFileClip,
-                           image_clips: List, heading_clip: ImageClip) -> List[VideoFileClip]:
+                           image_clips: List, heading_clip: ImageClip, font_path: str) -> List[VideoFileClip]:
     """
     各セグメント（オープニング、メイン、まとめ）を独立して生成し、最後に合成する
     
@@ -173,7 +173,7 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
         if text:
             main_segment = create_main_content_segment(
                 part, duration, audio_clip, bgm_clip, 
-                current_audio_time, image_clips, heading_clip
+                current_audio_time, image_clips, heading_clip, font_path
             )
             if main_segment:
                 segments.append(main_segment)
@@ -233,7 +233,7 @@ def create_bridge_segment(modulation_video_clip: VideoFileClip, modulation_durat
 
 def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFileClip,
                            bgm_clip: AudioFileClip, start_time: float,
-                           image_clips: List, heading_clip: ImageClip) -> VideoFileClip:
+                           image_clips: List, heading_clip: ImageClip, font_path: str) -> VideoFileClip:
     """メインコンテンツセグメントを生成"""
     part_type = part.get("part", "")
     text = part.get("text", "")
@@ -3035,7 +3035,7 @@ async def build_video_with_subtitles(
             title_video_clip, title_duration,
             modulation_video_clip, modulation_duration,
             audio_clip, bgm_clip,
-            image_clips, heading_clip
+            image_clips, heading_clip, font_path
         )
         
         if not segments:
