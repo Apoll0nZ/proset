@@ -162,8 +162,12 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
     segments = []
     
     # 1. オープニングセグメント（Title動画）
+    title_text = ""
+    if script_parts and script_parts[0].get("part") == "title":
+        title_text = script_parts[0].get("text", "")
+
     if title_video_clip:
-        opening_segment = create_opening_segment(title_video_clip, title_duration, bgm_clip, heading_clip)
+        opening_segment = create_opening_segment(title_video_clip, title_duration, bgm_clip, heading_clip, title_text, font_path)
         if opening_segment:
             segments.append(opening_segment)
     
@@ -208,26 +212,35 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
     print(f"Created {len(segments)} segments")
     return segments
 
-def create_opening_segment(title_video_clip: VideoFileClip, title_duration: float, 
-                        bgm_clip: AudioFileClip, heading_clip: ImageClip) -> VideoFileClip:
+def create_opening_segment(title_video_clip: VideoFileClip, title_duration: float,
+                        bgm_clip: AudioFileClip, heading_clip: ImageClip,
+                        title_text: str = "", font_path: str = None) -> VideoFileClip:
     """オープニングセグメントを生成"""
     try:
         # Title動画をベースに
         base_clip = title_video_clip
-        
+
+        # 字幕を生成
+        subtitle_clips = []
+        if title_text:
+            subtitle_clips = create_subtitles_for_segment(title_text, title_duration, 0, font_path)
+            print(f"[OPENING] Title subtitles created: {len(subtitle_clips)} clips")
+
         # BGMを設定（最初の部分）
         if bgm_clip:
             bgm_part = bgm_clip.subclipped(0, title_duration)
             base_clip = base_clip.with_audio(bgm_part)
-        
+
         # ヘッダーを追加
+        clips = [base_clip] + subtitle_clips
         if heading_clip:
             heading_part = heading_clip.with_duration(title_duration)
-            clips = [base_clip, heading_part]
-            base_clip = CompositeVideoClip(clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
-        
+            clips.append(heading_part)
+
+        base_clip = CompositeVideoClip(clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+
         return base_clip
-        
+
     except Exception as e:
         print(f"Error creating opening segment: {e}")
         return None
@@ -654,9 +667,9 @@ def download_random_background_video() -> str:
         contents = resp.get("Contents", [])
         for obj in contents:
             key = obj["Key"]
-            # s*.mp4パターンに一致するファイルのみを対象
+            # s*.mp4またはS*.mp4パターンに一致するファイルを対象
             filename = os.path.basename(key)
-            if filename.startswith("s") and filename.lower().endswith(".mp4"):
+            if filename.lower().startswith("s") and filename.lower().endswith(".mp4"):
                 mp4_files.append(key)
         
         if not mp4_files:
@@ -2424,16 +2437,9 @@ async def build_video_with_subtitles(
                 # 音量を10%に下げてナレーションを主役に
                 bgm_clip = bgm_clip.with_volume_scaled(0.10)
                 print("BGM volume reduced to 10%")
-                
-                # 最初の2秒でフェードイン
-                if total_video_duration > 2:
-                    bgm_clip = bgm_clip.with_audio_fadein(2)
-                    print("Applied 2-second fadein to BGM")
-                
-                # 最後の2秒でフェードアウト
-                if total_video_duration > 4:  # フェードインと重ならないように
-                    bgm_clip = bgm_clip.with_audio_fadeout(2)
-                    print("Applied 2-second fadeout to BGM")
+
+                # フェード処理をスキップ（AudioFileClipではサポートされていない）
+                # セグメント内で個別にフェード処理を実施
                 
             except Exception as e:
                 print(f"[BGM ERROR] Failed to process BGM: {e}")
