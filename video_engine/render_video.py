@@ -127,6 +127,257 @@ def transition_scale_animation(clip, is_fade_out=False):
         else:
             return clip.with_effects([vfx.Resize(lambda t: min(1.0, 0.6 + 0.8 * t))])
 
+# 独立セグメント合成方式による動画生成関数
+def create_independent_segments(script_parts: List[Dict], part_durations: List[float], 
+                           title_video_clip: VideoFileClip, title_duration: float,
+                           modulation_video_clip: VideoFileClip, modulation_duration: float,
+                           audio_clip: AudioFileClip, bgm_clip: AudioFileClip,
+                           image_clips: List, heading_clip: ImageClip) -> List[VideoFileClip]:
+    """
+    各セグメント（オープニング、メイン、まとめ）を独立して生成し、最後に合成する
+    
+    Returns:
+        セグメントのリスト: [opening_segment, main_segments..., closing_segment]
+    """
+    print("=== INDEPENDENT SEGMENT CREATION START ===")
+    segments = []
+    
+    # 1. オープニングセグメント（Title動画）
+    if title_video_clip:
+        opening_segment = create_opening_segment(title_video_clip, title_duration, bgm_clip, heading_clip)
+        if opening_segment:
+            segments.append(opening_segment)
+            print(f"[SEGMENT] Opening segment created: {title_duration:.2f}s")
+    
+    # 2. メインセグメント（各パートを独立生成）
+    current_audio_time = title_duration
+    for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+        part_type = part.get("part", "")
+        text = part.get("text", "")
+        
+        if part_type == "owner_comment" and modulation_video_clip:
+            # ブリッジ動画セグメント
+            bridge_segment = create_bridge_segment(modulation_video_clip, modulation_duration, bgm_clip, current_audio_time)
+            if bridge_segment:
+                segments.append(bridge_segment)
+                print(f"[SEGMENT] Bridge segment created: {modulation_duration:.2f}s")
+            current_audio_time += modulation_duration
+        
+        # メインコンテンツセグメント
+        if text:
+            main_segment = create_main_content_segment(
+                part, duration, audio_clip, bgm_clip, 
+                current_audio_time, image_clips, heading_clip
+            )
+            if main_segment:
+                segments.append(main_segment)
+                print(f"[SEGMENT] Main segment {i} created: {duration:.2f}s")
+            current_audio_time += duration
+    
+    # 3. まとめセグメント（必要に応じて）
+    closing_segment = create_closing_segment(bgm_clip, heading_clip)
+    if closing_segment:
+        segments.append(closing_segment)
+        print(f"[SEGMENT] Closing segment created")
+    
+    print(f"[SEGMENT] Total segments created: {len(segments)}")
+    print("=== INDEPENDENT SEGMENT CREATION END ===")
+    return segments
+
+def create_opening_segment(title_video_clip: VideoFileClip, title_duration: float, 
+                        bgm_clip: AudioFileClip, heading_clip: ImageClip) -> VideoFileClip:
+    """オープニングセグメントを生成"""
+    print(f"[OPENING] Creating opening segment: {title_duration:.2f}s")
+    
+    try:
+        # Title動画をベースに
+        base_clip = title_video_clip
+        
+        # BGMを設定（最初の部分）
+        if bgm_clip:
+            bgm_part = bgm_clip.subclipped(0, title_duration)
+            base_clip = base_clip.with_audio(bgm_part)
+        
+        # ヘッダーを追加
+        if heading_clip:
+            heading_part = heading_clip.with_duration(title_duration)
+            clips = [base_clip, heading_part]
+            base_clip = CompositeVideoClip(clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        
+        print(f"[OPENING] Opening segment completed: {title_duration:.2f}s")
+        return base_clip
+        
+    except Exception as e:
+        print(f"[OPENING ERROR] Failed to create opening segment: {e}")
+        return None
+
+def create_bridge_segment(modulation_video_clip: VideoFileClip, modulation_duration: float,
+                       bgm_clip: AudioFileClip, start_time: float) -> VideoFileClip:
+    """ブリッジ動画セグメントを生成"""
+    print(f"[BRIDGE] Creating bridge segment: {modulation_duration:.2f}s")
+    
+    try:
+        base_clip = modulation_video_clip.with_duration(modulation_duration)
+        
+        # BGMを設定
+        if bgm_clip:
+            bgm_part = bgm_clip.subclipped(start_time, start_time + modulation_duration)
+            base_clip = base_clip.with_audio(bgm_part)
+        
+        print(f"[BRIDGE] Bridge segment completed: {modulation_duration:.2f}s")
+        return base_clip
+        
+    except Exception as e:
+        print(f"[BRIDGE ERROR] Failed to create bridge segment: {e}")
+        return None
+
+def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFileClip,
+                           bgm_clip: AudioFileClip, start_time: float,
+                           image_clips: List, heading_clip: ImageClip) -> VideoFileClip:
+    """メインコンテンツセグメントを生成"""
+    part_type = part.get("part", "")
+    text = part.get("text", "")
+    
+    print(f"[MAIN SEGMENT] Creating {part_type} segment: {duration:.2f}s")
+    
+    try:
+        # 背景クリップを作成
+        bg_clip = create_background_clip(duration)
+        
+        # このパートの音声を抽出
+        part_audio = audio_clip.subclipped(start_time, start_time + duration)
+        
+        # 字幕を生成（このセグメント内での絶対時間）
+        subtitle_clips = create_subtitles_for_segment(text, duration, start_time)
+        
+        # 画像を配置
+        segment_images = get_images_for_time_range(image_clips, start_time, start_time + duration)
+        
+        # 全クリップを合成
+        clips = [bg_clip] + segment_images + subtitle_clips
+        
+        if heading_clip and part_type != "owner_comment":
+            heading_part = heading_clip.with_duration(duration)
+            clips.append(heading_part)
+        
+        # 動画を合成
+        video_segment = CompositeVideoClip(clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        
+        # 音声を設定
+        if bgm_clip:
+            # BGM + ナレーションをミックス
+            bgm_part = bgm_clip.subclipped(start_time, start_time + duration)
+            mixed_audio = CompositeAudioClip([part_audio, bgm_part])
+            video_segment = video_segment.with_audio(mixed_audio)
+        else:
+            video_segment = video_segment.with_audio(part_audio)
+        
+        print(f"[MAIN SEGMENT] {part_type} segment completed: {duration:.2f}s")
+        return video_segment
+        
+    except Exception as e:
+        print(f"[MAIN SEGMENT ERROR] Failed to create {part_type} segment: {e}")
+        return None
+
+def create_closing_segment(bgm_clip: AudioFileClip, heading_clip: ImageClip) -> VideoFileClip:
+    """まとめセグメントを生成"""
+    print(f"[CLOSING] Creating closing segment")
+    
+    try:
+        # 黒背景のまとめクリップ（3秒）
+        closing_duration = 3.0
+        bg_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=closing_duration)
+        
+        # BGMフェードアウト
+        if bgm_clip:
+            bgm_part = bgm_clip.subclipped(-closing_duration, 0).with_audio_fadeout(closing_duration)
+            bg_clip = bg_clip.with_audio(bgm_part)
+        
+        print(f"[CLOSING] Closing segment completed: {closing_duration:.2f}s")
+        return bg_clip
+        
+    except Exception as e:
+        print(f"[CLOSING ERROR] Failed to create closing segment: {e}")
+        return None
+
+def create_background_clip(duration: float) -> VideoFileClip:
+    """背景クリップを生成"""
+    try:
+        bg_video_path = download_random_background_video()
+        if bg_video_path and os.path.exists(bg_video_path):
+            return process_background_video_for_hd(bg_video_path, duration)
+        else:
+            return ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=duration)
+    except Exception as e:
+        print(f"[BACKGROUND ERROR] Failed to create background: {e}")
+        return ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=duration)
+
+def create_subtitles_for_segment(text: str, duration: float, segment_start_time: float) -> List:
+    """セグメント内の字幕を生成（絶対時間ベース）"""
+    subtitle_clips = []
+    
+    try:
+        chunks = split_subtitle_text(text, max_chars=100)
+        chunk_duration = duration / len(chunks)
+        
+        for i, chunk in enumerate(chunks):
+            # このセグメント内での相対時間
+            chunk_start = i * chunk_duration
+            
+            # 字幕クリップを作成
+            padded_chunk = f" {chunk} "
+            txt_clip = TextClip(
+                text=padded_chunk,
+                font_size=48,
+                color="black",
+                font=font_path,
+                method="caption",
+                size=(1600, None),
+                bg_color="white",
+                text_align="left",
+                stroke_color="black",
+                stroke_width=1,
+            )
+            
+            # アニメーションを適用
+            try:
+                txt_clip = subtitle_slide_scale_animation(txt_clip)
+            except:
+                txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
+            
+            # セグメント内の相対時間で配置
+            txt_clip = txt_clip.with_start(chunk_start).with_duration(chunk_duration).with_fps(FPS)
+            subtitle_clips.append(txt_clip)
+            
+            print(f"[SUBTITLE] Segment subtitle {i}: {chunk_start:.2f}s - {chunk_start + chunk_duration:.2f}s")
+        
+        return subtitle_clips
+        
+    except Exception as e:
+        print(f"[SUBTITLE ERROR] Failed to create subtitles: {e}")
+        return []
+
+def get_images_for_time_range(image_clips: List, start_time: float, end_time: float) -> List:
+    """指定時間範囲内の画像クリップを取得"""
+    segment_images = []
+    
+    for img_clip in image_clips:
+        if hasattr(img_clip, 'start') and hasattr(img_clip, 'duration'):
+            img_start = img_clip.start
+            img_end = img_start + img_clip.duration
+            
+            # 画像がこの時間範囲に含まれるか
+            if (img_start >= start_time and img_start < end_time) or \
+               (img_end > start_time and img_end <= end_time) or \
+               (img_start <= start_time and img_end >= end_time):
+                
+                # セグメント内での相対時間に調整
+                relative_start = max(0, img_start - start_time)
+                adjusted_clip = img_clip.with_start(relative_start)
+                segment_images.append(adjusted_clip)
+    
+    return segment_images
+
 # 音声波形分析による字幕同期関数
 def analyze_audio_for_subtitle_timing(audio_clip: AudioFileClip, text_chunks: List[str], part_start_time: float = 0) -> List[Dict[str, float]]:
     """
@@ -2929,55 +3180,53 @@ async def build_video_with_subtitles(
                 heading_clip = heading_clip.with_start(current_start + title_duration)
             main_content_elements.append(heading_clip)
         
-        # クリップリストの再構築
-        final_video_layers = []
+        # === 独立セグメント方式による動画生成 ===
+        print("=== INDEPENDENT SEGMENT MODE START ===")
         
-        # Layer 0: タイトル動画 (0秒から)
-        if title_video_clip:
-            final_video_layers.append(title_video_clip.with_start(0))
-            print(f"[LAYERING] Added title video: start=0s, duration={title_video_clip.duration}s")
+        # 各セグメントを独立して生成
+        segments = create_independent_segments(
+            script_parts, part_durations,
+            title_video_clip, title_duration,
+            modulation_video_clip, modulation_duration,
+            audio_clip, bgm_clip,
+            image_clips, heading_clip
+        )
         
-        # Layer 1: 背景動画 (タイトル終了後から)
-        bg_clip_with_start = bg_clip.with_start(title_duration)
-        final_video_layers.append(bg_clip_with_start)
-        print(f"[LAYERING] Added background video: start={title_duration}s, duration={bg_clip.duration}s")
+        if not segments:
+            print("[ERROR] No segments created, falling back to original method")
+            # フォールバック：既存の方法を使用
+            return create_video_with_original_method(...)
         
-        # Layer 2: メインコンテンツ（画像・字幕・ヘッダー）
-        final_video_layers.extend(main_content_elements)
-        print(f"[LAYERING] Added main content: {len(main_content_elements)} elements")
+        # セグメントを連結して最終動画を生成
+        print(f"[FINAL] Concatenating {len(segments)} segments...")
+        try:
+            video = concatenate_videoclips(segments, method="compose")
+            total_duration = sum(seg.duration for seg in segments)
+            video = video.with_duration(total_duration)
+            print(f"[FINAL] Final video created: {total_duration:.2f}s")
+            
+        except Exception as e:
+            print(f"[FINAL ERROR] Failed to concatenate segments: {e}")
+            print("[FINAL] Falling back to original method...")
+            # フォールバック：既存の方法を使用
+            return create_video_with_original_method(...)
         
-        # Layer 3: Modulation動画 (計算した開始時間から)
-        if modulation_video_clip:
-            final_video_layers.append(modulation_video_clip.with_start(modulation_start_time))
-            print(f"[LAYERING] Added modulation video: start={modulation_start_time}s, duration={modulation_video_clip.duration}s")
-        
-        # 合成
-        video = CompositeVideoClip(final_video_layers, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
-        
-        # 全体の長さを音声に合わせる
-        final_audio_duration = final_audio.duration if 'final_audio' in locals() else video.duration
-        video = video.with_duration(final_audio_duration)
-        print(f"[LAYERING] Final video duration set to: {final_audio_duration}s")
-        print(f"[LAYERING] Total layers: {len(final_video_layers)}")
+        print("=== INDEPENDENT SEGMENT MODE END ===")
         
         # デバッグ用にall_clips変数を定義（旧コード互換性）
-        all_clips = final_video_layers
+        all_clips = [video]  # 単一の動画クリップとして
         
         # デバッグ用中間保存ログ
-        print(f"[DEBUG] 合成クリップ数: 背景1 + 画像{len(image_clips)} + ヘッダー{1 if heading_clip else 0} + 字幕{len(text_clips)} = {len(all_clips)}")
-        if image_clips:
-            first_img = image_clips[0]
-            print(f"[DEBUG] First image clip: start={first_img.start}s, duration={first_img.duration}s, size={first_img.size}")
+        print(f"[DEBUG] Independent segments created: {len(segments)}")
+        for i, seg in enumerate(segments):
+            print(f"[DEBUG] Segment {i}: {seg.duration:.2f}s, type={type(seg).__name__}")
         
         # 1. 合成リストの全クリップ検査
-        print("[TRACE] === 合成クリップ詳細検査 ===")
-        for i, c in enumerate(all_clips):
-            clip_type = type(c).__name__
-            clip_size = getattr(c, 'size', 'N/A')
-            clip_start = getattr(c, 'start', 'N/A')
-            clip_duration = getattr(c, 'duration', 'N/A')
-            clip_opacity = getattr(c, 'opacity', 'N/A')
-            print(f"[TRACE] Layer {i}: Type={clip_type}, Size={clip_size}, Start={clip_start}, Duration={clip_duration}, Opacity={clip_opacity}")
+        print("[TRACE] === 最終動画クリップ検査 ===")
+        clip_type = type(video).__name__
+        clip_size = getattr(video, 'size', 'N/A')
+        clip_duration = getattr(video, 'duration', 'N/A')
+        print(f"[TRACE] Final Video: Type={clip_type}, Size={clip_size}, Duration={clip_duration}")
         
         # 2. 背景動画の絶対確認
         print("[TRACE] === 背景動画確認 ===")
