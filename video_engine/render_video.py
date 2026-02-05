@@ -2849,25 +2849,56 @@ async def build_video_with_subtitles(
         final_audio_elements = []
         TARGET_SR = 44100  # サンプリングレートを固定
         
+        print("=== AUDIO DEBUG START ===")
+        print(f"[DEBUG] BGM clip exists: {bgm_clip is not None}")
+        print(f"[DEBUG] Title video clip exists: {title_video_clip is not None}")
+        print(f"[DEBUG] Title video has audio: {title_video_clip.audio if title_video_clip else None}")
+        print(f"[DEBUG] Main audio clip exists: {audio_clip is not None}")
+        print(f"[DEBUG] Title duration: {title_duration:.2f}s")
+        print(f"[DEBUG] Video duration: {video.duration:.2f}s")
+        
         # 1. BGMの準備（最初に追加）
         if bgm_clip:
             try:
+                print(f"[BGM DEBUG] Original BGM duration: {bgm_clip.duration:.2f}s")
+                print(f"[BGM DEBUG] BGM fps: {bgm_clip.fps}")
+                print(f"[BGM DEBUG] BGM channels: {getattr(bgm_clip, 'nchannels', 'N/A')}")
+                
                 # BGMを動画全体の長さに合わせて調整
                 bgm_dur = video.duration
                 loops = int(bgm_dur / bgm_clip.duration) + 1
+                print(f"[BGM DEBUG] Target duration: {bgm_dur:.2f}s, loops needed: {loops}")
+                
                 bgm_to_mix = concatenate_audioclips([bgm_clip] * loops).with_duration(bgm_dur)
+                print(f"[BGM DEBUG] Looped BGM duration: {bgm_to_mix.duration:.2f}s")
+                
                 # FPSを統一し、音量を控えめに設定。開始は絶対0秒。
                 bgm_to_mix = bgm_to_mix.with_fps(TARGET_SR).with_start(0).with_volume_scaled(0.12)
                 final_audio_elements.append(bgm_to_mix)
-                print(f"[AUDIO] BGM added: 0s - {bgm_dur:.2f}s")
+                print(f"[AUDIO SUCCESS] BGM added: 0s - {bgm_dur:.2f}s, volume: 12%")
             except Exception as e:
                 print(f"[AUDIO ERROR] BGM setup failed: {e}")
+                import traceback
+                print(f"[AUDIO ERROR] Traceback: {traceback.format_exc()}")
+        else:
+            print("[BGM WARNING] No BGM clip provided!")
 
         # 2. Title動画の音声（ソースから確実に抽出）
-        if title_video_clip and title_video_clip.audio:
-            t_audio = title_video_clip.audio.with_fps(TARGET_SR).with_start(0).with_volume_scaled(1.0)
-            final_audio_elements.append(t_audio)
-            print(f"[AUDIO] Title audio added: 0s - {title_duration:.2f}s")
+        if title_video_clip:
+            if title_video_clip.audio:
+                print(f"[TITLE DEBUG] Title audio duration: {title_video_clip.audio.duration:.2f}s")
+                print(f"[TITLE DEBUG] Title audio fps: {title_video_clip.audio.fps}")
+                print(f"[TITLE DEBUG] Title audio channels: {getattr(title_video_clip.audio, 'nchannels', 'N/A')}")
+                
+                t_audio = title_video_clip.audio.with_fps(TARGET_SR).with_start(0).with_volume_scaled(1.0)
+                final_audio_elements.append(t_audio)
+                print(f"[AUDIO SUCCESS] Title audio added: 0s - {title_duration:.2f}s, volume: 100%")
+            else:
+                print("[TITLE ERROR] Title video exists but has NO audio track!")
+                print(f"[TITLE DEBUG] Title video file: {getattr(title_video_clip, 'filename', 'N/A')}")
+                print(f"[TITLE DEBUG] Title video duration: {title_video_clip.duration:.2f}s")
+        else:
+            print("[TITLE WARNING] No title video clip provided!")
         
         # 3. 本編ナレーション（Title終了後）
         if audio_clip:
@@ -2882,29 +2913,77 @@ async def build_video_with_subtitles(
             print(f"[AUDIO] Modulation audio added: starts at {modulation_start_time:.2f}s")
 
         # 合成と正規化
+        print(f"[AUDIO DEBUG] Total audio elements to mix: {len(final_audio_elements)}")
+        for i, elem in enumerate(final_audio_elements):
+            print(f"[AUDIO DEBUG] Element {i}: start={elem.start:.2f}s, duration={elem.duration:.2f}s, volume={getattr(elem, 'volume', 'N/A')}")
+        
         if final_audio_elements:
-            final_audio = CompositeAudioClip(final_audio_elements)
-            # 全体の長さを、全音声の終端に合わせる
-            max_audio_dur = max([(a.start + a.duration) for a in final_audio_elements])
-            final_audio = final_audio.with_duration(max_audio_dur)
+            try:
+                final_audio = CompositeAudioClip(final_audio_elements)
+                print(f"[AUDIO SUCCESS] CompositeAudioClip created successfully")
+                
+                # 全体の長さを、全音声の終端に合わせる
+                max_audio_dur = max([(a.start + a.duration) for a in final_audio_elements])
+                final_audio = final_audio.with_duration(max_audio_dur)
+                print(f"[AUDIO DEBUG] Final audio duration set to: {max_audio_dur:.2f}s")
+                
+                # 各音声トラックの最終確認
+                print("[AUDIO DEBUG] Final audio tracks:")
+                for i, elem in enumerate(final_audio_elements):
+                    end_time = elem.start + elem.duration
+                    print(f"  Track {i}: {elem.start:.2f}s - {end_time:.2f}s (duration: {elem.duration:.2f}s)")
+                    
+            except Exception as e:
+                print(f"[AUDIO ERROR] CompositeAudioClip failed: {e}")
+                import traceback
+                print(f"[AUDIO ERROR] Traceback: {traceback.format_exc()}")
+                # フォールバック：無音クリップ
+                final_audio = AudioClip(lambda t: [0, 0], duration=video.duration, fps=TARGET_SR)
+                print("[AUDIO FALLBACK] Using silent audio due to error")
         else:
+            print("[AUDIO WARNING] No audio elements found! Using silent audio.")
             final_audio = AudioClip(lambda t: [0, 0], duration=video.duration, fps=TARGET_SR)
 
         # 【超重要】WAV書き出し時の設定をステレオに強制
         import time
         temp_wav = os.path.join(LOCAL_TEMP_DIR, f"final_fixed_audio_{int(time.time())}.wav")
-        # MoviePy v2.0 では nchannels を ffmpeg_params 経由で渡す必要があります
-        final_audio.write_audiofile(
-            temp_wav, 
-            fps=TARGET_SR, 
-            codec="pcm_s16le", 
-            logger=None,
-            ffmpeg_params=["-ac", "2"]  # ここでステレオを強制します
-        )
+        print(f"[AUDIO DEBUG] Writing final audio to: {temp_wav}")
+        
+        try:
+            # MoviePy v2.0 では nchannels を ffmpeg_params 経由で渡す必要があります
+            final_audio.write_audiofile(
+                temp_wav, 
+                fps=TARGET_SR, 
+                codec="pcm_s16le", 
+                logger=None,
+                ffmpeg_params=["-ac", "2"]  # ここでステレオを強制します
+            )
+            print(f"[AUDIO SUCCESS] Final audio written successfully to {temp_wav}")
+            
+            # 書き出したファイルの確認
+            if os.path.exists(temp_wav):
+                file_size = os.path.getsize(temp_wav)
+                print(f"[AUDIO DEBUG] WAV file size: {file_size} bytes")
+            else:
+                print("[AUDIO ERROR] WAV file was not created!")
+                
+        except Exception as e:
+            print(f"[AUDIO ERROR] Failed to write final audio: {e}")
+            import traceback
+            print(f"[AUDIO ERROR] Traceback: {traceback.format_exc()}")
         
         # 再読み込み
-        fixed_audio = AudioFileClip(temp_wav)
-        video = video.with_audio(fixed_audio)
+        try:
+            fixed_audio = AudioFileClip(temp_wav)
+            print(f"[AUDIO SUCCESS] Audio reloaded: duration={fixed_audio.duration:.2f}s, fps={fixed_audio.fps}")
+            video = video.with_audio(fixed_audio)
+            print(f"[AUDIO SUCCESS] Audio attached to video successfully")
+        except Exception as e:
+            print(f"[AUDIO ERROR] Failed to reload audio: {e}")
+            import traceback
+            print(f"[AUDIO ERROR] Traceback: {traceback.format_exc()}")
+        
+        print("=== AUDIO DEBUG END ===")
         
         # 長さの最終同期（subclipする前に音声をセットする）
         if video.duration != fixed_audio.duration:
