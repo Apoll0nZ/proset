@@ -3047,9 +3047,16 @@ async def build_video_with_subtitles(
         )
         
         if not segments:
-            print("[ERROR] No segments created, falling back to original method")
-            # フォールバック：既存の方法を使用
-            return create_video_with_original_method(...)
+            print("[ERROR] No segments created, but continuing with empty segments")
+            print("[ERROR] This should not happen - forcing empty video creation")
+            # 空のセグメントリストでも処理を続行
+            segments = []
+        
+        # セグメントを連結して最終動画を生成
+        if len(segments) == 0:
+            print("[WARNING] No segments to concatenate, creating fallback video")
+            # 最小限の動画を作成
+            segments = [ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=5.0)]
         
         # セグメントを連結して最終動画を生成
         print(f"[FINAL] Concatenating {len(segments)} segments...")
@@ -3067,97 +3074,58 @@ async def build_video_with_subtitles(
         
         print("=== INDEPENDENT SEGMENT MODE END ===")
         
-        # デバッグ用にall_clips変数を定義（旧コード互換性）
-        all_clips = [video]  # 単一の動画クリップとして
+        # === 独立セグメント方式：音声処理と出力 ===
+        print("=== INDEPENDENT SEGMENT AUDIO PROCESSING ===")
         
-        # デバッグ用中間保存ログ
-        print(f"[DEBUG] Independent segments created: {len(segments)}")
-        for i, seg in enumerate(segments):
-            print(f"[DEBUG] Segment {i}: {seg.duration:.2f}s, type={type(seg).__name__}")
-        
-        # 1. 合成リストの全クリップ検査
-        print("[TRACE] === 最終動画クリップ検査 ===")
-        clip_type = type(video).__name__
-        clip_size = getattr(video, 'size', 'N/A')
-        clip_duration = getattr(video, 'duration', 'N/A')
-        print(f"[TRACE] Final Video: Type={clip_type}, Size={clip_size}, Duration={clip_duration}")
-        
-        # 2. 背景動画の絶対確認
-        print("[TRACE] === 背景動画確認 ===")
-        bg_clip_index = 0  # 背景は必ず最初の要素
-        bg_clip = all_clips[bg_clip_index] if len(all_clips) > 0 else None
-        if bg_clip:
-            print(f"[TRACE] 背景動画位置: リストの{bg_clip_index}番目")
-            print(f"[TRACE] 背景動画サイズ: {bg_clip.size}")
-            print(f"[TRACE] ターゲットサイズ: ({VIDEO_WIDTH}, {VIDEO_HEIGHT})")
-            print(f"[TRACE] サイズ一致: {bg_clip.size == (VIDEO_WIDTH, VIDEO_HEIGHT)}")
-        else:
-            print("[TRACE] ❌ 背景動画が存在しません！")
-        
-        # 3. 画像の生存確認
-        print("[TRACE] === 画像クリップ生存確認 ===")
-        for i, img_clip in enumerate(image_clips):
-            img_size = getattr(img_clip, 'size', None)
-            if img_size == (0, 0):
-                print(f"[TRACE] ❌ 画像クリップ{i}: サイズが(0,0)です - 破損の可能性")
-            elif img_size is None:
-                print(f"[TRACE] ❌ 画像クリップ{i}: サイズ属性がありません")
-            else:
-                print(f"[TRACE] ✅ 画像クリップ{i}: サイズ={img_size} - 正常")
-        
-        # 4. ターゲット設定の出力
-        print("[TRACE] === 最終出力設定 ===")
-        target_fps = 30
-        target_width = VIDEO_WIDTH
-        target_height = VIDEO_HEIGHT
-        print(f"[TRACE] 目標FPS: {target_fps}")
-        print(f"[TRACE] 目標幅: {target_width}")
-        print(f"[TRACE] 目標高さ: {target_height}")
-        print(f"[TRACE] 目標サイズ: ({target_width}, {target_height})")
-        
-        # 背景動画のマスク状態を確認・修正
-        if len(all_clips) > 0:
-            bg_clip_check = all_clips[0]
-            print(f"[DEBUG] Background clip type: {type(bg_clip_check)}")
-            print(f"[DEBUG] Background clip is_mask: {getattr(bg_clip_check, 'is_mask', 'N/A')}")
-            
-            # 背景動画がマスクとして扱われないように明示的に設定
-            if hasattr(bg_clip_check, 'with_is_mask'):
-                all_clips[0] = bg_clip_check.with_is_mask(False)
-                print("[FIXED] 背景動画の is_mask を False に設定")
-            elif hasattr(bg_clip_check, 'mask'):
-                if bg_clip_check.mask is not None:
-                    all_clips[0] = bg_clip_check.without_mask()
-                    print("[FIXED] 背景動画のマスクを除去")
-        
-        # 背景動画の不透明度を強制設定
-        bg_clip = bg_clip.without_mask().with_opacity(1.0).with_start(0)
-        print("[DEBUG] 背景動画の不透明度と開始時刻を強制設定")
-        
-        # 主要な合成（背景がインデックス0であることを確認）
-        video = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT), bg_color=(0, 0, 0))
-        print(f"[DEBUG] CompositeVideoClip created with {len(all_clips)} layers, size=(1920, 1080)")
-        
-        # 背景動画のサイズ確認
-        if len(all_clips) > 0:
-            bg_clip_check = all_clips[0]
-            bg_size = getattr(bg_clip_check, 'size', None)
-            print(f"[DEBUG] Background clip size: {bg_size}")
-            print(f"[DEBUG] Target size: ({VIDEO_WIDTH}, {VIDEO_HEIGHT})")
-            if list(bg_size) != [VIDEO_WIDTH, VIDEO_HEIGHT]:
-                print(f"[WARNING] Background clip size mismatch! Expected: [{VIDEO_WIDTH}, {VIDEO_HEIGHT}], Got: {list(bg_size)}")
-            else:
-                print(f"[SUCCESS] Background clip size matches target")
-        
-        # --- 音声トラックの再構築（バグ完全排除版） ---
+        # 音声処理（独立セグメント方式）
         final_audio_elements = []
-        TARGET_SR = 44100  # サンプリングレートを固定
         
-        print("=== AUDIO DEBUG START ===")
-        print(f"[DEBUG] BGM clip exists: {bgm_clip is not None}")
-        print(f"[DEBUG] Title video clip exists: {title_video_clip is not None}")
-        print(f"[DEBUG] Title video has audio: {title_video_clip.audio if title_video_clip else None}")
-        print(f"[DEBUG] Main audio clip exists: {audio_clip is not None}")
+        # Title音声を追加
+        if title_video_clip and title_video_clip.audio:
+            title_audio = title_video_clip.audio
+            final_audio_elements.append(title_audio.with_start(0.0))
+            print(f"[AUDIO] Title audio added: 0s - {title_audio.duration}s")
+        
+        # メイン音声を追加
+        if audio_clip:
+            final_audio_elements.append(audio_clip.with_start(title_duration))
+            print(f"[AUDIO] Main audio added: starts at {title_duration}s")
+        
+        # BGMを追加
+        if bgm_clip:
+            # BGMを動画全体に設定
+            bgm_duration = video.duration
+            if bgm_clip.duration < bgm_duration:
+                bgm_for_video = bgm_clip.loop(duration=bgm_duration)
+            else:
+                bgm_for_video = bgm_clip.subclipped(0, bgm_duration)
+            
+            final_audio_elements.append(bgm_for_video.with_start(0.0))
+            print(f"[AUDIO] BGM added: 0s - {bgm_duration}s")
+        
+        # 音声を合成
+        if final_audio_elements:
+            final_audio = CompositeAudioClip(final_audio_elements)
+            print(f"[AUDIO SUCCESS] CompositeAudioClip created with {len(final_audio_elements)} elements")
+        else:
+            print("[AUDIO WARNING] No audio elements found!")
+            final_audio = None
+        
+        # 動画に音声を設定
+        if final_audio:
+            video = video.with_audio(final_audio)
+            print(f"[AUDIO SUCCESS] Audio attached to video")
+        
+        # 動画出力処理に進む（従来の処理をスキップ）
+        goto_video_output = True
+        
+        if goto_video_output:
+            print("=== SKIPPING TRADITIONAL PROCESSING - GOING TO VIDEO OUTPUT ===")
+            # 動画出力処理に直接進む
+        else:
+            # 従来の処理（実行されない）
+            print("=== TRADITIONAL PROCESSING (SKIPPED) ===")
+            return
         print(f"[DEBUG] Title duration: {title_duration:.2f}s")
         print(f"[DEBUG] Video duration: {video.duration:.2f}s")
         
