@@ -2860,8 +2860,14 @@ async def build_video_with_subtitles(
         # 【超重要】WAV書き出し時の設定をステレオに強制
         import time
         temp_wav = os.path.join(LOCAL_TEMP_DIR, f"final_fixed_audio_{int(time.time())}.wav")
-        # nchannels=2 を指定することでBGMとナレーションの衝突を防ぐ
-        final_audio.write_audiofile(temp_wav, fps=TARGET_SR, nchannels=2, codec="pcm_s16le", logger=None)
+        # MoviePy v2.0 では nchannels を ffmpeg_params 経由で渡す必要があります
+        final_audio.write_audiofile(
+            temp_wav, 
+            fps=TARGET_SR, 
+            codec="pcm_s16le", 
+            logger=None,
+            ffmpeg_params=["-ac", "2"]  # ここでステレオを強制します
+        )
         
         # 再読み込み
         fixed_audio = AudioFileClip(temp_wav)
