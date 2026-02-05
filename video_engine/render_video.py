@@ -2004,11 +2004,18 @@ async def build_video_with_subtitles(
         print(f"Main audio duration: {total_duration:.2f} seconds")
 
         # BGMの準備
+        print("=== BGM DEBUG START ===")
         bgm_path = download_background_music()
+        print(f"[BGM DEBUG] Downloaded BGM path: {bgm_path}")
+        print(f"[BGM DEBUG] BGM path exists: {os.path.exists(bgm_path) if bgm_path else False}")
+        
         if bgm_path and os.path.exists(bgm_path):
+            print(f"[BGM DEBUG] BGM file size: {os.path.getsize(bgm_path)} bytes")
             print("Loading background music")
             try:
                 bgm_clip = AudioFileClip(bgm_path)
+                print(f"[BGM SUCCESS] BGM loaded: duration={bgm_clip.duration:.2f}s, fps={bgm_clip.fps}")
+                print(f"[BGM DEBUG] BGM channels: {getattr(bgm_clip, 'nchannels', 'N/A')}")
                 print(f"BGM original duration: {bgm_clip.duration:.2f} seconds")
                 
                 # 動画の総時間を計算（オープニング + 本編 + ブリッジ）
@@ -2040,10 +2047,18 @@ async def build_video_with_subtitles(
                     print("Applied 2-second fadeout to BGM")
                 
             except Exception as e:
-                print(f"Failed to process BGM: {e}")
+                print(f"[BGM ERROR] Failed to process BGM: {e}")
+                import traceback
+                print(f"[BGM ERROR] Traceback: {traceback.format_exc()}")
                 bgm_clip = None
         else:
+            if bgm_path:
+                print(f"[BGM ERROR] BGM file not found: {bgm_path}")
+            else:
+                print("[BGM ERROR] download_background_music() returned None")
             print("No BGM available, continuing without background music")
+        
+        print("=== BGM DEBUG END ===")
 
         # オープニング動画とブリッジ動画の準備
         title_video_path = download_title_video()
@@ -2053,19 +2068,44 @@ async def build_video_with_subtitles(
         modulation_video_clip = None
         
         # オープニング動画の読み込み
+        print("=== TITLE VIDEO DEBUG START ===")
+        print(f"[TITLE DEBUG] Title video path: {title_video_path}")
+        print(f"[TITLE DEBUG] Title video exists: {os.path.exists(title_video_path) if title_video_path else False}")
+        
         if title_video_path and os.path.exists(title_video_path):
+            print(f"[TITLE DEBUG] Title video file size: {os.path.getsize(title_video_path)} bytes")
             try:
                 print("Loading title video")
-                title_video_clip = VideoFileClip(title_video_path).without_audio()
+                title_video_clip_full = VideoFileClip(title_video_path)
+                print(f"[TITLE DEBUG] Title video loaded: duration={title_video_clip_full.duration:.2f}s, fps={title_video_clip_full.fps}")
+                print(f"[TITLE DEBUG] Title video has audio: {title_video_clip_full.audio is not None}")
+                
+                if title_video_clip_full.audio:
+                    print(f"[TITLE DEBUG] Title audio duration: {title_video_clip_full.audio.duration:.2f}s")
+                    print(f"[TITLE DEBUG] Title audio fps: {title_video_clip_full.audio.fps}")
+                    # 音声を保持したまま使用する
+                    title_video_clip = title_video_clip_full
+                else:
+                    print("[TITLE WARNING] Title video has no audio track!")
+                    # 音声なしのまま使用（後で検知される）
+                    title_video_clip = title_video_clip_full
+                
                 title_duration = title_video_clip.duration
                 print(f"Title video duration: {title_duration:.2f} seconds")
             except Exception as e:
-                print(f"Failed to load title video: {e}")
+                print(f"[TITLE ERROR] Failed to load title video: {e}")
+                import traceback
+                print(f"[TITLE ERROR] Traceback: {traceback.format_exc()}")
                 title_video_clip = None
                 title_duration = 0
         else:
-            print("No title video available")
+            if title_video_path:
+                print(f"[TITLE ERROR] Title video file not found: {title_video_path}")
+            else:
+                print("[TITLE ERROR] download_title_video() returned None")
             title_duration = 0
+        
+        print("=== TITLE VIDEO DEBUG END ===")
             
         # ブリッジ動画の読み込み
         if modulation_video_path and os.path.exists(modulation_video_path):
