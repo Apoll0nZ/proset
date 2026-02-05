@@ -217,8 +217,8 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
                         title_text: str = "", font_path: str = None) -> VideoFileClip:
     """オープニングセグメントを生成"""
     try:
-        # Title動画をベースに
-        base_clip = title_video_clip
+        # ビデオのみを取得（元の音声は除去）
+        base_clip = title_video_clip.without_audio()
 
         # 字幕を生成
         subtitle_clips = []
@@ -226,24 +226,29 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
             subtitle_clips = create_subtitles_for_segment(title_text, title_duration, 0, font_path)
             print(f"[OPENING] Title subtitles created: {len(subtitle_clips)} clips")
 
-        # BGMを設定（最初の部分）
-        if bgm_clip:
-            bgm_part = bgm_clip.subclipped(0, title_duration)
-            base_clip = base_clip.with_audio(bgm_part)
-
         # ヘッダーを追加
-        clips = [base_clip] + subtitle_clips
+        heading_clips = []
         if heading_clip:
             heading_part = heading_clip.with_duration(title_duration)
-            clips.append(heading_part)
+            heading_clips = [heading_part]
 
-        base_clip = CompositeVideoClip(clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        # 字幕とヘッダーをTitle動画に合成
+        if subtitle_clips or heading_clips:
+            clips_to_composite = [base_clip] + subtitle_clips + heading_clips
+            base_clip = CompositeVideoClip(clips_to_composite, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+            print(f"[OPENING] Composited subtitles and heading on title video")
+
+        # Duration を明示的に設定
+        base_clip = base_clip.with_duration(title_duration)
 
         return base_clip
 
     except Exception as e:
         print(f"Error creating opening segment: {e}")
-        return None
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        # エラー時は元のclipのビデオのみを返す（元の音声なし）
+        return title_video_clip.without_audio()
 
 def create_bridge_segment(modulation_video_clip: VideoFileClip, modulation_duration: float,
                        bgm_clip: AudioFileClip, start_time: float) -> VideoFileClip:
@@ -2427,8 +2432,13 @@ async def build_video_with_subtitles(
                 # BGMを動画長に合わせてループまたはトリミング
                 if bgm_clip.duration < total_video_duration:
                     # BGMが短い場合はループ
-                    bgm_clip = loop(bgm_clip, duration=total_video_duration)
-                    print("BGM looped to match video duration")
+                    # Audio用のループ処理：複数回連結して長さを合わせる
+                    num_loops = int(total_video_duration / bgm_clip.duration) + 1
+                    audio_segments = [bgm_clip] * num_loops
+                    bgm_clip = concatenate_audioclips(audio_segments)
+                    # 最終的な長さに合わせてトリミング
+                    bgm_clip = bgm_clip.subclipped(0, total_video_duration)
+                    print(f"BGM looped ({num_loops}x) to match video duration")
                 elif bgm_clip.duration > total_video_duration:
                     # BGMが長い場合はトリミング
                     bgm_clip = bgm_clip.subclipped(0, total_video_duration)
