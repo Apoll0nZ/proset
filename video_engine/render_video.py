@@ -27,7 +27,7 @@ import gc  # メモリ解放用
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from moviepy import AudioFileClip, AudioClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, concatenate_videoclips, CompositeAudioClip
+from moviepy import AudioFileClip, AudioClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, concatenate_videoclips, CompositeAudioClip, ColorClip
 from moviepy.audio.tools.cuts import find_audio_period
 
 # MoviePy v2.0のAudioFileClip.memoize属性欠落エラーを回避するモンキーパッチ
@@ -140,6 +140,14 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
         セグメントのリスト: [opening_segment, main_segments..., closing_segment]
     """
     print("=== INDEPENDENT SEGMENT CREATION START ===")
+    
+    # BGMクリップの状態を確認
+    print(f"[SEGMENT DEBUG] BGM clip received: {bgm_clip is not None}")
+    if bgm_clip:
+        print(f"[SEGMENT DEBUG] BGM duration: {bgm_clip.duration}s")
+    else:
+        print("[SEGMENT DEBUG] BGM clip is None!")
+    
     segments = []
     
     # 1. オープニングセグメント（Title動画）
@@ -3023,6 +3031,11 @@ async def build_video_with_subtitles(
         
         # === 独立セグメント方式による動画生成 ===
         print("=== INDEPENDENT SEGMENT MODE START ===")
+        
+        # BGMクリップの状態を確認
+        print(f"[DEBUG] BGM clip before segments: {bgm_clip is not None}")
+        if bgm_clip:
+            print(f"[DEBUG] BGM duration: {bgm_clip.duration}s")
         
         # 各セグメントを独立して生成
         segments = create_independent_segments(
