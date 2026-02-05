@@ -28,6 +28,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from moviepy import AudioFileClip, AudioClip, CompositeVideoClip, TextClip, ImageClip, VideoFileClip, vfx, concatenate_audioclips, concatenate_videoclips, CompositeAudioClip
+from moviepy.audio.tools.cuts import find_audio_period
 
 # MoviePy v2.0のAudioFileClip.memoize属性欠落エラーを回避するモンキーパッチ
 from moviepy.audio.io.AudioFileClip import AudioFileClip as AudioClipClass
@@ -125,6 +126,161 @@ def transition_scale_animation(clip, is_fade_out=False):
             return clip.with_effects([vfx.Resize(lambda t: max(0.6, 1.0 - 0.8 * t))])
         else:
             return clip.with_effects([vfx.Resize(lambda t: min(1.0, 0.6 + 0.8 * t))])
+
+# 音声波形分析による字幕同期関数
+def analyze_audio_for_subtitle_timing(audio_clip: AudioFileClip, text_chunks: List[str], part_start_time: float = 0) -> List[Dict[str, float]]:
+    """
+    音声波形を分析して、各字幕チャンクの最適な表示時間を計算
+    
+    Args:
+        audio_clip: 分析対象の音声クリップ
+        text_chunks: 字幕テキストのチャンクリスト
+        part_start_time: パートの開始時間（全体の時間軸での位置）
+    
+    Returns:
+        各チャンクの開始時間と終了時間のリスト
+        [{'start': float, 'end': float, 'duration': float, 'text': str}, ...]
+    """
+    print(f"[AUDIO SYNC] Analyzing audio for {len(text_chunks)} subtitle chunks")
+    
+    try:
+        # 音声のサンプルデータを取得
+        audio_array = audio_clip.to_soundarray()
+        sample_rate = audio_clip.fps
+        
+        # ステレオの場合はモノラルに変換
+        if len(audio_array.shape) > 1:
+            audio_array = np.mean(audio_array, axis=1)
+        
+        # 音量レベルを計算（RMS）
+        frame_size = int(sample_rate * 0.1)  # 0.1秒単位で分析
+        volume_levels = []
+        
+        for i in range(0, len(audio_array), frame_size):
+            frame = audio_array[i:i + frame_size]
+            if len(frame) > 0:
+                rms = np.sqrt(np.mean(frame ** 2))
+                volume_levels.append(rms)
+        
+        # 音量のしきい値を計算
+        avg_volume = np.mean(volume_levels)
+        threshold = avg_volume * 0.3  # 平均音量の30%をしきい値に
+        
+        print(f"[AUDIO SYNC] Average volume: {avg_volume:.4f}, Threshold: {threshold:.4f}")
+        
+        # 音声区間を検出
+        speech_segments = []
+        in_speech = False
+        segment_start = 0
+        
+        for i, volume in enumerate(volume_levels):
+            time_point = i * 0.1  # 0.1秒単位
+            
+            if volume > threshold and not in_speech:
+                # 音声開始
+                segment_start = time_point
+                in_speech = True
+            elif volume <= threshold and in_speech:
+                # 音声終了
+                speech_segments.append({
+                    'start': segment_start,
+                    'end': time_point,
+                    'duration': time_point - segment_start
+                })
+                in_speech = False
+        
+        # 最後のセグメントが開始したままなら終了させる
+        if in_speech:
+            speech_segments.append({
+                'start': segment_start,
+                'end': audio_clip.duration,
+                'duration': audio_clip.duration - segment_start
+            })
+        
+        print(f"[AUDIO SYNC] Found {len(speech_segments)} speech segments")
+        
+        # 字幕チャンクと音声セグメントを対応付け
+        subtitle_timings = []
+        total_speech_duration = sum(seg['duration'] for seg in speech_segments)
+        
+        if len(speech_segments) == 0:
+            # 音声セグメントが見つからない場合は均等分配
+            chunk_duration = audio_clip.duration / len(text_chunks)
+            current_time = 0
+            
+            for i, chunk in enumerate(text_chunks):
+                subtitle_timings.append({
+                    'start': part_start_time + current_time,
+                    'end': part_start_time + current_time + chunk_duration,
+                    'duration': chunk_duration,
+                    'text': chunk,
+                    'chunk_index': i
+                })
+                current_time += chunk_duration
+        else:
+            # 音声セグメントに基づいて字幕を配置
+            chunk_index = 0
+            for segment in speech_segments:
+                if chunk_index >= len(text_chunks):
+                    break
+                
+                # 各セグメントに1つ以上の字幕を割り当て
+                segment_duration = segment['duration']
+                chunks_per_segment = max(1, int(len(text_chunks) * segment_duration / total_speech_duration))
+                
+                for i in range(chunks_per_segment):
+                    if chunk_index >= len(text_chunks):
+                        break
+                    
+                    chunk_start = segment['start'] + (i * segment_duration / chunks_per_segment)
+                    chunk_end = chunk_start + (segment_duration / chunks_per_segment)
+                    
+                    subtitle_timings.append({
+                        'start': part_start_time + chunk_start,
+                        'end': part_start_time + chunk_end,
+                        'duration': chunk_end - chunk_start,
+                        'text': text_chunks[chunk_index],
+                        'chunk_index': chunk_index
+                    })
+                    
+                    print(f"[AUDIO SYNC] Chunk {chunk_index}: {chunk_start:.2f}s - {chunk_end:.2f}s")
+                    chunk_index += 1
+            
+            # 残りの字幕を最後に配置
+            while chunk_index < len(text_chunks):
+                last_timing = subtitle_timings[-1] if subtitle_timings else {'end': part_start_time}
+                default_duration = 2.0  # デフォルト2秒
+                
+                subtitle_timings.append({
+                    'start': last_timing['end'],
+                    'end': last_timing['end'] + default_duration,
+                    'duration': default_duration,
+                    'text': text_chunks[chunk_index],
+                    'chunk_index': chunk_index
+                })
+                chunk_index += 1
+        
+        print(f"[AUDIO SYNC] Generated {len(subtitle_timings)} subtitle timings")
+        return subtitle_timings
+        
+    except Exception as e:
+        print(f"[AUDIO SYNC ERROR] Failed to analyze audio: {e}")
+        # フォールバック：均等分配
+        chunk_duration = audio_clip.duration / len(text_chunks) if text_chunks else 2.0
+        current_time = 0
+        
+        subtitle_timings = []
+        for i, chunk in enumerate(text_chunks):
+            subtitle_timings.append({
+                'start': part_start_time + current_time,
+                'end': part_start_time + current_time + chunk_duration,
+                'duration': chunk_duration,
+                'text': chunk,
+                'chunk_index': i
+            })
+            current_time += chunk_duration
+        
+        return subtitle_timings
 
 # 字幕スライドイン・拡大アニメーション関数
 def subtitle_slide_scale_animation(clip):
@@ -2604,20 +2760,27 @@ async def build_video_with_subtitles(
                     current_time += modulation_duration
                     print(f"[DEBUG] Adjusted owner_comment start time to: {current_time}")
                 
-                # 字幕クリップを作成（1920x1080用に調整）
+                # 字幕クリップを作成（音声波形分析ベース）
                 try:
                     chunks = split_subtitle_text(text, max_chars=100)
                     
-                    for chunk_idx, chunk in enumerate(chunks):
-                        # 【修正】字幕の時間を音声時間に完全同期させる
-                        # 1つのパートに複数の字幕チャンクがある場合、音声時間を均等に分配
-                        chunk_count = len(chunks)
-                        if chunk_count > 0:
-                            # 音声の実測時間を均等に分配
-                            chunk_duration = duration / chunk_count
-                            print(f"[SYNC FIX] Part {i}: Audio {duration:.2f}s divided into {chunk_count} chunks = {chunk_duration:.2f}s each")
-                        else:
-                            chunk_duration = duration
+                    # このパートの音声クリップを取得
+                    part_audio_start = current_time
+                    part_audio_end = current_time + duration
+                    part_audio_clip = audio_clip.subclipped(part_audio_start, part_audio_end)
+                    
+                    # 音声波形分析で字幕タイミングを計算
+                    subtitle_timings = analyze_audio_for_subtitle_timing(
+                        part_audio_clip, 
+                        chunks, 
+                        part_start_time=current_time
+                    )
+                    
+                    # 分析結果に基づいて字幕を配置
+                    for timing in subtitle_timings:
+                        chunk = timing['text']
+                        chunk_start = timing['start']
+                        chunk_duration = timing['duration']
                         
                         # テキストの先頭と末尾に余白を追加
                         padded_chunk = f" {chunk} "
@@ -2642,24 +2805,15 @@ async def build_video_with_subtitles(
                             print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
                             txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
                         
-                        # 数珠つなぎロジック：current_timeの位置に字幕を配置
-                        txt_clip = txt_clip.with_start(current_time).with_duration(chunk_duration).with_opacity(1.0).with_fps(FPS)
+                        # 音声分析結果に基づいて字幕を配置
+                        txt_clip = txt_clip.with_start(chunk_start).with_duration(chunk_duration).with_opacity(1.0).with_fps(FPS)
                         
-                        # 同期確認：字幕と音声の時間差をチェック
-                        audio_duration = part_durations[i] if i < len(part_durations) else 0
-                        time_diff = chunk_duration - audio_duration
-                        print(f"[SYNC CHECK] Part {i}:")
-                        print(f"  - Subtitle duration: {chunk_duration:.2f}s")
-                        print(f"  - Audio duration: {audio_duration:.2f}s")
-                        print(f"  - Time difference: {time_diff:.2f}s")
-                        print(f"  - Subtitle start: {current_time:.2f}s")
-                        if abs(time_diff) > 0.5:
-                            print(f"  [WARNING] Significant time difference detected!")
-                        
-                        # current_timeをchunk_durationだけ更新
-                        current_time += chunk_duration
-                        
-                        print(f"[DEBUG] Added subtitle chunk at {current_time - chunk_duration:.2f}s, duration: {chunk_duration:.2f}s")
+                        # 同期確認：音声分析結果と実際の配置時間をチェック
+                        print(f"[AUDIO SYNC] Part {i}, Chunk {timing['chunk_index']}:")
+                        print(f"  - Text: '{chunk[:30]}...'")
+                        print(f"  - Analyzed start: {chunk_start:.2f}s")
+                        print(f"  - Analyzed duration: {chunk_duration:.2f}s")
+                        print(f"  - End time: {chunk_start + chunk_duration:.2f}s")
                         
                         # 生存確認ログ
                         if hasattr(txt_clip, 'size') and txt_clip.size == (0, 0):
@@ -2667,6 +2821,9 @@ async def build_video_with_subtitles(
                             continue
                         
                         text_clips.append(txt_clip)
+                    
+                    # current_timeをこのパートの終了時間に更新
+                    current_time += duration
                         
                 except Exception as e:
                     print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
@@ -2676,7 +2833,7 @@ async def build_video_with_subtitles(
                     print("Continuing without subtitle for this part...")
                 
                 # パート全体の時間をcurrent_timeに加算（字幕がない場合も）
-                if not text or len(text_clips) == 0:
+                if not text or len(text.strip()) == 0:
                     current_time += duration
                     print(f"[DEBUG] No text for part {i}, advancing time by {duration:.2f}s")
                 
