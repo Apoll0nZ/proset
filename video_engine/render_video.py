@@ -167,7 +167,10 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
         title_text = script_parts[0].get("text", "")
 
     if title_video_clip:
-        opening_segment = create_opening_segment(title_video_clip, title_duration, bgm_clip, heading_clip, title_text, font_path)
+        # タイトルの音声長を取得（part_durations[0]がタイトル部分の長さ）
+        title_audio_duration = part_durations[0] if part_durations else title_duration
+        print(f"[OPENING DEBUG] Title video duration: {title_duration:.2f}s, Title audio duration: {title_audio_duration:.2f}s")
+        opening_segment = create_opening_segment(title_video_clip, title_duration, title_audio_duration, bgm_clip, heading_clip, title_text, font_path)
         if opening_segment:
             segments.append(opening_segment)
     
@@ -212,7 +215,7 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
     print(f"Created {len(segments)} segments")
     return segments
 
-def create_opening_segment(title_video_clip: VideoFileClip, title_duration: float,
+def create_opening_segment(title_video_clip: VideoFileClip, title_duration: float, title_audio_duration: float,
                         bgm_clip: AudioFileClip, heading_clip: ImageClip,
                         title_text: str = "", font_path: str = None) -> VideoFileClip:
     """オープニングセグメントを生成"""
@@ -220,25 +223,25 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
         # ビデオのみを取得（元の音声は除去）
         base_clip = title_video_clip.without_audio()
 
-        # 字幕を生成（ビデオ終了後に開始）
+        # 字幕を生成（音声の長さに合わせて分散）
         subtitle_clips = []
         subtitle_duration_total = 0
 
         if title_text:
-            # 字幕はビデオ終了後（title_duration以降）に開始
+            # 字幕は音声の長さに合わせて分散
             chunks = split_subtitle_text(title_text, max_chars=100)
             chunk_count = len(chunks)
 
             if chunk_count > 0:
-                # 各字幕の表示時間（デフォルト2秒）
-                per_subtitle_duration = 2.0
-                subtitle_duration_total = per_subtitle_duration * chunk_count
+                # 各字幕の表示時間（音声長に基づいて計算）
+                per_subtitle_duration = title_audio_duration / chunk_count
+                subtitle_duration_total = title_audio_duration
 
-                print(f"[OPENING] Creating {chunk_count} title subtitle chunks (video_ends_at={title_duration:.2f}s)")
+                print(f"[OPENING] Creating {chunk_count} title subtitle chunks (audio_duration={title_audio_duration:.2f}s, per_chunk={per_subtitle_duration:.2f}s)")
 
                 for i, chunk in enumerate(chunks):
-                    # 各字幕の開始時間（ビデオ終了後）
-                    chunk_start = title_duration + (i * per_subtitle_duration)
+                    # 各字幕の開始時間（音声に合わせて）
+                    chunk_start = i * per_subtitle_duration
 
                     padded_chunk = f" {chunk} "
                     txt_clip = TextClip(
@@ -260,7 +263,7 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
                     except:
                         txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
 
-                    # ビデオ終了後のタイミングで配置
+                    # 音声に合わせてタイミングを配置
                     txt_clip = txt_clip.with_start(chunk_start).with_duration(per_subtitle_duration).with_fps(FPS)
                     subtitle_clips.append(txt_clip)
 
@@ -272,10 +275,10 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
             heading_part = heading_clip.with_duration(title_duration)
             heading_clips = [heading_part]
 
-        # Timeline全体の期間を決定（ビデオのみ - 字幕はメイン動画レイヤーで表示）
-        total_segment_duration = title_duration
+        # Timeline全体の期間を決定（音声の長さに合わせる）
+        total_segment_duration = title_audio_duration
 
-        # ベースクリップをビデオ長に合わせる（字幕はメイン動画層で処理）
+        # ベースクリップをビデオ長に合わせる（その後、音声長まで延長）
         base_clip_extended = base_clip.with_duration(total_segment_duration)
 
         # ビデオ、ヘッダー、字幕を合成
@@ -283,7 +286,7 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
 
         if len(all_clips) > 1:
             final_clip = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
-            print(f"[OPENING] Composited: video({title_duration:.2f}s) + subtitles({subtitle_duration_total:.2f}s) = {total_segment_duration:.2f}s total")
+            print(f"[OPENING] Composited: video({title_duration:.2f}s) + audio({title_audio_duration:.2f}s) + subtitles({subtitle_duration_total:.2f}s) = {total_segment_duration:.2f}s total")
         else:
             final_clip = base_clip_extended
             print(f"[OPENING] No subtitles, using video only: {total_segment_duration:.2f}s")
@@ -832,13 +835,9 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         else:
             print("[AUDIO] Background video has no audio")
         
-        # DEBUG_MODEなら30秒にカット
-        if DEBUG_MODE:
-            bg_clip = bg_clip.subclipped(0, 30)
-            print("DEBUG_MODE: Background video trimmed to 30s")
-        else:
-            bg_clip = bg_clip.subclipped(0, total_duration)
-            print(f"Background video trimmed to {total_duration:.2f}s")
+        # 動画をトリムして総動画長に合わせる
+        bg_clip = bg_clip.subclipped(0, total_duration)
+        print(f"Background video trimmed to {total_duration:.2f}s")
         
         # 中央配置設定（1920x1080キャンバスの中央に）
         bg_clip = bg_clip.with_position("center").with_start(0).with_opacity(1.0).with_fps(FPS)
@@ -3200,10 +3199,10 @@ async def build_video_with_subtitles(
             final_audio_elements.append(audio_clip.with_start(title_duration))
             print(f"[AUDIO] Added main audio: {audio_clip.duration:.2f}s at start={title_duration:.2f}s")
 
-        # BGMを最終段階で追加（全体にBGMを混合）
+        # BGMを最終段階で追加（タイトル動画後に開始）
         if bgm_clip:
-            final_audio_elements.append(bgm_clip.with_start(0.0))
-            print(f"[AUDIO] Added BGM: {bgm_clip.duration:.2f}s at start=0.0s (volume already at 10%)")
+            final_audio_elements.append(bgm_clip.with_start(title_duration))
+            print(f"[AUDIO] Added BGM: {bgm_clip.duration:.2f}s at start={title_duration:.2f}s (volume already at 10%)")
         else:
             print(f"[AUDIO] Warning: No BGM detected!")
 
