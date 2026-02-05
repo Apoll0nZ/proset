@@ -2812,123 +2812,64 @@ async def build_video_with_subtitles(
             else:
                 print(f"[SUCCESS] Background clip size matches target")
         
-        # --- 音声トラックの再構築（フォーマット統一版） ---
+        # --- 音声トラックの再構築（バグ完全排除版） ---
         final_audio_elements = []
-        TARGET_FPS = 44100 # サンプリングレートを統一
+        TARGET_SR = 44100  # サンプリングレートを固定
         
-        # ヘルパー関数：音声クリップの属性を強制統一する
-        def patch_audio(clip):
-            if clip is None: return None
-            # fps(サンプリングレート)を設定し、強制的に2チャンネル(ステレオ)化を試みる
-            return clip.with_fps(TARGET_FPS)
-
-        # 1. BGMの準備
+        # 1. BGMの準備（最初に追加）
         if bgm_clip:
             try:
-                bgm_duration = video.duration
-                loops_needed = int(bgm_duration / bgm_clip.duration) + 1
-                bgm_to_mix = concatenate_audioclips([bgm_clip] * loops_needed)
-                
-                # フォーマット統一と属性設定
-                bgm_to_mix = patch_audio(bgm_to_mix)
-                bgm_to_mix = bgm_to_mix.with_start(0).with_duration(bgm_duration).with_volume_scaled(0.1)
-                
+                # BGMを動画全体の長さに合わせて調整
+                bgm_dur = video.duration
+                loops = int(bgm_dur / bgm_clip.duration) + 1
+                bgm_to_mix = concatenate_audioclips([bgm_clip] * loops).with_duration(bgm_dur)
+                # FPSを統一し、音量を控えめに設定。開始は絶対0秒。
+                bgm_to_mix = bgm_to_mix.with_fps(TARGET_SR).with_start(0).with_volume_scaled(0.12)
                 final_audio_elements.append(bgm_to_mix)
-                print(f"[AUDIO] BGM prepared and patched: 0s - {bgm_duration:.2f}s")
+                print(f"[AUDIO] BGM added: 0s - {bgm_dur:.2f}s")
             except Exception as e:
-                print(f"[AUDIO ERROR] BGM loop failed: {e}")
+                print(f"[AUDIO ERROR] BGM setup failed: {e}")
 
-        # 2. Title動画の音声
+        # 2. Title動画の音声（ソースから確実に抽出）
         if title_video_clip and title_video_clip.audio:
-            t_audio = patch_audio(title_video_clip.audio)
-            t_audio = t_audio.with_start(0).with_volume_scaled(1.0)
+            t_audio = title_video_clip.audio.with_fps(TARGET_SR).with_start(0).with_volume_scaled(1.0)
             final_audio_elements.append(t_audio)
-            print(f"[AUDIO] Title audio patched: 0s - {title_duration:.2f}s")
+            print(f"[AUDIO] Title audio added: 0s - {title_duration:.2f}s")
         
-        # 3. 本編ナレーション
+        # 3. 本編ナレーション（Title終了後）
         if audio_clip:
-            n_audio = patch_audio(audio_clip)
-            n_audio = n_audio.with_start(title_duration).with_volume_scaled(1.2)
+            n_audio = audio_clip.with_fps(TARGET_SR).with_start(title_duration).with_volume_scaled(1.2)
             final_audio_elements.append(n_audio)
-            print(f"[AUDIO] Narration patched: starts at {title_duration:.2f}s")
+            print(f"[AUDIO] Narration added: starts at {title_duration:.2f}s")
         
-        # 4. Modulation（ブリッジ）動画の音声
+        # 4. Modulation動画の音声
         if modulation_video_clip and modulation_video_clip.audio:
-            m_audio = patch_audio(modulation_video_clip.audio)
-            m_audio = m_audio.with_start(modulation_start_time)
+            m_audio = modulation_video_clip.audio.with_fps(TARGET_SR).with_start(modulation_start_time)
             final_audio_elements.append(m_audio)
-            print(f"[AUDIO] Modulation audio patched at {modulation_start_time:.2f}s")
+            print(f"[AUDIO] Modulation audio added: starts at {modulation_start_time:.2f}s")
 
-        # 合成
+        # 合成と正規化
         if final_audio_elements:
-            # すべてのfpsが揃った状態で合成
             final_audio = CompositeAudioClip(final_audio_elements)
-            
-            # 全体の長さを計算
-            audio_endpoints = [a.start + a.duration for a in final_audio_elements]
-            final_max_dur = max(audio_endpoints)
-            final_audio = final_audio.with_duration(final_max_dur)
-            print(f"[AUDIO] Composite complete with patched elements. Total layers: {len(final_audio_elements)}")
+            # 全体の長さを、全音声の終端に合わせる
+            max_audio_dur = max([(a.start + a.duration) for a in final_audio_elements])
+            final_audio = final_audio.with_duration(max_audio_dur)
         else:
-            final_audio = AudioClip(lambda t: [0, 0], duration=video.duration, fps=TARGET_FPS)
-            print("[AUDIO] No valid audio clips found, using silence")
-        
-        # 属性パッチを徹底適用（CompositeAudioClip直後）
-        final_audio.memoize = False
-        if not hasattr(final_audio, 'frame_function'):
-            final_audio.frame_function = lambda t: final_audio.get_frame(t)
-            print(f"[AUDIO] Applied frame_function patch to final_audio")
-        
-        # MoviePy v2.0のバグ回避：CompositeAudioClipを一度ファイルに書き出して読み込む
+            final_audio = AudioClip(lambda t: [0, 0], duration=video.duration, fps=TARGET_SR)
+
+        # 【超重要】WAV書き出し時の設定をステレオに強制
         import time
-        timestamp = int(time.time())
-        temp_final_audio_path = os.path.join(LOCAL_TEMP_DIR, f"temp_final_audio_{timestamp}.wav")
-        print(f"[AUDIO BUG FIX] Writing final audio to temporary file: {temp_final_audio_path}")
+        temp_wav = os.path.join(LOCAL_TEMP_DIR, f"final_fixed_audio_{int(time.time())}.wav")
+        # nchannels=2 を指定することでBGMとナレーションの衝突を防ぐ
+        final_audio.write_audiofile(temp_wav, fps=TARGET_SR, nchannels=2, codec="pcm_s16le", logger=None)
         
-        # 既存ファイルがあれば削除
-        if os.path.exists(temp_final_audio_path):
-            os.remove(temp_final_audio_path)
+        # 再読み込み
+        fixed_audio = AudioFileClip(temp_wav)
+        video = video.with_audio(fixed_audio)
         
-        try:
-            # CompositeAudioClipをWAVファイルに書き出し
-            final_audio.write_audiofile(temp_final_audio_path, codec="pcm_s16le", fps=44100, logger=None)
-            print(f"[AUDIO BUG FIX] Successfully wrote final audio to: {temp_final_audio_path}")
-            
-            # 書き出したWAVファイルをAudioFileClipで読み込み直す
-            final_audio = AudioFileClip(temp_final_audio_path)
-            
-            # MoviePy v2.0のバグ封じ込め：属性を明示的に設定
-            final_audio.memoize = False
-            if not hasattr(final_audio, 'frame_function'):
-                final_audio.frame_function = lambda t: final_audio.get_frame(t)
-            
-            print(f"[AUDIO BUG FIX] Reloaded audio with bug fixes applied")
-            print(f"[AUDIO BUG FIX] Final audio duration: {final_audio.duration:.2f}s")
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to write/reload audio file: {e}")
-            print("[ERROR] Falling back to direct audio assignment (may cause MoviePy v2.0 issues)")
-            
-            # フォールバック：直接final_audioにframe_functionを設定
-            final_audio.memoize = False
-            if not hasattr(final_audio, 'frame_function'):
-                final_audio.frame_function = lambda t: final_audio.get_frame(t)
-        
-        # 最終音声を動画に設定
-        video = video.with_audio(final_audio)
-        
-        # 動画の最終長さを音声と完全同期させる
-        final_audio_duration = final_audio.duration
-        print(f"[SYNC] Final audio duration: {final_audio_duration:.2f}s")
-        print(f"[SYNC] Current video duration: {video.duration:.2f}s")
-        
-        # 動画の長さを音声に合わせて調整
-        if video.duration != final_audio_duration:
-            print(f"[SYNC] Adjusting video duration to match audio: {final_audio_duration:.2f}s")
-            video = video.subclipped(0, final_audio_duration)
-            print(f"[SYNC] Video duration adjusted to: {video.duration:.2f}s")
-        else:
-            print(f"[SYNC] Video and audio durations already synchronized: {final_audio_duration:.2f}s")
+        # 長さの最終同期（subclipする前に音声をセットする）
+        if video.duration != fixed_audio.duration:
+            video = video.with_duration(fixed_audio.duration)
         
         if DEBUG_MODE:
             debug_duration = min(30, video.duration)
