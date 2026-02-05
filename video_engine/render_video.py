@@ -3100,7 +3100,7 @@ async def build_video_with_subtitles(
         
         # DEBUG_MODEの場合は短い動画を出力
         if DEBUG_MODE:
-            video = video.subclipped(0, 30.0)
+            video = video.subclipped(0, 60.0)
         
         print(f"Writing video to: {out_video_path}")
         
