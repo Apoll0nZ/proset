@@ -239,22 +239,41 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
     text = part.get("text", "")
     
     print(f"[MAIN SEGMENT] Creating {part_type} segment: {duration:.2f}s")
+    print(f"[MAIN SEGMENT DEBUG] start_time: {start_time:.2f}s, end_time: {start_time + duration:.2f}s")
+    print(f"[MAIN SEGMENT DEBUG] audio_clip duration: {audio_clip.duration:.2f}s")
+    print(f"[MAIN SEGMENT DEBUG] text length: {len(text)} chars")
+    print(f"[MAIN SEGMENT DEBUG] image_clips available: {len(image_clips)}")
     
     try:
         # 背景クリップを作成
         bg_clip = create_background_clip(duration)
+        print(f"[MAIN SEGMENT DEBUG] Background clip created: {bg_clip.duration:.2f}s")
         
         # このパートの音声を抽出
-        part_audio = audio_clip.subclipped(start_time, start_time + duration)
+        end_time = start_time + duration
+        if end_time > audio_clip.duration:
+            print(f"[MAIN SEGMENT ERROR] end_time ({end_time:.2f}) > audio_clip.duration ({audio_clip.duration:.2f})")
+            # クリップの長さに合わせて調整
+            end_time = audio_clip.duration
+            duration = end_time - start_time
+            print(f"[MAIN SEGMENT FIX] Adjusted duration to: {duration:.2f}s")
+        
+        part_audio = audio_clip.subclipped(start_time, end_time)
+        print(f"[MAIN SEGMENT DEBUG] Part audio extracted: {part_audio.duration:.2f}s")
         
         # 字幕を生成（このセグメント内での絶対時間）
         subtitle_clips = create_subtitles_for_segment(text, duration, start_time, font_path)
+        print(f"[MAIN SEGMENT DEBUG] Subtitles created: {len(subtitle_clips)} clips")
         
         # 画像を配置
         segment_images = get_images_for_time_range(image_clips, start_time, start_time + duration)
+        print(f"[MAIN SEGMENT DEBUG] Images for segment: {len(segment_images)} clips")
+        for i, img in enumerate(segment_images[:3]):  # 最初の3つだけ表示
+            print(f"[MAIN SEGMENT DEBUG] Image {i}: start={img.start:.2f}s, duration={img.duration:.2f}s")
         
         # 全クリップを合成
         clips = [bg_clip] + segment_images + subtitle_clips
+        print(f"[MAIN SEGMENT DEBUG] Total clips to composite: {len(clips)}")
         
         if heading_clip and part_type != "owner_comment":
             heading_part = heading_clip.with_duration(duration)
@@ -262,15 +281,20 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
         
         # 動画を合成
         video_segment = CompositeVideoClip(clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        print(f"[MAIN SEGMENT DEBUG] Video composite created: {video_segment.duration:.2f}s")
         
         # 音声を設定
         if bgm_clip:
+            print(f"[MAIN SEGMENT DEBUG] BGM available, mixing audio...")
             # BGM + ナレーションをミックス
             bgm_part = bgm_clip.subclipped(start_time, start_time + duration)
             mixed_audio = CompositeAudioClip([part_audio, bgm_part])
             video_segment = video_segment.with_audio(mixed_audio)
+            print(f"[MAIN SEGMENT DEBUG] Audio mixed: narration + BGM")
         else:
+            print(f"[MAIN SEGMENT DEBUG] No BGM, using narration only")
             video_segment = video_segment.with_audio(part_audio)
+            print(f"[MAIN SEGMENT DEBUG] Audio set: narration only")
         
         print(f"[MAIN SEGMENT] {part_type} segment completed: {duration:.2f}s")
         return video_segment
@@ -2340,6 +2364,7 @@ async def build_video_with_subtitles(
                 print(f"[BGM SUCCESS] BGM loaded: duration={bgm_clip.duration:.2f}s, fps={bgm_clip.fps}")
                 print(f"[BGM DEBUG] BGM channels: {getattr(bgm_clip, 'nchannels', 'N/A')}")
                 print(f"BGM original duration: {bgm_clip.duration:.2f} seconds")
+                print(f"[BGM DEBUG] BGM will be passed to segments: {bgm_clip is not None}")
                 
                 # 動画の総時間を計算（オープニング + 本編 + ブリッジ）
                 total_video_duration = total_duration + title_duration + modulation_duration
@@ -2374,11 +2399,15 @@ async def build_video_with_subtitles(
                 import traceback
                 print(f"[BGM ERROR] Traceback: {traceback.format_exc()}")
                 bgm_clip = None
+                print(f"[BGM DEBUG] bgm_clip set to None due to error")
         else:
             if bgm_path:
                 print(f"[BGM ERROR] BGM file not found: {bgm_path}")
             else:
-                print("[BGM ERROR] download_background_music() returned None")
+                print(f"[BGM ERROR] No BGM path provided")
+            bgm_clip = None
+            print(f"[BGM DEBUG] bgm_clip set to None - no BGM file")
+            print("[BGM ERROR] download_background_music() returned None")
             print("No BGM available, continuing without background music")
         
         print("=== BGM DEBUG END ===")
