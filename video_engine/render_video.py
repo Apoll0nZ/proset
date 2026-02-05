@@ -155,7 +155,6 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
         opening_segment = create_opening_segment(title_video_clip, title_duration, bgm_clip, heading_clip)
         if opening_segment:
             segments.append(opening_segment)
-            print(f"[SEGMENT] Opening segment created: {title_duration:.2f}s")
     
     # 2. メインセグメント（各パートを独立生成）
     current_audio_time = title_duration
@@ -168,7 +167,6 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
             bridge_segment = create_bridge_segment(modulation_video_clip, modulation_duration, bgm_clip, current_audio_time)
             if bridge_segment:
                 segments.append(bridge_segment)
-                print(f"[SEGMENT] Bridge segment created: {modulation_duration:.2f}s")
             current_audio_time += modulation_duration
         
         # メインコンテンツセグメント
@@ -179,24 +177,19 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
             )
             if main_segment:
                 segments.append(main_segment)
-                print(f"[SEGMENT] Main segment {i} created: {duration:.2f}s")
             current_audio_time += duration
     
     # 3. まとめセグメント（必要に応じて）
     closing_segment = create_closing_segment(bgm_clip, heading_clip)
     if closing_segment:
         segments.append(closing_segment)
-        print(f"[SEGMENT] Closing segment created")
     
-    print(f"[SEGMENT] Total segments created: {len(segments)}")
-    print("=== INDEPENDENT SEGMENT CREATION END ===")
+    print(f"Created {len(segments)} segments")
     return segments
 
 def create_opening_segment(title_video_clip: VideoFileClip, title_duration: float, 
                         bgm_clip: AudioFileClip, heading_clip: ImageClip) -> VideoFileClip:
     """オープニングセグメントを生成"""
-    print(f"[OPENING] Creating opening segment: {title_duration:.2f}s")
-    
     try:
         # Title動画をベースに
         base_clip = title_video_clip
@@ -212,11 +205,10 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
             clips = [base_clip, heading_part]
             base_clip = CompositeVideoClip(clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
         
-        print(f"[OPENING] Opening segment completed: {title_duration:.2f}s")
         return base_clip
         
     except Exception as e:
-        print(f"[OPENING ERROR] Failed to create opening segment: {e}")
+        print(f"Error creating opening segment: {e}")
         return None
 
 def create_bridge_segment(modulation_video_clip: VideoFileClip, modulation_duration: float,
@@ -3059,41 +3051,30 @@ async def build_video_with_subtitles(
             segments = [ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=5.0)]
         
         # セグメントを連結して最終動画を生成
-        print(f"[FINAL] Concatenating {len(segments)} segments...")
         try:
             video = concatenate_videoclips(segments, method="compose")
             total_duration = sum(seg.duration for seg in segments)
             video = video.with_duration(total_duration)
-            print(f"[FINAL] Final video created: {total_duration:.2f}s")
+            print(f"Video created: {total_duration:.2f}s from {len(segments)} segments")
             
         except Exception as e:
-            print(f"[FINAL ERROR] Failed to concatenate segments: {e}")
-            print("[FINAL] Falling back to original method...")
-            # フォールバック：既存の方法を使用
-            return create_video_with_original_method(...)
+            print(f"Error concatenating segments: {e}")
+            return None
         
-        print("=== INDEPENDENT SEGMENT MODE END ===")
-        
-        # === 独立セグメント方式：音声処理と出力 ===
-        print("=== INDEPENDENT SEGMENT AUDIO PROCESSING ===")
-        
-        # 音声処理（独立セグメント方式）
+        # === 音声処理 ===
         final_audio_elements = []
         
         # Title音声を追加
         if title_video_clip and title_video_clip.audio:
             title_audio = title_video_clip.audio
             final_audio_elements.append(title_audio.with_start(0.0))
-            print(f"[AUDIO] Title audio added: 0s - {title_audio.duration}s")
         
         # メイン音声を追加
         if audio_clip:
             final_audio_elements.append(audio_clip.with_start(title_duration))
-            print(f"[AUDIO] Main audio added: starts at {title_duration}s")
         
         # BGMを追加
         if bgm_clip:
-            # BGMを動画全体に設定
             bgm_duration = video.duration
             if bgm_clip.duration < bgm_duration:
                 bgm_for_video = bgm_clip.loop(duration=bgm_duration)
@@ -3101,61 +3082,33 @@ async def build_video_with_subtitles(
                 bgm_for_video = bgm_clip.subclipped(0, bgm_duration)
             
             final_audio_elements.append(bgm_for_video.with_start(0.0))
-            print(f"[AUDIO] BGM added: 0s - {bgm_duration}s")
         
         # 音声を合成
         if final_audio_elements:
             final_audio = CompositeAudioClip(final_audio_elements)
-            print(f"[AUDIO SUCCESS] CompositeAudioClip created with {len(final_audio_elements)} elements")
+            print(f"Audio mixed: {len(final_audio_elements)} tracks")
         else:
-            print("[AUDIO WARNING] No audio elements found!")
+            print("Warning: No audio elements found!")
             final_audio = None
         
         # 動画に音声を設定
         if final_audio:
             video = video.with_audio(final_audio)
-            print(f"[AUDIO SUCCESS] Audio attached to video")
         
-        # 動画出力処理に進む（従来の処理をスキップ）
-        print("=== SKIPPING TRADITIONAL PROCESSING - GOING TO VIDEO OUTPUT ===")
-        
-        # === 動画出力処理 ===
-        print("=== VIDEO OUTPUT PROCESSING ===")
-        
-        # 動画の最終確認
-        print(f"[DEBUG] Final video duration: {video.duration:.2f}s")
-        print(f"[DEBUG] Final video size: {video.size}")
-        
-        # 動画ファイル出力処理に進む
-        print("=== STARTING VIDEO FILE OUTPUT ===")
+        # 動画出力処理に進む
+        print("=== VIDEO OUTPUT ===")
         
         # DEBUG_MODEの場合は短い動画を出力
         if DEBUG_MODE:
-            print("DEBUG_MODE: Writing 30.0s of video")
             video = video.subclipped(0, 30.0)
         
         print(f"Writing video to: {out_video_path}")
         
-        # 品質チェック用ログ：画像クリップの数と開始時間
-        print(f"[QUALITY CHECK] Total image clips: {len(image_clips)}")
-        for i, img_clip in enumerate(image_clips):
-            start_time = getattr(img_clip, 'start', 'N/A')
-            duration = getattr(img_clip, 'duration', 'N/A')
-            print(f"[QUALITY CHECK] Image {i}: start={start_time}s, duration={duration}s")
-        
         bitrate = "800k" if DEBUG_MODE else VIDEO_BITRATE
-        if DEBUG_MODE:
-            print(f"DEBUG_MODE: Using low bitrate for preview: {bitrate}")
-        else:
-            print(f"Using high quality bitrate: {bitrate}")
-
+        
         # ffmpeg実行コマンドの可視化
         # DEBUG_MODE時も8Mbpsを強制する
         ffmpeg_params = ['-crf', '23', '-b:v', '8000k'] if not DEBUG_MODE else ['-crf', '28', '-preset', 'ultrafast', '-b:v', '8000k']
-        print(f"[INFO] FFmpeg Parameters: {ffmpeg_params}")
-        print(f"[INFO] Video Settings: fps=30, codec=libx264, preset={'medium' if not DEBUG_MODE else 'ultrafast'}")
-        print(f"[INFO] Bitrate Settings: bitrate={bitrate}, video_bitrate=8000k (forced)")
-        print(f"[INFO] Audio Settings: codec=aac, audio_bitrate=256k")
 
         video.write_videofile(
             out_video_path,
