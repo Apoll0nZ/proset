@@ -170,13 +170,23 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
         # タイトルの音声長を取得（part_durations[0]がタイトル部分の長さ）
         title_audio_duration = part_durations[0] if part_durations else title_duration
         print(f"[OPENING DEBUG] Title video duration: {title_duration:.2f}s, Title audio duration: {title_audio_duration:.2f}s")
-        opening_segment = create_opening_segment(title_video_clip, title_duration, title_audio_duration, bgm_clip, heading_clip, title_text, font_path)
+        # Opening segmentはTitle動画の長さ(1.81s)のみ
+        opening_segment = create_opening_segment(title_video_clip, title_duration, bgm_clip, heading_clip, title_text, font_path)
         if opening_segment:
             segments.append(opening_segment)
-    
+
     # 2. メインセグメント（各パートを独立生成）
+    # Title動画(1.81s)の後、Title音声の残り(1.81s～12.68s)から開始
     current_audio_time = title_duration
-    audio_time_offset = 0  # オーディオクリップ内での時間オフセット
+    audio_time_offset = title_duration  # Title音声の開始位置(1.81s)
+    title_audio_duration = part_durations[0] if part_durations else title_duration
+    title_text = script_parts[0].get("text", "") if script_parts and script_parts[0].get("part") == "title" else ""
+
+    # Title動画後のメインセグメント開始時に、Title音声の残りを含める
+    print(f"[DEBUG] Title segment ends at {title_duration:.2f}s, Title audio continues until {title_audio_duration:.2f}s")
+    print(f"[DEBUG] Main segment will include Title audio remainder: {title_duration:.2f}s ~ {title_audio_duration:.2f}s")
+
+    first_main_segment = True  # 最初のメインセグメントフラグ
 
     for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
         part_type = part.get("part", "")
@@ -185,7 +195,8 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
         # Titleパートは既にオープニングセグメントで処理済みのため、スキップ
         if part_type == "title":
             print(f"[DEBUG] Skipping title part in main segment loop (audio offset: {duration:.2f}s)")
-            audio_time_offset += duration  # タイトル音声のオフセットを加算
+            # Title音声のうち、ビデオが終わった後の部分(title_duration～duration)をメインに含める
+            audio_time_offset = duration  # 次のセグメント用にオフセットを更新
             continue
 
         if part_type == "owner_comment" and modulation_video_clip:
@@ -200,12 +211,16 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
             main_segment = create_main_content_segment(
                 part, duration, audio_clip, bgm_clip,
                 current_audio_time, image_clips, heading_clip, font_path,
-                audio_start_time=audio_time_offset  # 音声クリップ内での絶対位置
+                audio_start_time=audio_time_offset,  # 音声クリップ内での絶対位置
+                title_duration=title_duration if first_main_segment else None,  # 最初のセグメントのみTitle情報を渡す
+                title_audio_duration=title_audio_duration if first_main_segment else None,
+                title_text=title_text if first_main_segment else ""
             )
             if main_segment:
                 segments.append(main_segment)
             current_audio_time += duration
             audio_time_offset += duration
+            first_main_segment = False  # 最初のセグメント処理完了
     
     # 3. まとめセグメント（必要に応じて）
     closing_segment = create_closing_segment(bgm_clip, heading_clip)
@@ -215,68 +230,16 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
     print(f"Created {len(segments)} segments")
     return segments
 
-def create_opening_segment(title_video_clip: VideoFileClip, title_duration: float, title_audio_duration: float,
+def create_opening_segment(title_video_clip: VideoFileClip, title_duration: float,
                         bgm_clip: AudioFileClip, heading_clip: ImageClip,
                         title_text: str = "", font_path: str = None) -> VideoFileClip:
-    """オープニングセグメントを生成"""
+    """オープニングセグメントを生成（Title動画のみ）"""
     try:
         # ビデオのみを取得（元の音声は除去）
         base_clip = title_video_clip.without_audio()
 
-        # ビデオの長さが音声より短い場合はループして埋める
-        if title_duration < title_audio_duration:
-            # ビデオをループして音声の長さに合わせる
-            num_loops = int(title_audio_duration / title_duration) + 1
-            looped_clips = [base_clip] * num_loops
-            base_clip = concatenate_videoclips(looped_clips)
-            base_clip = base_clip.subclipped(0, title_audio_duration)
-            print(f"[OPENING] Video looped to match audio: {title_duration:.2f}s → {title_audio_duration:.2f}s")
-
-        # 字幕を生成（音声の長さに合わせて分散）
-        subtitle_clips = []
-        subtitle_duration_total = 0
-
-        if title_text:
-            # 字幕は音声の長さに合わせて分散
-            chunks = split_subtitle_text(title_text, max_chars=100)
-            chunk_count = len(chunks)
-
-            if chunk_count > 0:
-                # 各字幕の表示時間（音声長に基づいて計算）
-                per_subtitle_duration = title_audio_duration / chunk_count
-                subtitle_duration_total = title_audio_duration
-
-                print(f"[OPENING] Creating {chunk_count} title subtitle chunks (audio_duration={title_audio_duration:.2f}s, per_chunk={per_subtitle_duration:.2f}s)")
-
-                for i, chunk in enumerate(chunks):
-                    # 各字幕の開始時間（音声に合わせて）
-                    chunk_start = i * per_subtitle_duration
-
-                    padded_chunk = f" {chunk} "
-                    txt_clip = TextClip(
-                        text=padded_chunk,
-                        font_size=48,
-                        color="black",
-                        font=font_path,
-                        method="caption",
-                        size=(1600, None),
-                        bg_color="white",
-                        text_align="left",
-                        stroke_color="black",
-                        stroke_width=1,
-                    )
-
-                    # アニメーションを適用
-                    try:
-                        txt_clip = subtitle_slide_scale_animation(txt_clip)
-                    except:
-                        txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
-
-                    # 音声に合わせてタイミングを配置
-                    txt_clip = txt_clip.with_start(chunk_start).with_duration(per_subtitle_duration).with_fps(FPS)
-                    subtitle_clips.append(txt_clip)
-
-                    print(f"[OPENING] Title subtitle {i}: start={chunk_start:.2f}s duration={per_subtitle_duration:.2f}s")
+        # ビデオをタイトル時間に合わせる（ビデオのみ、音声なし）
+        base_clip = base_clip.with_duration(title_duration)
 
         # ヘッダーを追加（ビデオ期間のみ）
         heading_clips = []
@@ -284,21 +247,15 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
             heading_part = heading_clip.with_duration(title_duration)
             heading_clips = [heading_part]
 
-        # Timeline全体の期間を決定（音声の長さに合わせる）
-        total_segment_duration = title_audio_duration
-
-        # ベースクリップをビデオ長に合わせる（その後、音声長まで延長）
-        base_clip_extended = base_clip.with_duration(total_segment_duration)
-
-        # ビデオ、ヘッダー、字幕を合成
-        all_clips = [base_clip_extended] + heading_clips + subtitle_clips
+        # Opening segmentはTitle動画のみ（subtitle_clipsは含めない）
+        all_clips = [base_clip] + heading_clips
 
         if len(all_clips) > 1:
             final_clip = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
-            print(f"[OPENING] Composited: video({title_duration:.2f}s) + audio({title_audio_duration:.2f}s) + subtitles({subtitle_duration_total:.2f}s) = {total_segment_duration:.2f}s total")
+            print(f"[OPENING] Composited: video({title_duration:.2f}s) only = {title_duration:.2f}s total")
         else:
-            final_clip = base_clip_extended
-            print(f"[OPENING] No subtitles, using video only: {total_segment_duration:.2f}s")
+            final_clip = base_clip
+            print(f"[OPENING] Using video only: {title_duration:.2f}s")
 
         return final_clip
 
@@ -332,7 +289,10 @@ def create_bridge_segment(modulation_video_clip: VideoFileClip, modulation_durat
 def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFileClip,
                            bgm_clip: AudioFileClip, start_time: float,
                            image_clips: List, heading_clip: ImageClip, font_path: str,
-                           audio_start_time: float = None) -> VideoFileClip:
+                           audio_start_time: float = None,
+                           title_duration: float = None,
+                           title_audio_duration: float = None,
+                           title_text: str = "") -> VideoFileClip:
     """メインコンテンツセグメントを生成"""
     part_type = part.get("part", "")
     text = part.get("text", "")
@@ -366,8 +326,32 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
         print(f"[MAIN SEGMENT DEBUG] Part audio extracted: {part_audio.duration:.2f}s")
         
         # 字幕を生成（このセグメント内での相対時間）
-        subtitle_clips = create_subtitles_for_segment(text, duration, start_time, font_path)
-        print(f"[MAIN SEGMENT DEBUG] Subtitles created: {len(subtitle_clips)} clips")
+        subtitle_clips = []
+
+        # このセグメントがtitle情報を受け取った場合（最初のメインセグメントのみ）
+        if title_duration is not None and title_audio_duration is not None and title_text:
+            print(f"[MAIN SEGMENT DEBUG] Processing title audio/subtitles (first main segment)...")
+
+            # Title音声の残部（title_durationからtitle_audio_durationまで）を抽出
+            title_audio_remainder_start = title_duration  # 1.81s
+            title_audio_remainder_end = title_audio_duration  # 12.68s
+            title_audio_remainder = audio_clip.subclipped(title_audio_remainder_start, title_audio_remainder_end)
+            title_subtitle_duration = title_audio_remainder.duration  # 10.87s
+
+            print(f"[MAIN SEGMENT DEBUG] Title audio remainder: {title_audio_remainder_start:.2f}s - {title_audio_remainder_end:.2f}s = {title_subtitle_duration:.2f}s")
+
+            # Title字幕を生成（セグメント内での相対時間で0秒から開始）
+            title_subtitle_clips = create_subtitles_for_segment(title_text, title_subtitle_duration, 0, font_path)
+            print(f"[MAIN SEGMENT DEBUG] Title subtitles created: {len(title_subtitle_clips)} clips for {title_subtitle_duration:.2f}s")
+
+            # Title字幕をsubtitle_clipsの先頭に追加
+            subtitle_clips.extend(title_subtitle_clips)
+
+        # メイン内容の字幕を生成
+        main_content_subtitle_clips = create_subtitles_for_segment(text, duration, start_time, font_path)
+        subtitle_clips.extend(main_content_subtitle_clips)
+
+        print(f"[MAIN SEGMENT DEBUG] Subtitles created: {len(subtitle_clips)} clips (title: {len(subtitle_clips) - len(main_content_subtitle_clips)}, main: {len(main_content_subtitle_clips)})")
         for i, txt in enumerate(subtitle_clips[:3]):  # 最初の3つだけ表示
             if hasattr(txt, 'start') and hasattr(txt, 'duration'):
                 print(f"[MAIN SEGMENT DEBUG] Subtitle {i}: start={txt.start:.2f}s, duration={txt.duration:.2f}s")
@@ -392,8 +376,18 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
 
         # 音声を設定（BGMは最終段階で全体に混合するため、ここではナレーション音声のみ）
         print(f"[MAIN SEGMENT DEBUG] Setting narration audio only (BGM will be added at final stage)")
-        video_segment = video_segment.with_audio(part_audio)
-        print(f"[MAIN SEGMENT DEBUG] Audio set: narration only")
+
+        # このセグメントがtitle音声を含む場合（最初のメインセグメントのみ）
+        if title_duration is not None and title_audio_duration is not None and title_text:
+            # Title音声の残部とメイン内容音声を結合
+            print(f"[MAIN SEGMENT DEBUG] Combining title audio ({title_audio_remainder.duration:.2f}s) + main audio ({part_audio.duration:.2f}s)")
+            combined_audio = concatenate_audioclips([title_audio_remainder, part_audio])
+            video_segment = video_segment.with_audio(combined_audio)
+            print(f"[MAIN SEGMENT DEBUG] Audio set: title audio + main audio = {combined_audio.duration:.2f}s")
+        else:
+            # メイン内容音声のみ
+            video_segment = video_segment.with_audio(part_audio)
+            print(f"[MAIN SEGMENT DEBUG] Audio set: main audio only = {part_audio.duration:.2f}s")
 
         
         print(f"[MAIN SEGMENT] {part_type} segment completed: {duration:.2f}s")
