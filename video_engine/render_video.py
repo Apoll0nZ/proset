@@ -2549,6 +2549,7 @@ async def build_video_with_subtitles(
                     continue
 
                 print(f"[DEBUG] Processing part {i}: {part_type} at time {current_time:.2f}")
+                print(f"[SYNC DEBUG] Part {i} - Audio duration: {duration:.2f}s, Current time: {current_time:.2f}s")
                 
                 # owner_commentの直前にブリッジ動画を挿入
                 if part_type == "owner_comment" and modulation_video_clip:
@@ -2598,6 +2599,17 @@ async def build_video_with_subtitles(
                         # 数珠つなぎロジック：current_timeの位置に字幕を配置
                         txt_clip = txt_clip.with_start(current_time).with_duration(chunk_duration).with_opacity(1.0).with_fps(FPS)
                         
+                        # 同期確認：字幕と音声の時間差をチェック
+                        audio_duration = part_durations[i] if i < len(part_durations) else 0
+                        time_diff = chunk_duration - audio_duration
+                        print(f"[SYNC CHECK] Part {i}:")
+                        print(f"  - Subtitle duration: {chunk_duration:.2f}s")
+                        print(f"  - Audio duration: {audio_duration:.2f}s")
+                        print(f"  - Time difference: {time_diff:.2f}s")
+                        print(f"  - Subtitle start: {current_time:.2f}s")
+                        if abs(time_diff) > 0.5:
+                            print(f"  [WARNING] Significant time difference detected!")
+                        
                         # current_timeをchunk_durationだけ更新
                         current_time += chunk_duration
                         
@@ -2625,6 +2637,25 @@ async def build_video_with_subtitles(
             except Exception as e:
                 print(f"Error creating subtitle for part {i}: {e}")
                 continue
+
+        # 総合的な同期チェック
+        print("=== FINAL SYNC ANALYSIS ===")
+        total_subtitle_time = sum([clip.duration for clip in text_clips])
+        total_audio_time = sum(part_durations)
+        subtitle_end_time = title_duration + total_subtitle_time
+        audio_end_time = title_duration + total_audio_time
+        
+        print(f"[TOTAL] Subtitle time: {total_subtitle_time:.2f}s")
+        print(f"[TOTAL] Audio time: {total_audio_time:.2f}s")
+        print(f"[TOTAL] Subtitle ends at: {subtitle_end_time:.2f}s")
+        print(f"[TOTAL] Audio ends at: {audio_end_time:.2f}s")
+        print(f"[TOTAL] Time difference: {abs(subtitle_end_time - audio_end_time):.2f}s")
+        
+        if abs(subtitle_end_time - audio_end_time) > 1.0:
+            print("[CRITICAL] 字幕と音声の総時間が1秒以上ズレています！")
+            print("          この問題により字幕が早く切り替わります。")
+        else:
+            print("[OK] 字幕と音声の総時間は同期しています。")
 
         # 時間軸に沿った動画構成：Title → 本編 → Modulation → まとめ
         video_clips = []
