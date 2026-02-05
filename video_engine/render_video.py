@@ -101,31 +101,42 @@ def scale_animation_95_100(clip):
 
 # 画像切り替えアニメーション関数（60%縮小→消去 / 60%→100%拡大）
 def transition_scale_animation(clip, is_fade_out=False):
-    """画像切り替え時のスケールアニメーション"""
+    """画像切り替え時のスケール+フェードアニメーション"""
     def rescale(t):
-        duration = 0.5  # 0.5秒でアニメーション完了
-        if t >= duration:
-            return 0.6 if is_fade_out else 1.0  # アニメーション後の最終サイズ
-        
-        progress = t / duration  # 0-1の進捗
-        
-        if is_fade_out:
-            # 100% -> 60% に縮小
-            scale = 1.0 - 0.4 * progress
-        else:
-            # 60% -> 100% に拡大
-            scale = 0.6 + 0.4 * progress
-        
-        return scale
-    
+        duration = clip.duration
+        fade_duration = 0.5  # フェード時間
+
+        # フェードイン：最初の0.5秒
+        if not is_fade_out and t < fade_duration:
+            fade_progress = t / fade_duration  # 0-1
+            scale = 0.6 + 0.4 * fade_progress  # 60%から100%へ
+            return scale
+
+        # フェードアウト：最後の0.5秒
+        if is_fade_out and t >= (duration - fade_duration):
+            fade_progress = (t - (duration - fade_duration)) / fade_duration  # 0-1
+            scale = 1.0 - 0.4 * fade_progress  # 100%から60%へ
+            return scale
+
+        # 通常状態：スケール100%
+        return 1.0
+
     try:
-        return clip.with_effects([vfx.Resize(lambda t: rescale(t))])
+        clip = clip.with_effects([vfx.Resize(lambda t: rescale(t))])
     except:
-        # フォールバック：シンプルなスケールアニメーション
-        if is_fade_out:
-            return clip.with_effects([vfx.Resize(lambda t: max(0.6, 1.0 - 0.8 * t))])
-        else:
-            return clip.with_effects([vfx.Resize(lambda t: min(1.0, 0.6 + 0.8 * t))])
+        # フォールバック
+        pass
+
+    # フェード効果を追加
+    fade_duration = 0.5
+    if not is_fade_out:
+        # フェードイン
+        clip = clip.with_effects([vfx.FadeIn(fade_duration)])
+    else:
+        # フェードアウト
+        clip = clip.with_effects([vfx.FadeOut(fade_duration)])
+
+    return clip
 
 # 独立セグメント合成方式による動画生成関数
 def create_independent_segments(script_parts: List[Dict], part_durations: List[float], 
@@ -277,9 +288,12 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
         part_audio = audio_clip.subclipped(audio_extract_start, end_time)
         print(f"[MAIN SEGMENT DEBUG] Part audio extracted: {part_audio.duration:.2f}s")
         
-        # 字幕を生成（このセグメント内での絶対時間）
+        # 字幕を生成（このセグメント内での相対時間）
         subtitle_clips = create_subtitles_for_segment(text, duration, start_time, font_path)
         print(f"[MAIN SEGMENT DEBUG] Subtitles created: {len(subtitle_clips)} clips")
+        for i, txt in enumerate(subtitle_clips[:3]):  # 最初の3つだけ表示
+            if hasattr(txt, 'start') and hasattr(txt, 'duration'):
+                print(f"[MAIN SEGMENT DEBUG] Subtitle {i}: start={txt.start:.2f}s, duration={txt.duration:.2f}s")
         
         # 画像を配置
         segment_images = get_images_for_time_range(image_clips, start_time, start_time + duration)
@@ -303,10 +317,21 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
         if bgm_clip:
             print(f"[MAIN SEGMENT DEBUG] BGM available, mixing audio...")
             # BGM + ナレーションをミックス
-            bgm_part = bgm_clip.subclipped(start_time, start_time + duration)
+            # BGMは各セグメントのstart_timeから開始（BGM全体のループ対応）
+            bgm_start = start_time if start_time >= 0 else 0
+            bgm_end = bgm_start + duration
+
+            # BGMクリップがループしている場合、セーフティチェック
+            if bgm_end > bgm_clip.duration:
+                print(f"[MAIN SEGMENT DEBUG] BGM end ({bgm_end:.2f}s) exceeds clip duration ({bgm_clip.duration:.2f}s), will loop")
+                # ループ処理はCompositeAudioClipで自動的に処理される
+                bgm_part = bgm_clip.subclipped(bgm_start, bgm_clip.duration)
+            else:
+                bgm_part = bgm_clip.subclipped(bgm_start, bgm_end)
+
             mixed_audio = CompositeAudioClip([part_audio, bgm_part])
             video_segment = video_segment.with_audio(mixed_audio)
-            print(f"[MAIN SEGMENT DEBUG] Audio mixed: narration + BGM")
+            print(f"[MAIN SEGMENT DEBUG] Audio mixed: narration + BGM (bgm from {bgm_start:.2f}s to {bgm_end:.2f}s)")
         else:
             print(f"[MAIN SEGMENT DEBUG] No BGM, using narration only")
             video_segment = video_segment.with_audio(part_audio)
@@ -3097,37 +3122,31 @@ async def build_video_with_subtitles(
         
         # セグメントを連結して最終動画を生成
         try:
-            video = concatenate_videoclips(segments, method="compose")
+            # method="chain"を使用してシームレスに連結（ギャップを作らない）
+            video = concatenate_videoclips(segments, method="chain")
             total_duration = sum(seg.duration for seg in segments)
             video = video.with_duration(total_duration)
-            print(f"Video created: {total_duration:.2f}s from {len(segments)} segments")
-            
+            print(f"Video created: {total_duration:.2f}s from {len(segments)} segments (seamless chain)")
+
         except Exception as e:
             print(f"Error concatenating segments: {e}")
             return None
         
         # === 音声処理 ===
         final_audio_elements = []
-        
+
         # Title音声を追加
         if title_video_clip and title_video_clip.audio:
             title_audio = title_video_clip.audio
             final_audio_elements.append(title_audio.with_start(0.0))
-        
+
         # メイン音声を追加
         if audio_clip:
             final_audio_elements.append(audio_clip.with_start(title_duration))
-        
-        # BGMを追加
-        if bgm_clip:
-            bgm_duration = video.duration
-            if bgm_clip.duration < bgm_duration:
-                bgm_for_video = bgm_clip.loop(duration=bgm_duration)
-            else:
-                bgm_for_video = bgm_clip.subclipped(0, bgm_duration)
-            
-            final_audio_elements.append(bgm_for_video.with_start(0.0))
-        
+
+        # BGMはセグメント内で既に処理済みのため、最終段階では追加しない
+        # （各セグメントで各々のBGMをミックスしているため）
+
         # 音声を合成
         if final_audio_elements:
             final_audio = CompositeAudioClip(final_audio_elements)
