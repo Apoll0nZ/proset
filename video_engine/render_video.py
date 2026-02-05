@@ -2565,13 +2565,15 @@ async def build_video_with_subtitles(
                     chunks = split_subtitle_text(text, max_chars=100)
                     
                     for chunk_idx, chunk in enumerate(chunks):
-                        # 1文字あたり0.15秒を確保する計算式
-                        min_display_time = max(len(chunk) * 0.15, 2.0)  # 最低2秒
-                        max_display_time = max(len(chunk) * 0.20, 3.0)  # 最低3秒
-                        
-                        # 利用可能な時間と計算時間の小さい方を採用
-                        calculated_duration = min(duration / max(len(chunks), 1), max_display_time)
-                        chunk_duration = max(calculated_duration, min_display_time)
+                        # 【修正】字幕の時間を音声時間に完全同期させる
+                        # 1つのパートに複数の字幕チャンクがある場合、音声時間を均等に分配
+                        chunk_count = len(chunks)
+                        if chunk_count > 0:
+                            # 音声の実測時間を均等に分配
+                            chunk_duration = duration / chunk_count
+                            print(f"[SYNC FIX] Part {i}: Audio {duration:.2f}s divided into {chunk_count} chunks = {chunk_duration:.2f}s each")
+                        else:
+                            chunk_duration = duration
                         
                         # テキストの先頭と末尾に余白を追加
                         padded_chunk = f" {chunk} "
