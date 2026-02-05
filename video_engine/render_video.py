@@ -2097,17 +2097,17 @@ async def build_video_with_subtitles(
                     print("BGM trimmed to match video duration")
                 
                 # 音量を10%に下げてナレーションを主役に
-                bgm_clip = bgm_clip.volumex(0.10)
+                bgm_clip = bgm_clip.with_volume_scaled(0.10)
                 print("BGM volume reduced to 10%")
                 
                 # 最初の2秒でフェードイン
                 if total_video_duration > 2:
-                    bgm_clip = bgm_clip.audio_fadein(2)
+                    bgm_clip = bgm_clip.with_audio_fadein(2)
                     print("Applied 2-second fadein to BGM")
                 
                 # 最後の2秒でフェードアウト
                 if total_video_duration > 4:  # フェードインと重ならないように
-                    bgm_clip = bgm_clip.audio_fadeout(2)
+                    bgm_clip = bgm_clip.with_audio_fadeout(2)
                     print("Applied 2-second fadeout to BGM")
                 
             except Exception as e:
