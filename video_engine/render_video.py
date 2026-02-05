@@ -223,6 +223,15 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
         # ビデオのみを取得（元の音声は除去）
         base_clip = title_video_clip.without_audio()
 
+        # ビデオの長さが音声より短い場合はループして埋める
+        if title_duration < title_audio_duration:
+            # ビデオをループして音声の長さに合わせる
+            num_loops = int(title_audio_duration / title_duration) + 1
+            looped_clips = [base_clip] * num_loops
+            base_clip = concatenate_videoclips(looped_clips)
+            base_clip = base_clip.subclipped(0, title_audio_duration)
+            print(f"[OPENING] Video looped to match audio: {title_duration:.2f}s → {title_audio_duration:.2f}s")
+
         # 字幕を生成（音声の長さに合わせて分散）
         subtitle_clips = []
         subtitle_duration_total = 0
