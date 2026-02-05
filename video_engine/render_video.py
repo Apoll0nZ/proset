@@ -248,7 +248,7 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
         part_audio = audio_clip.subclipped(start_time, start_time + duration)
         
         # 字幕を生成（このセグメント内での絶対時間）
-        subtitle_clips = create_subtitles_for_segment(text, duration, start_time)
+        subtitle_clips = create_subtitles_for_segment(text, duration, start_time, font_path)
         
         # 画像を配置
         segment_images = get_images_for_time_range(image_clips, start_time, start_time + duration)
@@ -312,7 +312,7 @@ def create_background_clip(duration: float) -> VideoFileClip:
         print(f"[BACKGROUND ERROR] Failed to create background: {e}")
         return ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=duration)
 
-def create_subtitles_for_segment(text: str, duration: float, segment_start_time: float) -> List:
+def create_subtitles_for_segment(text: str, duration: float, segment_start_time: float, font_path: str) -> List:
     """セグメント内の字幕を生成（簡潔な均等分配方式）"""
     subtitle_clips = []
     
@@ -3100,7 +3100,13 @@ async def build_video_with_subtitles(
         
         # DEBUG_MODEの場合は短い動画を出力
         if DEBUG_MODE:
-            video = video.subclipped(0, 60.0)
+            video_duration = video.duration
+            if video_duration < 60.0:
+                print(f"Video is shorter than 60s: {video_duration:.2f}s, using full duration")
+                # 動画が60秒より短い場合は full duration を使用
+            else:
+                video = video.subclipped(0, 60.0)
+                print(f"Video trimmed to 60s (original: {video_duration:.2f}s)")
         
         print(f"Writing video to: {out_video_path}")
         
