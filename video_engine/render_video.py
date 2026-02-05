@@ -158,26 +158,36 @@ def create_independent_segments(script_parts: List[Dict], part_durations: List[f
     
     # 2. メインセグメント（各パートを独立生成）
     current_audio_time = title_duration
+    audio_time_offset = 0  # オーディオクリップ内での時間オフセット
+
     for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
         part_type = part.get("part", "")
         text = part.get("text", "")
-        
+
+        # Titleパートは既にオープニングセグメントで処理済みのため、スキップ
+        if part_type == "title":
+            print(f"[DEBUG] Skipping title part in main segment loop (audio offset: {duration:.2f}s)")
+            audio_time_offset += duration  # タイトル音声のオフセットを加算
+            continue
+
         if part_type == "owner_comment" and modulation_video_clip:
             # ブリッジ動画セグメント
             bridge_segment = create_bridge_segment(modulation_video_clip, modulation_duration, bgm_clip, current_audio_time)
             if bridge_segment:
                 segments.append(bridge_segment)
             current_audio_time += modulation_duration
-        
+
         # メインコンテンツセグメント
         if text:
             main_segment = create_main_content_segment(
-                part, duration, audio_clip, bgm_clip, 
-                current_audio_time, image_clips, heading_clip, font_path
+                part, duration, audio_clip, bgm_clip,
+                current_audio_time, image_clips, heading_clip, font_path,
+                audio_start_time=audio_time_offset  # 音声クリップ内での絶対位置
             )
             if main_segment:
                 segments.append(main_segment)
             current_audio_time += duration
+            audio_time_offset += duration
     
     # 3. まとめセグメント（必要に応じて）
     closing_segment = create_closing_segment(bgm_clip, heading_clip)
@@ -233,7 +243,8 @@ def create_bridge_segment(modulation_video_clip: VideoFileClip, modulation_durat
 
 def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFileClip,
                            bgm_clip: AudioFileClip, start_time: float,
-                           image_clips: List, heading_clip: ImageClip, font_path: str) -> VideoFileClip:
+                           image_clips: List, heading_clip: ImageClip, font_path: str,
+                           audio_start_time: float = None) -> VideoFileClip:
     """メインコンテンツセグメントを生成"""
     part_type = part.get("part", "")
     text = part.get("text", "")
@@ -248,17 +259,22 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
         # 背景クリップを作成
         bg_clip = create_background_clip(duration)
         print(f"[MAIN SEGMENT DEBUG] Background clip created: {bg_clip.duration:.2f}s")
-        
+
         # このパートの音声を抽出
-        end_time = start_time + duration
+        # audio_start_timeが指定されている場合はそれを使用、否則start_timeを使用
+        audio_extract_start = audio_start_time if audio_start_time is not None else start_time
+        end_time = audio_extract_start + duration
+
+        print(f"[MAIN SEGMENT DEBUG] Audio extraction: start={audio_extract_start:.2f}s, end={end_time:.2f}s, clip_duration={audio_clip.duration:.2f}s")
+
         if end_time > audio_clip.duration:
             print(f"[MAIN SEGMENT ERROR] end_time ({end_time:.2f}) > audio_clip.duration ({audio_clip.duration:.2f})")
             # クリップの長さに合わせて調整
             end_time = audio_clip.duration
-            duration = end_time - start_time
+            duration = end_time - audio_extract_start
             print(f"[MAIN SEGMENT FIX] Adjusted duration to: {duration:.2f}s")
-        
-        part_audio = audio_clip.subclipped(start_time, end_time)
+
+        part_audio = audio_clip.subclipped(audio_extract_start, end_time)
         print(f"[MAIN SEGMENT DEBUG] Part audio extracted: {part_audio.duration:.2f}s")
         
         # 字幕を生成（このセグメント内での絶対時間）
