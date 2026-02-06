@@ -145,7 +145,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                           modulation_video_clip: VideoFileClip, modulation_duration: float,
                           audio_clip: AudioFileClip, bgm_clip: AudioFileClip,
                           image_clips: List, heading_clip: ImageClip, font_path: str,
-                          background_video: VideoFileClip) -> tuple:
+                          background_video: VideoFileClip, subtitle_chunks: dict = None) -> tuple:
     """
     統一タイムライン方式：全要素をグローバルタイムラインに配置して単一の動画を生成
 
@@ -200,7 +200,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 'duration': img_clip.duration
             })
 
-        # ========== STAGE 5: 字幕を配置（絶対時間で） ==========
+        # ========== STAGE 5: 字幕を配置（チャンク情報に基づいて） ==========
         print(f"[TIMELINE] Positioning subtitles...")
 
         # Title字幕
@@ -208,20 +208,41 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         if script_parts and script_parts[0].get("part") == "title":
             title_text = script_parts[0].get("text", "")
 
-        if title_text:
-            print(f"[TIMELINE] Creating title subtitles: {title_audio_duration:.2f}s duration, starting after title video at {title_duration:.2f}s")
-            title_subtitle_clips = create_subtitles_with_absolute_timing(
-                title_text,
-                title_audio_duration,
-                title_duration,  # 絶対開始時刻
-                font_path
-            )
-            for subtitle in title_subtitle_clips:
-                all_clips_by_layer['subtitles'].append({
-                    'clip': subtitle,
-                    'start': subtitle.start,
-                    'duration': subtitle.duration
-                })
+        if title_text and subtitle_chunks and 0 in subtitle_chunks:
+            print(f"[TIMELINE] Creating title subtitles from chunk info")
+            chunk_info = subtitle_chunks[0]
+            chunks = chunk_info['chunks']
+            chunk_count = chunk_info['chunk_count']
+            chunk_duration = chunk_info['chunk_duration']
+
+            for chunk_idx, chunk_text in enumerate(chunks):
+                relative_start = chunk_idx * chunk_duration
+                absolute_start = title_duration + relative_start
+
+                try:
+                    txt_clip = TextClip(
+                        text=f" {chunk_text} ",
+                        font_size=48,
+                        color="black",
+                        font=font_path,
+                        method="caption",
+                        size=(1600, None),
+                        bg_color="white",
+                        text_align="left",
+                        stroke_color="black",
+                        stroke_width=1
+                    )
+                    txt_clip = subtitle_slide_scale_animation(txt_clip)
+                    txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'bottom'))
+
+                    all_clips_by_layer['subtitles'].append({
+                        'clip': txt_clip,
+                        'start': absolute_start,
+                        'duration': chunk_duration
+                    })
+                    print(f"[SUBTITLE] Title chunk {chunk_idx}: {absolute_start:.2f}s - {absolute_start + chunk_duration:.2f}s")
+                except Exception as e:
+                    print(f"[SUBTITLE ERROR] Failed to create title subtitle chunk {chunk_idx}: {e}")
 
         # メイン内容の字幕
         current_subtitle_time = title_duration + title_audio_duration
@@ -230,21 +251,45 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             text = part.get("text", "")
 
             if part_type == "title" or not text:
+                if part_type != "title":
+                    current_subtitle_time += duration
                 continue
 
-            print(f"[TIMELINE] Creating subtitles for part '{part_type}': {duration:.2f}s")
-            part_subtitle_clips = create_subtitles_with_absolute_timing(
-                text,
-                duration,
-                current_subtitle_time,
-                font_path
-            )
-            for subtitle in part_subtitle_clips:
-                all_clips_by_layer['subtitles'].append({
-                    'clip': subtitle,
-                    'start': subtitle.start,
-                    'duration': subtitle.duration
-                })
+            if subtitle_chunks and i in subtitle_chunks:
+                print(f"[TIMELINE] Creating subtitles for part {i} '{part_type}' from chunk info")
+                chunk_info = subtitle_chunks[i]
+                chunks = chunk_info['chunks']
+                chunk_count = chunk_info['chunk_count']
+                chunk_duration = chunk_info['chunk_duration']
+
+                for chunk_idx, chunk_text in enumerate(chunks):
+                    relative_start = chunk_idx * chunk_duration
+                    absolute_start = current_subtitle_time + relative_start
+
+                    try:
+                        txt_clip = TextClip(
+                            text=f" {chunk_text} ",
+                            font_size=48,
+                            color="black",
+                            font=font_path,
+                            method="caption",
+                            size=(1600, None),
+                            bg_color="white",
+                            text_align="left",
+                            stroke_color="black",
+                            stroke_width=1
+                        )
+                        txt_clip = subtitle_slide_scale_animation(txt_clip)
+                        txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'bottom'))
+
+                        all_clips_by_layer['subtitles'].append({
+                            'clip': txt_clip,
+                            'start': absolute_start,
+                            'duration': chunk_duration
+                        })
+                        print(f"[SUBTITLE] Part {i} chunk {chunk_idx}: {absolute_start:.2f}s - {absolute_start + chunk_duration:.2f}s")
+                    except Exception as e:
+                        print(f"[SUBTITLE ERROR] Failed to create subtitle chunk {chunk_idx} for part {i}: {e}")
 
             current_subtitle_time += duration
 
@@ -3453,6 +3498,24 @@ async def build_video_with_subtitles(
             # title_audio_durationを定義
             title_audio_duration = part_durations[0] if part_durations else title_duration
 
+            # 各パートの字幕チャンク情報を計算
+            subtitle_chunks = {}
+            for i, part in enumerate(script_parts):
+                text = part.get("text", "")
+                if not text:
+                    continue
+
+                chunks = split_subtitle_text(text, max_chars=100)
+                chunk_count = len(chunks)
+                chunk_duration = part_durations[i] / chunk_count if chunk_count > 0 else part_durations[i]
+
+                subtitle_chunks[i] = {
+                    'chunks': chunks,
+                    'chunk_count': chunk_count,
+                    'chunk_duration': chunk_duration
+                }
+                print(f"[SUBTITLE PREP] Part {i}: {chunk_count} chunks × {chunk_duration:.2f}s each")
+
             video = build_unified_timeline(
                 script_parts=script_parts,
                 part_durations=part_durations,
@@ -3466,7 +3529,8 @@ async def build_video_with_subtitles(
                 image_clips=image_clips,
                 heading_clip=heading_clip,
                 font_path=font_path,
-                background_video=bg_clip
+                background_video=bg_clip,
+                subtitle_chunks=subtitle_chunks
             )
 
             if video is None:
