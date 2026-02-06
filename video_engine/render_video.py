@@ -1417,50 +1417,21 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
     for attempt in range(max_retries):
         try:
             from playwright.async_api import async_playwright
-            
-            # 検索キーワードの最適化
+
+            # 検索キーワード：Geminiが抽出したキーワードをそのまま使用
             search_keyword = keyword
-            
-            # 製品名や型番の場合は企業名をプレフィックスとして付与
-            company_added = False
-            
-            # 汚染防止：一般的な単語が企業名として誤認識されるのを防ぐ
-            common_words = {
-                'open', 'close', 'start', 'end', 'new', 'old', 'big', 'small', 'high', 'low',
-                'top', 'bottom', 'left', 'right', 'first', 'last', 'best', 'worst', 'good', 'bad',
-                'hot', 'cold', 'fast', 'slow', 'easy', 'hard', 'simple', 'complex', 'basic',
-                'advanced', 'pro', 'plus', 'minus', 'max', 'min', 'super', 'ultra', 'mega',
-                'micro', 'mini', 'nano', 'giga', 'tera', 'peta', 'kilo', 'milli'
-            }
-            
-            # キーワードが一般的な単語のみの場合は企業名を付与しない
-            keyword_lower = keyword.lower().strip()
-            if keyword_lower not in common_words and len(keyword_lower) > 2:
-                for product, company in company_mapping.items():
-                    if product.lower() in keyword.lower() and not keyword.lower().startswith(company.lower()):
-                        search_keyword = f"{company} {keyword}"
-                        company_added = True
-                        break
-            
+
             # テック関連画像がヒットしやすいようにクエリを最適化
-            if company_added or any(tech in keyword.lower() for tech in ['cpu', 'gpu', 'ai', 'ml', 'tech', 'chip', 'processor']):
+            if any(tech in keyword.lower() for tech in ['cpu', 'gpu', 'ai', 'ml', 'tech', 'chip', 'processor']):
                 if 'tech' not in search_keyword.lower() and 'official' not in search_keyword.lower():
                     search_keyword = f"{search_keyword} tech official"
-            
+
             # ストックフォトを除外するために-shutterstockを付与
             if '-shutterstock' not in search_keyword.lower():
                 search_keyword = f"{search_keyword} -shutterstock"
-            
+
             # フォールバック検索（2回目以降）
             if attempt > 0:
-                if not company_added:
-                    # 企業名が付与されていない場合は付与を試みる（汚染防止付き）
-                    keyword_lower = keyword.lower().strip()
-                    if keyword_lower not in common_words and len(keyword_lower) > 2:
-                        for product, company in company_mapping.items():
-                            if product.lower() in keyword.lower():
-                                search_keyword = f"{company} {keyword} official"
-                                break
                 print(f"[FALLBACK] Attempt {attempt + 1}: {search_keyword}")
             else:
                 print(f"Searching Bing images for: {search_keyword} (attempt {attempt + 1}/{max_retries})")
