@@ -2538,23 +2538,29 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tup
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str) -> (str, List[float]):
+def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str) -> tuple:
     """
     複数のセリフを順番に音声合成し、結合した音声ファイルを生成。
     メモリ効率を改善し、大量の音声パーツ処理に対応。
     リトライロジックを実装し、ネットワークエラーに対応。
-    
+
     Returns:
-        結合された音声ファイルのパス
+        (audio_path, part_durations, query_data_list_all, text_parts_list_all)
+        - audio_path: 結合された音声ファイルのパス
+        - part_durations: 各部分の音声長リスト
+        - query_data_list_all: 各部分のVoicevox query_dataリスト
+        - text_parts_list_all: 各部分のテキスト分割リスト
     """
     import time
-    
+
     audio_clips = []
     part_durations: List[float] = []
+    query_data_list_all = {}  # 部分ごとのquery_dataを保存
+    text_parts_list_all = {}  # 部分ごとのtext_partsを保存
     generated_audio_files = []
     successful_parts = 0
     failed_parts = []
-    
+
     print(f"Processing {len(script_parts)} script parts...")
     
     for i, part in enumerate(script_parts):
@@ -2596,6 +2602,11 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                     audio_clips.append(clip)
                     generated_audio_files.append(audio_path)
                     part_durations.append(part_duration)
+
+                    # query_dataとtext_partsを保存
+                    query_data_list_all[i] = query_data_list
+                    text_parts_list_all[i] = text_parts_from_synthesis
+
                     successful_parts += 1
                     success = True
                     print(f"Successfully created audio clip for part {i}")
@@ -2674,8 +2685,8 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                     print(f"Cleaned up temporary audio file: {audio_file}")
             except Exception as e:
                 print(f"Failed to remove temporary audio file {audio_file}: {e}")
-    
-    return final_audio_path, part_durations
+
+    return final_audio_path, part_durations, query_data_list_all, text_parts_list_all
 
 
 async def build_video_with_subtitles(
@@ -2686,6 +2697,8 @@ async def build_video_with_subtitles(
     part_durations: List[float],
     audio_path: str,
     out_video_path: str,
+    query_data_list_all: dict = None,
+    text_parts_list_all: dict = None,
 ) -> None:
     """
     新しい映像生成ワークフロー：
@@ -3174,36 +3187,46 @@ async def build_video_with_subtitles(
                         # PILで高品質リサイズ処理を実行
                         with Image.open(image_path) as img:
                             print(f"[DEBUG] Original image size: {img.size}, format: {img.format}, mode: {img.mode}")
-                            
+
                             # RGBに変換
                             img = img.convert("RGB")
                             original_width, original_height = img.size
-                            
-                            # アスペクト比を維持したまま最大サイズに収める
-                            max_width = 1400
-                            max_height = 800
-                            
-                            # スケール計算（アスペクト比維持）
-                            scale_w = max_width / original_width
-                            scale_h = max_height / original_height
-                            scale = min(scale_w, scale_h, 1.0)  # 拡大も許可する場合は1.0制限を削除
-                            
-                            target_width = int(original_width * scale)
-                            target_height = int(original_height * scale)
-                            
+
+                            # ランダムなサイズ範囲を計算（画面の30-50%）
+                            # 30-50% of 1920x1080
+                            min_width = int(VIDEO_WIDTH * 0.30)   # 576px
+                            max_width = int(VIDEO_WIDTH * 0.50)   # 960px
+                            min_height = int(VIDEO_HEIGHT * 0.30) # 324px
+                            max_height = int(VIDEO_HEIGHT * 0.50) # 540px
+
+                            # ランダムにサイズを選択（整数値）
+                            target_width = random.randint(min_width, max_width)
+
+                            # アスペクト比を維持して高さを計算
+                            aspect_ratio = original_height / original_width
+                            target_height = int(target_width * aspect_ratio)
+
+                            # 高さが範囲を超える場合は調整
+                            if target_height > max_height:
+                                target_height = max_height
+                                target_width = int(target_height / aspect_ratio)
+                            elif target_height < min_height:
+                                target_height = min_height
+                                target_width = int(target_height / aspect_ratio)
+
                             # PillowのLANCZOSで高品質リサイズ
                             if target_width != original_width or target_height != original_height:
                                 print(f"[DEBUG] Resizing with Pillow LANCZOS: {original_width}x{original_height} → {target_width}x{target_height}")
                                 img = img.resize((target_width, target_height), Image.LANCZOS)
-                            
+
                             # 物理スペックのログ出力（リサイズ後）
                             scale_factor = target_width / original_width if original_width > 0 else 1.0
                             print(f"[INFO] After Resize: ({target_width} x {target_height}) | Scale Factor: {scale_factor:.2f}")
-                            
+
                             # 軽くシャープ化して輪郭をクッキリさせる
                             print(f"[DEBUG] Applying light sharpen filter")
                             img = img.filter(ImageFilter.SHARPEN)
-                            
+
                             # Phase 2: 処理済みデータのデバッグ保存
                             try:
                                 base_filename = os.path.basename(image_path)
@@ -3212,7 +3235,7 @@ async def build_video_with_subtitles(
                                 print(f"[DEBUG] Phase 2 saved: {phase2_path}")
                             except Exception as e:
                                 print(f"[DEBUG] Failed to save Phase 2 debug: {e}")
-                            
+
                             # MoviePy用にnumpy配列に変換
                             image_array = np.array(img)
                             print(f"[DEBUG] Final image array shape: {image_array.shape}")
@@ -3234,10 +3257,20 @@ async def build_video_with_subtitles(
 
             # 有効な画像のみクリップを作成
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0).with_fps(FPS)
-            
-            # 座標を中央に固定
-            clip = clip.with_position("center")  # 画像は中央配置
-            
+
+            # ランダムなポジション計算（画面内に収まる範囲で）
+            img_height, img_width = image_array.shape[:2]
+
+            # 画面内に収まるようにランダム座標を計算
+            max_x = max(0, VIDEO_WIDTH - img_width)
+            max_y = max(0, VIDEO_HEIGHT - img_height)
+
+            random_x = random.randint(0, max_x) if max_x > 0 else (VIDEO_WIDTH - img_width) // 2
+            random_y = random.randint(0, max_y) if max_y > 0 else (VIDEO_HEIGHT - img_height) // 2
+
+            print(f"[DEBUG] Image positioned randomly: x={random_x}px, y={random_y}px (image: {img_width}x{img_height}, screen: {VIDEO_WIDTH}x{VIDEO_HEIGHT})")
+            clip = clip.with_position((random_x, random_y))
+
             # 60%→100%拡大アニメーションで表示（ズームは最後）
             clip = transition_scale_animation(clip, is_fade_out=False)
 
@@ -3743,7 +3776,7 @@ async def main() -> None:
 
             # 2. VOICEVOX で音声生成（複数セリフ対応）
             print("Generating audio...")
-            audio_path, part_durations = synthesize_multiple_speeches(script_parts, tmpdir)
+            audio_path, part_durations, query_data_list_all, text_parts_list_all = synthesize_multiple_speeches(script_parts, tmpdir)
 
             # 3. Video 合成
             print("Generating video...")
@@ -3756,6 +3789,8 @@ async def main() -> None:
                 part_durations=part_durations,
                 audio_path=audio_path,
                 out_video_path=video_path,
+                query_data_list_all=query_data_list_all,
+                text_parts_list_all=text_parts_list_all,
             )
 
             # 4. サムネイル生成
