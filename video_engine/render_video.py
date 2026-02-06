@@ -209,11 +209,11 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             title_text = script_parts[0].get("text", "")
 
         if title_text:
-            print(f"[TIMELINE] Creating title subtitles: {title_audio_duration:.2f}s duration")
+            print(f"[TIMELINE] Creating title subtitles: {title_audio_duration:.2f}s duration, starting after title video at {title_duration:.2f}s")
             title_subtitle_clips = create_subtitles_with_absolute_timing(
                 title_text,
                 title_audio_duration,
-                0.0,  # 絶対開始時刻
+                title_duration,  # 絶対開始時刻
                 font_path
             )
             for subtitle in title_subtitle_clips:
@@ -224,7 +224,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 })
 
         # メイン内容の字幕
-        current_subtitle_time = title_audio_duration
+        current_subtitle_time = title_duration + title_audio_duration
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             part_type = part.get("part", "")
             text = part.get("text", "")
@@ -340,8 +340,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
         # メイン音声
         if audio_clip:
-            # メイン音声（タイトル音声を除いた部分）
-            main_audio_start = title_audio_duration
+            # メインのナレーション音声はタイトル動画の終了時から開始
+            main_audio_start = title_duration
             main_audio = audio_clip.with_start(main_audio_start)
             audio_elements.append(main_audio)
             print(f"[TIMELINE] Added main audio: {audio_clip.duration:.2f}s starting at {main_audio_start:.2f}s")
