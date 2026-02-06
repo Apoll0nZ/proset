@@ -138,6 +138,313 @@ def transition_scale_animation(clip, is_fade_out=False):
 
     return clip
 
+# === 統一タイムライン合成方式による動画生成関数 ===
+def build_unified_timeline(script_parts: List[Dict], part_durations: List[float],
+                          title_video_clip: VideoFileClip, title_duration: float,
+                          title_audio_duration: float,
+                          modulation_video_clip: VideoFileClip, modulation_duration: float,
+                          audio_clip: AudioFileClip, bgm_clip: AudioFileClip,
+                          image_clips: List, heading_clip: ImageClip, font_path: str,
+                          background_video: VideoFileClip) -> tuple:
+    """
+    統一タイムライン方式：全要素をグローバルタイムラインに配置して単一の動画を生成
+
+    Returns:
+        (video: 最終的な動画クリップ, audio: 最終的な音声クリップ)
+    """
+    print("=== UNIFIED TIMELINE MODE START ===")
+
+    try:
+        # ========== STAGE 1: マスタータイムラインの構築 ==========
+        print(f"[TIMELINE] Building master timeline with title_duration={title_duration:.2f}s, title_audio_duration={title_audio_duration:.2f}s")
+
+        # グローバルタイムラインの開始時刻を追跡
+        current_video_time = 0.0
+
+        # 全レイヤーを絶対時間で配置するためのリスト
+        all_clips_by_layer = {
+            'background': [],
+            'images': [],
+            'videos': [],
+            'subtitles': [],
+            'heading': []
+        }
+
+        # ========== STAGE 2: 背景動画をレイアウト ==========
+        print("[TIMELINE] Positioning background video...")
+        if background_video:
+            # 背景動画は常に最下層
+            all_clips_by_layer['background'].append({
+                'clip': background_video.without_audio(),
+                'start': 0.0,
+                'duration': background_video.duration
+            })
+
+        # ========== STAGE 3: Title動画を配置 ==========
+        print(f"[TIMELINE] Positioning title video ({title_duration:.2f}s)...")
+        if title_video_clip:
+            title_video_only = title_video_clip.without_audio().with_duration(title_duration)
+            all_clips_by_layer['videos'].append({
+                'clip': title_video_only,
+                'start': 0.0,
+                'duration': title_duration
+            })
+
+        # ========== STAGE 4: 画像を配置 ==========
+        print(f"[TIMELINE] Positioning {len(image_clips)} images...")
+        for img_clip in image_clips:
+            # image_clipsは既にwith_start()とwith_duration()が適用されたImageClipオブジェクト
+            all_clips_by_layer['images'].append({
+                'clip': img_clip,
+                'start': getattr(img_clip, 'start', 0.0),
+                'duration': img_clip.duration
+            })
+
+        # ========== STAGE 5: 字幕を配置（絶対時間で） ==========
+        print(f"[TIMELINE] Positioning subtitles...")
+
+        # Title字幕
+        title_text = ""
+        if script_parts and script_parts[0].get("part") == "title":
+            title_text = script_parts[0].get("text", "")
+
+        if title_text:
+            print(f"[TIMELINE] Creating title subtitles: {title_audio_duration:.2f}s duration")
+            title_subtitle_clips = create_subtitles_with_absolute_timing(
+                title_text,
+                title_audio_duration,
+                0.0,  # 絶対開始時刻
+                font_path
+            )
+            for subtitle in title_subtitle_clips:
+                all_clips_by_layer['subtitles'].append({
+                    'clip': subtitle,
+                    'start': subtitle.start,
+                    'duration': subtitle.duration
+                })
+
+        # メイン内容の字幕
+        current_subtitle_time = title_audio_duration
+        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+            part_type = part.get("part", "")
+            text = part.get("text", "")
+
+            if part_type == "title" or not text:
+                continue
+
+            print(f"[TIMELINE] Creating subtitles for part '{part_type}': {duration:.2f}s")
+            part_subtitle_clips = create_subtitles_with_absolute_timing(
+                text,
+                duration,
+                current_subtitle_time,
+                font_path
+            )
+            for subtitle in part_subtitle_clips:
+                all_clips_by_layer['subtitles'].append({
+                    'clip': subtitle,
+                    'start': subtitle.start,
+                    'duration': subtitle.duration
+                })
+
+            current_subtitle_time += duration
+
+        # ========== STAGE 6: ヘッディング画像を配置 ==========
+        print("[TIMELINE] Positioning heading image...")
+        if heading_clip:
+            # ヘッディングは常に最上層、全期間表示
+            all_clips_by_layer['heading'].append({
+                'clip': heading_clip,
+                'start': 0.0,
+                'duration': current_subtitle_time  # 全体の長さ
+            })
+
+        # ========== STAGE 7: 動画全体の長さを計算 ==========
+        total_duration = current_subtitle_time + modulation_duration + 3.0  # +modulation+closing
+        print(f"[TIMELINE] Total video duration: {total_duration:.2f}s")
+
+        # ========== STAGE 8: Modulation動画の位置を計算して追加 ==========
+        modulation_start = current_subtitle_time
+        print(f"[TIMELINE] Positioning modulation video at {modulation_start:.2f}s")
+        if modulation_video_clip:
+            all_clips_by_layer['videos'].append({
+                'clip': modulation_video_clip.with_duration(modulation_duration),
+                'start': modulation_start,
+                'duration': modulation_duration
+            })
+
+        # ========== STAGE 9: Closing画面を追加 ==========
+        closing_start = modulation_start + modulation_duration
+        print(f"[TIMELINE] Adding black closing screen at {closing_start:.2f}s")
+        closing_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=3.0)
+        all_clips_by_layer['videos'].append({
+            'clip': closing_clip,
+            'start': closing_start,
+            'duration': 3.0
+        })
+
+        # ========== STAGE 10: 全レイヤーを組み立てて最終動画を作成 ==========
+        print("[TIMELINE] Compositing all layers...")
+
+        # CompositeVideoClipにクリップを追加する際、startを直接指定
+        composite_clips = []
+
+        # 10a. 背景
+        for item in all_clips_by_layer['background']:
+            clip = item['clip']
+            start = item['start']
+            composite_clips.append(clip.with_start(start).with_duration(total_duration))
+
+        # 10b. 画像
+        for item in all_clips_by_layer['images']:
+            clip = item['clip'].with_duration(item['duration'])
+            start = item['start']
+            composite_clips.append(clip.with_start(start))
+
+        # 10c. ビデオ
+        for item in all_clips_by_layer['videos']:
+            clip = item['clip'].with_duration(item['duration'])
+            start = item['start']
+            composite_clips.append(clip.with_start(start))
+
+        # 10d. 字幕
+        for item in all_clips_by_layer['subtitles']:
+            clip = item['clip']
+            # 字幕はすでに適切なstartを持っている
+            composite_clips.append(clip)
+
+        # 10e. ヘッディング
+        for item in all_clips_by_layer['heading']:
+            clip = item['clip'].with_duration(item['duration'])
+            start = item['start']
+            composite_clips.append(clip.with_start(start))
+
+        # 最終的なCompositeVideoClipを作成
+        final_video = CompositeVideoClip(composite_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        final_video = final_video.with_duration(total_duration)
+        print(f"[TIMELINE] Composite video created: {total_duration:.2f}s")
+
+        # ========== STAGE 11: 音声を組み立てる ==========
+        print("[TIMELINE] Assembling audio...")
+
+        audio_elements = []
+
+        # Title音声
+        if title_audio_duration > 0:
+            # タイトル動画から音声を抽出（または音声クリップから該当部分を取得）
+            if title_video_clip and title_video_clip.audio:
+                title_audio = title_video_clip.audio.with_start(0.0)
+                audio_elements.append(title_audio)
+                print(f"[TIMELINE] Added title audio: {title_audio.duration:.2f}s")
+            else:
+                print(f"[TIMELINE] Warning: No title audio found in title video clip")
+
+        # メイン音声
+        if audio_clip:
+            # メイン音声（タイトル音声を除いた部分）
+            main_audio_start = title_audio_duration
+            main_audio = audio_clip.with_start(main_audio_start)
+            audio_elements.append(main_audio)
+            print(f"[TIMELINE] Added main audio: {audio_clip.duration:.2f}s starting at {main_audio_start:.2f}s")
+
+        # BGM
+        if bgm_clip:
+            bgm_start = title_duration  # Title動画終了後からBGM開始
+            bgm_with_start = bgm_clip.with_start(bgm_start)
+            audio_elements.append(bgm_with_start)
+            print(f"[TIMELINE] Added BGM: {bgm_clip.duration:.2f}s starting at {bgm_start:.2f}s")
+
+        # 音声を合成
+        if audio_elements:
+            final_audio = CompositeAudioClip(audio_elements)
+            print(f"[TIMELINE] Audio composited: {len(audio_elements)} tracks")
+        else:
+            print("[TIMELINE] Warning: No audio elements found")
+            final_audio = None
+
+        # 動画に音声を設定
+        if final_audio:
+            final_video = final_video.with_audio(final_audio)
+            print(f"[TIMELINE] Audio set on video")
+
+        print("=== UNIFIED TIMELINE MODE END ===")
+
+        return final_video
+
+    except Exception as e:
+        print(f"[TIMELINE ERROR] Failed to build unified timeline: {e}")
+        import traceback
+        print(traceback.format_exc())
+        raise
+
+def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_start_time: float, font_path: str) -> List[TextClip]:
+    """
+    絶対時間で字幕クリップを作成
+
+    Parameters:
+        text: 字幕テキスト
+        duration: 表示時間
+        absolute_start_time: グローバルタイムラインでの開始時刻（秒）
+        font_path: フォントパス
+
+    Returns:
+        絶対時間で配置された字幕クリップのリスト
+    """
+    print(f"[SUBTITLE] Creating subtitles with absolute timing: start={absolute_start_time:.2f}s, duration={duration:.2f}s")
+
+    subtitle_clips = []
+
+    try:
+        # 字幕テキストを分割
+        chunks = split_subtitle_text(text, max_chars=100)
+        chunk_count = len(chunks)
+
+        if chunk_count == 0:
+            print(f"[SUBTITLE] No chunks created for text")
+            return []
+
+        # 各チャンクの表示時間
+        chunk_duration = duration / chunk_count
+
+        for i, chunk in enumerate(chunks):
+            # 相対時間を計算
+            relative_start = i * chunk_duration
+            # 絶対時間に変換
+            absolute_chunk_start = absolute_start_time + relative_start
+
+            try:
+                # テキストクリップを作成
+                txt_clip = TextClip(
+                    txt=chunk,
+                    fontsize=30,
+                    font=font_path or "Arial",
+                    color="white",
+                    bg_color="black",
+                    method="caption",
+                    size=(VIDEO_WIDTH - 100, 100),
+                    stroke_color="black",
+                    stroke_width=1
+                )
+
+                # アニメーション効果を追加
+                txt_clip = subtitle_slide_scale_animation(txt_clip)
+
+                # 絶対時間で配置
+                txt_clip = txt_clip.with_start(absolute_chunk_start).with_duration(chunk_duration)
+                txt_clip = txt_clip.with_position(('center', 'bottom'))
+
+                subtitle_clips.append(txt_clip)
+
+            except Exception as e:
+                print(f"[SUBTITLE ERROR] Failed to create subtitle chunk {i}: {e}")
+                continue
+
+        print(f"[SUBTITLE] Created {len(subtitle_clips)} subtitle clips")
+        return subtitle_clips
+
+    except Exception as e:
+        print(f"[SUBTITLE ERROR] Failed to create subtitles with absolute timing: {e}")
+        return []
+
 # 独立セグメント合成方式による動画生成関数
 def create_independent_segments(script_parts: List[Dict], part_durations: List[float], 
                            title_video_clip: VideoFileClip, title_duration: float,
@@ -3137,97 +3444,39 @@ async def build_video_with_subtitles(
             if current_start < title_duration:
                 heading_clip = heading_clip.with_start(current_start + title_duration)
             main_content_elements.append(heading_clip)
-        
-        # === 独立セグメント方式による動画生成 ===
-        print("=== INDEPENDENT SEGMENT MODE START ===")
-        
-        # BGMクリップの状態を確認
-        print(f"[DEBUG] BGM clip before segments: {bgm_clip is not None}")
-        if bgm_clip:
-            print(f"[DEBUG] BGM duration: {bgm_clip.duration}s")
-        
-        # 各セグメントを独立して生成
-        segments = create_independent_segments(
-            script_parts, part_durations,
-            title_video_clip, title_duration,
-            modulation_video_clip, modulation_duration,
-            audio_clip, bgm_clip,
-            image_clips, heading_clip, font_path
-        )
-        
-        if not segments:
-            print("[ERROR] No segments created, but continuing with empty segments")
-            print("[ERROR] This should not happen - forcing empty video creation")
-            # 空のセグメントリストでも処理を続行
-            segments = []
-        
-        # セグメントを連結して最終動画を生成
-        if len(segments) == 0:
-            print("[WARNING] No segments to concatenate, creating fallback video")
-            # 最小限の動画を作成
-            segments = [ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=5.0)]
-        
-        # セグメントを連結して最終動画を生成
+
+        # === 統一タイムライン方式による動画生成 ===
+        print("=== UNIFIED TIMELINE MODE START ===")
+
+        # 統一タイムラインを使用して動画を生成
         try:
-            # method="chain"を使用してシームレスに連結（ギャップを作らない）
-            video = concatenate_videoclips(segments, method="chain")
-            total_duration = sum(seg.duration for seg in segments)
-            video = video.with_duration(total_duration)
-            print(f"Video created: {total_duration:.2f}s from {len(segments)} segments (seamless chain)")
+            video = build_unified_timeline(
+                script_parts=script_parts,
+                part_durations=part_durations,
+                title_video_clip=title_video_clip,
+                title_duration=title_duration,
+                title_audio_duration=title_audio_duration if part_durations else title_duration,
+                modulation_video_clip=modulation_video_clip,
+                modulation_duration=modulation_duration,
+                audio_clip=audio_clip,
+                bgm_clip=bgm_clip,
+                image_clips=image_clips,
+                heading_clip=heading_clip,
+                font_path=font_path,
+                background_video=bg_clip
+            )
+
+            if video is None:
+                print("[ERROR] build_unified_timeline returned None")
+                return None
+
+            print(f"[SUCCESS] Unified timeline video created: {video.duration:.2f}s")
 
         except Exception as e:
-            print(f"Error concatenating segments: {e}")
+            print(f"[ERROR] Failed to build unified timeline: {e}")
+            import traceback
+            print(traceback.format_exc())
             return None
-        
-        # === 音声処理 ===
-        print("[AUDIO] === FINAL AUDIO ASSEMBLY START ===")
-        print(f"[AUDIO] Number of segments created: {len(segments)}")
-
-        # 各セグメントの音声情報を確認
-        for i, seg in enumerate(segments):
-            has_audio = seg.audio is not None if hasattr(seg, 'audio') else False
-            seg_duration = seg.duration if hasattr(seg, 'duration') else 'unknown'
-            print(f"[AUDIO] Segment {i}: duration={seg_duration if isinstance(seg_duration, str) else f'{seg_duration:.2f}s'}, has_audio={has_audio}")
-
-        final_audio_elements = []
-
-        # Title音声を追加
-        if title_video_clip and title_video_clip.audio:
-            title_audio = title_video_clip.audio
-            final_audio_elements.append(title_audio.with_start(0.0))
-            print(f"[AUDIO] Added title audio: {title_audio.duration:.2f}s at start=0.0s")
-
-        # メイン音声を追加
-        if audio_clip:
-            final_audio_elements.append(audio_clip.with_start(title_duration))
-            print(f"[AUDIO] Added main audio: {audio_clip.duration:.2f}s at start={title_duration:.2f}s")
-
-        # BGMを最終段階で追加（タイトル動画後に開始）
-        if bgm_clip:
-            final_audio_elements.append(bgm_clip.with_start(title_duration))
-            print(f"[AUDIO] Added BGM: {bgm_clip.duration:.2f}s at start={title_duration:.2f}s (volume already at 10%)")
-        else:
-            print(f"[AUDIO] Warning: No BGM detected!")
-
-        print(f"[AUDIO] Total final_audio_elements: {len(final_audio_elements)}")
-
-        # 音声を合成
-        if final_audio_elements:
-            final_audio = CompositeAudioClip(final_audio_elements)
-            print(f"[AUDIO] Final composite audio created: {len(final_audio_elements)} tracks (narration + BGM)")
-        else:
-            print("[AUDIO] Warning: No audio elements found!")
-            final_audio = None
-
-        # 動画に音声を設定
-        print(f"[AUDIO] Setting audio on video clip (current video duration: {video.duration:.2f}s)")
-        if final_audio:
-            video = video.with_audio(final_audio)
-            print(f"[AUDIO] Audio set successfully - video now contains narration + BGM")
-        else:
-            print(f"[AUDIO] No final_audio to set, video will keep segment audio")
-
-        print("[AUDIO] === FINAL AUDIO ASSEMBLY END ===")
         
         # 動画出力処理に進む
         print("=== VIDEO OUTPUT ===")
