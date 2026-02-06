@@ -154,7 +154,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                           modulation_video_clip: VideoFileClip, modulation_duration: float,
                           audio_clip: AudioFileClip, bgm_clip: AudioFileClip,
                           image_clips: List, heading_clip: ImageClip, font_path: str,
-                          background_video: VideoFileClip, subtitle_chunks: dict = None) -> tuple:
+                          background_video: VideoFileClip, subtitle_chunks: dict = None,
+                          query_data_list_all: dict = None, text_parts_list_all: dict = None) -> tuple:
     """
     統一タイムライン方式：全要素をグローバルタイムラインに配置して単一の動画を生成
 
@@ -227,8 +228,20 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             chunk_count = chunk_info['chunk_count']
             chunk_duration = chunk_info['chunk_duration']
 
+            # Case X: 計測タイミングデータをチェック
+            measured_durations = []
+            if query_data_list_all and 0 in query_data_list_all and text_parts_list_all and 0 in text_parts_list_all:
+                print(f"[TIMELINE] Using measured timing for title subtitles (Case X)")
+                measured_durations = calculate_measured_chunk_durations(query_data_list_all[0], text_parts_list_all[0])
+
             for chunk_idx, chunk_text in enumerate(chunks):
-                relative_start = chunk_idx * chunk_duration
+                # 計測タイミングが利用可能な場合は使用、なければ推定タイミングを使用
+                if chunk_idx < len(measured_durations) and measured_durations[chunk_idx] > 0:
+                    chunk_duration = measured_durations[chunk_idx]
+                    relative_start = sum(measured_durations[:chunk_idx])
+                else:
+                    relative_start = chunk_idx * chunk_duration
+
                 absolute_start = title_duration + relative_start
 
                 try:
@@ -252,7 +265,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                         'start': absolute_start,
                         'duration': chunk_duration
                     })
-                    print(f"[SUBTITLE] Title chunk {chunk_idx}: {absolute_start:.2f}s - {absolute_start + chunk_duration:.2f}s")
+                    timing_source = "measured" if chunk_idx < len(measured_durations) and measured_durations[chunk_idx] > 0 else "estimated"
+                    print(f"[SUBTITLE] Title chunk {chunk_idx} ({timing_source}): {absolute_start:.2f}s - {absolute_start + chunk_duration:.2f}s")
                 except Exception as e:
                     print(f"[SUBTITLE ERROR] Failed to create title subtitle chunk {chunk_idx}: {e}")
 
@@ -275,8 +289,20 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 chunk_count = chunk_info['chunk_count']
                 chunk_duration = chunk_info['chunk_duration']
 
+                # Case X: 計測タイミングデータをチェック
+                measured_durations = []
+                if query_data_list_all and i in query_data_list_all and text_parts_list_all and i in text_parts_list_all:
+                    print(f"[TIMELINE] Using measured timing for part {i} subtitles (Case X)")
+                    measured_durations = calculate_measured_chunk_durations(query_data_list_all[i], text_parts_list_all[i])
+
                 for chunk_idx, chunk_text in enumerate(chunks):
-                    relative_start = chunk_idx * chunk_duration
+                    # 計測タイミングが利用可能な場合は使用、なければ推定タイミングを使用
+                    if chunk_idx < len(measured_durations) and measured_durations[chunk_idx] > 0:
+                        chunk_duration = measured_durations[chunk_idx]
+                        relative_start = sum(measured_durations[:chunk_idx])
+                    else:
+                        relative_start = chunk_idx * chunk_duration
+
                     absolute_start = current_subtitle_time + relative_start
 
                     try:
@@ -300,7 +326,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                             # Y座標をランダムに選択（100-450ピクセル）
                             y_pos = random.randint(100, 450)
                             txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', y_pos))
-                            print(f"[SUBTITLE] Part {i} chunk {chunk_idx}: Y={y_pos}px")
+                            timing_source = "measured" if chunk_idx < len(measured_durations) and measured_durations[chunk_idx] > 0 else "estimated"
+                            print(f"[SUBTITLE] Part {i} chunk {chunk_idx} ({timing_source}): Y={y_pos}px")
                         else:
                             # タイトル部分は中央に固定
                             txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'center'))
@@ -310,7 +337,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                             'start': absolute_start,
                             'duration': chunk_duration
                         })
-                        print(f"[SUBTITLE] Part {i} chunk {chunk_idx}: {absolute_start:.2f}s - {absolute_start + chunk_duration:.2f}s")
+                        timing_source = "measured" if chunk_idx < len(measured_durations) and measured_durations[chunk_idx] > 0 else "estimated"
+                        print(f"[SUBTITLE] Part {i} chunk {chunk_idx} ({timing_source}): {absolute_start:.2f}s - {absolute_start + chunk_duration:.2f}s")
                     except Exception as e:
                         print(f"[SUBTITLE ERROR] Failed to create subtitle chunk {chunk_idx} for part {i}: {e}")
 
@@ -2322,6 +2350,43 @@ def extract_voice_timing_from_query_data(query_data: dict) -> float:
     return total_duration if total_duration > 0 else 0.0
 
 
+def calculate_measured_chunk_durations(query_data_list: List[Dict], text_parts: List[str]) -> List[float]:
+    """
+    Voicevoxの query_data リストから各テキストチャンクの実測時間を計算
+
+    Args:
+        query_data_list: 各テキストパートのquery_dataリスト
+        text_parts: 分割されたテキストパートのリスト
+
+    Returns:
+        各チャンクの実測時間（秒）のリスト
+    """
+    measured_durations = []
+
+    try:
+        if not query_data_list or len(query_data_list) == 0:
+            print("[WARNING] query_data_list is empty, using fallback")
+            return measured_durations
+
+        for idx, query_data in enumerate(query_data_list):
+            # 各query_dataから実測時間を抽出
+            measured_duration = extract_voice_timing_from_query_data(query_data)
+
+            if measured_duration > 0:
+                measured_durations.append(measured_duration)
+                print(f"[MEASURED] Chunk {idx}: {measured_duration:.3f}s from query_data")
+            else:
+                # フォールバック：moras がない場合
+                print(f"[FALLBACK] Chunk {idx}: No timing data, using default")
+                measured_durations.append(0.0)
+
+    except Exception as e:
+        print(f"[ERROR] Failed to calculate measured chunk durations: {e}")
+
+    return measured_durations
+
+
+
 def split_text_unified(text: str, max_chars: int = 120, merge_small_chunks: bool = False, merge_threshold: int = 150) -> List[str]:
     """
     テキスト分割の統一ロジック - 音声合成と字幕生成の両方に使用
@@ -3543,7 +3608,9 @@ async def build_video_with_subtitles(
                 heading_clip=heading_clip,
                 font_path=font_path,
                 background_video=bg_clip,
-                subtitle_chunks=subtitle_chunks
+                subtitle_chunks=subtitle_chunks,
+                query_data_list_all=query_data_list_all,
+                text_parts_list_all=text_parts_list_all
             )
 
             if video is None:
