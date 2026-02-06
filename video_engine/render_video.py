@@ -3554,22 +3554,16 @@ async def build_video_with_subtitles(
                 if not text:
                     continue
 
-                # パート別に文字数制限を変更
-                # パート 0（title）: 100文字
-                # パート 1以降（メイン動画の解説）: 150文字
-                max_chars_for_part = 100 if i == 0 else 150
-
-                chunks = split_subtitle_text(text, max_chars=max_chars_for_part)
+                chunks = split_subtitle_text(text, max_chars=120)
                 chunk_count = len(chunks)
                 chunk_duration = part_durations[i] / chunk_count if chunk_count > 0 else part_durations[i]
 
                 subtitle_chunks[i] = {
                     'chunks': chunks,
                     'chunk_count': chunk_count,
-                    'chunk_duration': chunk_duration,
-                    'part_type': part.get("part", "")
+                    'chunk_duration': chunk_duration
                 }
-                print(f"[SUBTITLE PREP] Part {i}: {chunk_count} chunks × {chunk_duration:.2f}s each (max_chars={max_chars_for_part})")
+                print(f"[SUBTITLE PREP] Part {i}: {chunk_count} chunks × {chunk_duration:.2f}s each")
 
             video = build_unified_timeline(
                 script_parts=script_parts,
