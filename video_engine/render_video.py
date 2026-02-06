@@ -194,8 +194,11 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         print(f"[TIMELINE] Positioning {len(image_clips)} images...")
         for img_clip in image_clips:
             # image_clipsは既にwith_start()とwith_duration()が適用されたImageClipオブジェクト
+            # ズームアニメーション（100%-95%の拡大縮小）を適用
+            img_clip_with_animation = scale_animation_95_100(img_clip)
+
             all_clips_by_layer['images'].append({
-                'clip': img_clip,
+                'clip': img_clip_with_animation,
                 'start': getattr(img_clip, 'start', 0.0),
                 'duration': img_clip.duration
             })
@@ -246,6 +249,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
         # メイン内容の字幕
         current_subtitle_time = title_duration + title_audio_duration
+        import random
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             part_type = part.get("part", "")
             text = part.get("text", "")
@@ -280,7 +284,17 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                             stroke_width=1
                         )
                         txt_clip = subtitle_slide_scale_animation(txt_clip)
-                        txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'center'))
+
+                        # メイン動画（パート 1以降）の場合、Y位置をランダムに配置
+                        # 上端から中央の間で、字幕が切れない範囲
+                        if i >= 1:
+                            # Y座標をランダムに選択（100-450ピクセル）
+                            y_pos = random.randint(100, 450)
+                            txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', y_pos))
+                            print(f"[SUBTITLE] Part {i} chunk {chunk_idx}: Y={y_pos}px")
+                        else:
+                            # タイトル部分は中央に固定
+                            txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'center'))
 
                         all_clips_by_layer['subtitles'].append({
                             'clip': txt_clip,
@@ -3540,16 +3554,22 @@ async def build_video_with_subtitles(
                 if not text:
                     continue
 
-                chunks = split_subtitle_text(text, max_chars=100)
+                # パート別に文字数制限を変更
+                # パート 0（title）: 100文字
+                # パート 1以降（メイン動画の解説）: 150文字
+                max_chars_for_part = 100 if i == 0 else 150
+
+                chunks = split_subtitle_text(text, max_chars=max_chars_for_part)
                 chunk_count = len(chunks)
                 chunk_duration = part_durations[i] / chunk_count if chunk_count > 0 else part_durations[i]
 
                 subtitle_chunks[i] = {
                     'chunks': chunks,
                     'chunk_count': chunk_count,
-                    'chunk_duration': chunk_duration
+                    'chunk_duration': chunk_duration,
+                    'part_type': part.get("part", "")
                 }
-                print(f"[SUBTITLE PREP] Part {i}: {chunk_count} chunks × {chunk_duration:.2f}s each")
+                print(f"[SUBTITLE PREP] Part {i}: {chunk_count} chunks × {chunk_duration:.2f}s each (max_chars={max_chars_for_part})")
 
             video = build_unified_timeline(
                 script_parts=script_parts,
