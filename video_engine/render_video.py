@@ -1344,76 +1344,7 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
     # Bingを使用
     max_retries = 2
     retry_delay = 1  # 秒
-    
-    # 企業名マッピング（製品名や型番に企業名をプレフィックスとして付与）
-    company_mapping = {
-        # AI/LLM
-        'GPT-5': 'OpenAI',
-        'GPT-4': 'OpenAI',
-        'ChatGPT': 'OpenAI',
-        'Claude': 'Anthropic',
-        'Claude 3': 'Anthropic',
-        'Gemini': 'Google',
-        'Gemini Pro': 'Google',
-        'Copilot': 'Microsoft',
-        'Bard': 'Google',
-        
-        # NVIDIA製品
-        'H100': 'NVIDIA',
-        'H200': 'NVIDIA',
-        'A100': 'NVIDIA',
-        'RTX 5090': 'NVIDIA',
-        'RTX 4090': 'NVIDIA',
-        'RTX 4080': 'NVIDIA',
-        'RTX 3090': 'NVIDIA',
-        'Blackwell': 'NVIDIA',
-        'Grace CPU': 'NVIDIA',
-        'Grace Hopper': 'NVIDIA',
-        'GeForce': 'NVIDIA',
-        'Quadro': 'NVIDIA',
-        'Tesla': 'NVIDIA',
-        
-        # AMD製品
-        'Ryzen': 'AMD',
-        'EPYC': 'AMD',
-        'Radeon': 'AMD',
-        'RX 7900': 'AMD',
-        'RX 6800': 'AMD',
-        
-        # Intel製品
-        'Core i9': 'Intel',
-        'Core i7': 'Intel',
-        'Core i5': 'Intel',
-        'Xeon': 'Intel',
-        'Arc': 'Intel',
-        
-        # Apple製品
-        'M3': 'Apple',
-        'M2': 'Apple',
-        'M1': 'Apple',
-        'iPhone': 'Apple',
-        'MacBook': 'Apple',
-        
-        # Google製品
-        'Tensor': 'Google',
-        'Pixel': 'Google',
-        'Chromebook': 'Google',
-        
-        # Microsoft製品
-        'Surface': 'Microsoft',
-        'Windows': 'Microsoft',
-        'Azure': 'Microsoft',
-        
-        # その他
-        'Tesla': 'Tesla',
-        'SpaceX': 'SpaceX',
-        'Amazon': 'Amazon',
-        'AWS': 'Amazon',
-        'Meta': 'Meta',
-        'Facebook': 'Meta',
-        'Instagram': 'Meta'
-    }
-    
+
     for attempt in range(max_retries):
         try:
             from playwright.async_api import async_playwright
