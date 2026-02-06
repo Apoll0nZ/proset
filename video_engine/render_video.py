@@ -232,7 +232,11 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             measured_durations = []
             if query_data_list_all and 0 in query_data_list_all and text_parts_list_all and 0 in text_parts_list_all:
                 print(f"[TIMELINE] Using measured timing for title subtitles (Case X)")
+                print(f"[DEBUG] query_data_list_all[0] length: {len(query_data_list_all[0])}")
+                print(f"[DEBUG] text_parts_list_all[0]: {text_parts_list_all[0]}")
                 measured_durations = calculate_measured_chunk_durations(query_data_list_all[0], text_parts_list_all[0])
+                print(f"[DEBUG] measured_durations: {measured_durations}")
+                print(f"[DEBUG] chunks count: {len(chunks)}, measured durations count: {len(measured_durations)}")
 
             for chunk_idx, chunk_text in enumerate(chunks):
                 # 計測タイミングが利用可能な場合は使用、なければ推定タイミングを使用
@@ -251,7 +255,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                         color="black",
                         font=font_path,
                         method="caption",
-                        size=(1600, None),
+                        size=(1200, None),  # 幅を1200に削減（画面の63%）
                         bg_color="white",
                         text_align="center",
                         stroke_color="black",
@@ -2471,17 +2475,17 @@ def split_text_for_voicevox(text: str) -> List[str]:
     字幕生成と同じ分割ロジックを使用することで、音声と字幕の完全同期を実現
     1文が150字に到達しない場合は、次の文と自動的に結合される
     """
-    return split_text_unified(text, max_chars=120, merge_small_chunks=True, merge_threshold=150)
+    return split_text_unified(text, max_chars=80, merge_small_chunks=True, merge_threshold=120)
 
-def split_subtitle_text(text: str, max_chars: int = 130) -> List[str]:
+def split_subtitle_text(text: str, max_chars: int = 80) -> List[str]:
     """字幕用テキスト分割（統一ロジックを使用、小さいチャンク結合機能あり）
 
     注：max_charsパラメータは互換性のため受け取りますが、
-    統一ロジックではmax_charsは常に120で統一されます
+    統一ロジックではmax_charsは常に80で統一されます
 
-    解説パートでは150字に到達しない文を結合して字幕を繋ぎます
+    解説パートでは120字に到達しない文を結合して字幕を繋ぎます
     """
-    return split_text_unified(text, max_chars=120, merge_small_chunks=True, merge_threshold=150)
+    return split_text_unified(text, max_chars=80, merge_small_chunks=True, merge_threshold=120)
 
 def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tuple:
     """
@@ -2531,10 +2535,7 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tup
                         raise RuntimeError(f"VOICEVOX クエリ生成失敗: {query_resp.status_code} {query_resp.text}")
                     
                     query_data = query_resp.json()
-                    query_data_list.append({
-                        'text_part': part_text,
-                        'query_data': query_data
-                    })
+                    query_data_list.append(query_data)  # 生のquery_dataのみを保存
                     print(f"Audio query generated successfully for part {i}")
                     break  # 成功したらループを抜ける
                     
@@ -3257,12 +3258,12 @@ async def build_video_with_subtitles(
                             img = img.convert("RGB")
                             original_width, original_height = img.size
 
-                            # ランダムなサイズ範囲を計算（画面の30-50%）
-                            # 30-50% of 1920x1080
-                            min_width = int(VIDEO_WIDTH * 0.30)   # 576px
-                            max_width = int(VIDEO_WIDTH * 0.50)   # 960px
-                            min_height = int(VIDEO_HEIGHT * 0.30) # 324px
-                            max_height = int(VIDEO_HEIGHT * 0.50) # 540px
+                            # ランダムなサイズ範囲を計算（画面の40-70%）
+                            # 40-70% of 1920x1080 で、より大きく目立つサイズ
+                            min_width = int(VIDEO_WIDTH * 0.40)   # 768px
+                            max_width = int(VIDEO_WIDTH * 0.70)   # 1344px
+                            min_height = int(VIDEO_HEIGHT * 0.40) # 432px
+                            max_height = int(VIDEO_HEIGHT * 0.70) # 756px
 
                             # ランダムにサイズを選択（整数値）
                             target_width = random.randint(min_width, max_width)
