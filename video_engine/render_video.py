@@ -414,11 +414,11 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
             try:
                 # テキストクリップを作成
                 txt_clip = TextClip(
-                    txt=chunk,
+                    text=chunk,
                     fontsize=30,
                     font=font_path or "Arial",
-                    color="white",
-                    bg_color="black",
+                    color="black",
+                    bg_color="yellow",
                     method="caption",
                     size=(VIDEO_WIDTH - 100, 100),
                     stroke_color="black",
