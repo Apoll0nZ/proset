@@ -1421,15 +1421,6 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
             # 検索キーワード：Geminiが抽出したキーワードをそのまま使用
             search_keyword = keyword
 
-            # テック関連画像がヒットしやすいようにクエリを最適化
-            if any(tech in keyword.lower() for tech in ['cpu', 'gpu', 'ai', 'ml', 'tech', 'chip', 'processor']):
-                if 'tech' not in search_keyword.lower() and 'official' not in search_keyword.lower():
-                    search_keyword = f"{search_keyword} tech official"
-
-            # ストックフォトを除外するために-shutterstockを付与
-            if '-shutterstock' not in search_keyword.lower():
-                search_keyword = f"{search_keyword} -shutterstock"
-
             # フォールバック検索（2回目以降）
             if attempt > 0:
                 print(f"[FALLBACK] Attempt {attempt + 1}: {search_keyword}")
