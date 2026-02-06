@@ -2148,47 +2148,6 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
     return None
 
 
-def split_subtitle_text(text: str, max_chars: int = 130) -> List[str]:
-    """字幕を120文字以内で分割し、読みやすく改行を挿入する。ネットの反応はコメント単位で区切る。"""
-    if len(text) <= max_chars:
-        return [add_line_breaks(text)]
-
-    import re
-    
-    # ネットの反応パート（コメント）を検出
-    if "ネットの反応" in text or "コメント" in text:
-        return split_network_reactions(text, max_chars)
-    
-    # 通常のニュースパートの処理
-    # 句点（。）で分割
-    parts = re.split(r"([。])", text)
-    
-    # 分割記号を元に戻す
-    sentences = []
-    for i in range(0, len(parts), 2):
-        if i + 1 < len(parts):
-            sentence = parts[i] + parts[i + 1]
-        else:
-            sentence = parts[i]
-        sentences.append(sentence.strip())
-    
-    # 結合ロジックの強化：max_charsに達するまで複数の文章を結合
-    merged_chunks = []
-    current_chunk = ""
-    
-    for sentence in sentences:
-        if len(current_chunk + sentence) <= max_chars:
-            current_chunk += sentence
-        else:
-            if current_chunk:
-                merged_chunks.append(add_line_breaks(current_chunk.strip()))
-            current_chunk = sentence
-    
-    if current_chunk:
-        merged_chunks.append(add_line_breaks(current_chunk.strip()))
-    
-    return merged_chunks
-
 
 def add_line_breaks(text: str) -> str:
     """30〜35文字ごとに適切な位置で改行を挿入する（最大5〜6行）"""
@@ -2406,58 +2365,86 @@ def get_latest_script_object() -> Dict[str, Any]:
     return {"key": key, "data": data}
 
 
-def split_text_for_voicevox(text: str) -> List[str]:
-    """長いテキストを句読点で適切に分割してVOICEVOXのAPI制限を回避"""
+def split_text_unified(text: str, max_chars: int = 120) -> List[str]:
+    """
+    テキスト分割の統一ロジック - 音声合成と字幕生成の両方に使用
+    これにより、音声チャンクと字幕チャンクが完全に一致する
+
+    Args:
+        text: 分割するテキスト
+        max_chars: 最大文字数
+
+    Returns:
+        分割されたテキストのリスト
+    """
     if not text:
         return []
-    
-    # 句読点で分割（。！？、。）
+
+    if len(text) <= max_chars:
+        return [text.strip()]
+
     import re
-    sentences = re.split(r'([。！？、。])', text)
-    
+
+    # 句読点で分割（。！？）
+    parts = re.split(r'([。！？])', text)
+
     # 分割記号を元に戻す
-    result = []
-    current = ""
-    
-    for i in range(0, len(sentences), 2):
-        if i + 1 < len(sentences):
-            sentence = sentences[i] + sentences[i + 1]
+    chunks = []
+    for i in range(0, len(parts), 2):
+        if i + 1 < len(parts):
+            chunk = parts[i] + parts[i + 1]
         else:
-            sentence = sentences[i]
-        
-        # 200文字を超える場合はさらに分割
-        if len(sentence) > 120:
-            # 半角スペースや全角スペースで分割
-            words = re.split(r'([\s　])', sentence)
+            chunk = parts[i]
+        if chunk.strip():
+            chunks.append(chunk.strip())
+
+    # max_charsを超えるチャンクをさらに分割
+    result = []
+    for chunk in chunks:
+        if len(chunk) <= max_chars:
+            result.append(chunk)
+        else:
+            # スペースで分割
+            words = re.split(r'([\s　])', chunk)
             temp = ""
-            for j in range(0, len(words), 2):
-                if j + 1 < len(words):
-                    word = words[j] + words[j + 1]
-                else:
-                    word = words[j]
-                
-                if len(temp + word) > 120 and temp:
-                    result.append(temp.strip())
-                    temp = word
-                else:
+            for word in words:
+                if len(temp + word) <= max_chars:
                     temp += word
-            
+                else:
+                    if temp.strip():
+                        result.append(temp.strip())
+                    temp = word
             if temp.strip():
                 result.append(temp.strip())
-        else:
-            result.append(sentence.strip())
-    
-    return [s for s in result if s.strip()]
-def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> None:
+
+    return result
+
+# 古い関数は互換性のためwrapperとして定義
+def split_text_for_voicevox(text: str) -> List[str]:
+    """VoiceVox用テキスト分割（統一ロジックを使用）"""
+    return split_text_unified(text, max_chars=120)
+
+def split_subtitle_text(text: str, max_chars: int = 130) -> List[str]:
+    """字幕用テキスト分割（統一ロジックを使用）
+
+    注：max_charsパラメータは互換性のため受け取りますが、
+    統一ロジックではmax_charsは常に120で統一されます
+    """
+    return split_text_unified(text, max_chars=120)
+
+def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tuple:
     """
     VOICEVOX API を用いて日本語音声を生成し、音声ファイルとして保存。
     長いテキストは自動的に分割して合成し、結合する。
     リトライロジックを実装し、ネットワークエラーに対応。
-    
+
     Args:
         text: 音声化するテキスト
         speaker_id: VOICEVOX のスピーカーID（例: 3=ずんだもん）
         out_path: 出力音声ファイルパス（.wav形式）
+
+    Returns:
+        (音声ファイルパス, query_data_list（タイミング情報）, text_parts)
     """
     import time
     
@@ -2469,6 +2456,7 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> Non
     
     audio_clips = []
     part_durations: List[float] = []
+    query_data_list = []  # タイミング情報を保存
     temp_dir = tempfile.mkdtemp()
     
     try:
@@ -2492,6 +2480,10 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> Non
                         raise RuntimeError(f"VOICEVOX クエリ生成失敗: {query_resp.status_code} {query_resp.text}")
                     
                     query_data = query_resp.json()
+                    query_data_list.append({
+                        'text_part': part_text,
+                        'query_data': query_data
+                    })
                     print(f"Audio query generated successfully for part {i}")
                     break  # 成功したらループを抜ける
                     
@@ -2542,15 +2534,17 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> Non
         
         if not audio_clips:
             raise RuntimeError("音声クリップが生成されませんでした。")
-        
+
         # すべての音声クリップを結合
         final_audio = concatenate_audioclips(audio_clips)
         final_audio.write_audiofile(out_path, codec="pcm_s16le", fps=44100)
-        
+
         # クリップを解放
         for clip in audio_clips:
             clip.close()
         final_audio.close()
+
+        return out_path, query_data_list, text_parts
         
     finally:
         # 一時ファイルを削除
@@ -2604,11 +2598,11 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                     speaker_id = part.get("speaker_id", 3)
                 
                 audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
-                
+
                 # 音声合成（内部でリトライロジックが動作）
                 print(f"Synthesizing part {i} (attempt {attempt}/3): {text[:50]}...")
-                synthesize_speech_voicevox(text, speaker_id, audio_path)
-                
+                audio_file, query_data_list, text_parts_from_synthesis = synthesize_speech_voicevox(text, speaker_id, audio_path)
+
                 if os.path.exists(audio_path):
                     # AudioFileClipを作成してリストに追加
                     clip = AudioFileClip(audio_path)
