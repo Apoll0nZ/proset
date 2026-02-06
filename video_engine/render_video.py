@@ -79,12 +79,21 @@ def slide_out_left(clip, duration=0.5):
         w, h = clip.size
         return clip.with_position(lambda t: (-VIDEO_WIDTH * max(0, min(1, t/duration)), 'center'))
 
-# 拡大縮小アニメーション関数（95%-100%）
-def scale_animation_95_100(clip):
-    """95%-100%の間で常に拡大縮小するアニメーション"""
+# 画像登場アニメーション関数（60%→100%ズーム + その後95%-100%サイクル）
+def scale_animation_image_entrance(clip):
+    """画像登場時は60%→100%でズーム、その後は95%-100%でサイクル"""
     def rescale(t):
-        # 4秒周期で95%-100%を往復
-        cycle = (t % 4) / 4  # 0-1の範囲
+        entrance_duration = 0.5  # 登場アニメーション0.5秒
+
+        # 登場期間（0-0.5秒）：60%→100%へズーム
+        if t < entrance_duration:
+            progress = t / entrance_duration  # 0-1
+            scale = 0.6 + 0.4 * progress  # 60%から100%へ
+            return scale
+
+        # 登場後（0.5秒以降）：95%-100%で4秒周期のサイクル
+        remaining_t = t - entrance_duration
+        cycle = (remaining_t % 4) / 4  # 0-1の範囲
         if cycle < 0.5:
             # 95% -> 100%
             scale = 0.95 + 0.05 * (cycle * 2)
@@ -92,12 +101,12 @@ def scale_animation_95_100(clip):
             # 100% -> 95%
             scale = 1.0 - 0.05 * ((cycle - 0.5) * 2)
         return scale
-    
+
     try:
         return clip.with_effects([vfx.Resize(lambda t: rescale(t))])
     except:
-        # フォールバック：シンプルな拡大縮小
-        return clip.resize(lambda t: 0.975 + 0.025 * math.sin(t * math.pi / 2))
+        # フォールバック：シンプルな登場ズーム
+        return clip.resize(lambda t: 0.6 + 0.4 * min(1.0, t / 0.5))
 
 # 画像切り替えアニメーション関数（60%縮小→消去 / 60%→100%拡大）
 def transition_scale_animation(clip, is_fade_out=False):
@@ -194,8 +203,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         print(f"[TIMELINE] Positioning {len(image_clips)} images...")
         for img_clip in image_clips:
             # image_clipsは既にwith_start()とwith_duration()が適用されたImageClipオブジェクト
-            # ズームアニメーション（100%-95%の拡大縮小）を適用
-            img_clip_with_animation = scale_animation_95_100(img_clip)
+            # ズームアニメーション：登場時は60%→100%、その後95%-100%サイクル
+            img_clip_with_animation = scale_animation_image_entrance(img_clip)
 
             all_clips_by_layer['images'].append({
                 'clip': img_clip_with_animation,
@@ -2420,7 +2429,7 @@ def extract_voice_timing_from_query_data(query_data: dict) -> float:
     return total_duration if total_duration > 0 else 0.0
 
 
-def split_text_unified(text: str, max_chars: int = 120) -> List[str]:
+def split_text_unified(text: str, max_chars: int = 120, merge_small_chunks: bool = False, merge_threshold: int = 150) -> List[str]:
     """
     テキスト分割の統一ロジック - 音声合成と字幕生成の両方に使用
     これにより、音声チャンクと字幕チャンクが完全に一致する
@@ -2428,6 +2437,8 @@ def split_text_unified(text: str, max_chars: int = 120) -> List[str]:
     Args:
         text: 分割するテキスト
         max_chars: 最大文字数
+        merge_small_chunks: Trueの場合、小さいチャンク（merge_threshold未満）を結合
+        merge_threshold: マージの閾値文字数（デフォルト150）
 
     Returns:
         分割されたテキストのリスト
@@ -2472,6 +2483,27 @@ def split_text_unified(text: str, max_chars: int = 120) -> List[str]:
             if temp.strip():
                 result.append(temp.strip())
 
+    # merge_small_chunks有効時：小さいチャンク（merge_threshold未満）を結合
+    if merge_small_chunks:
+        merged = []
+        current = ""
+        for chunk in result:
+            # 現在のバッファ+新しいチャンク を結合できるか判定
+            if len(current) == 0:
+                current = chunk
+            elif len(current + chunk) <= merge_threshold:
+                # 結合可能：繋げる
+                current += chunk
+            else:
+                # 結合不可：現在のバッファを確定、新しいチャンクを開始
+                merged.append(current)
+                current = chunk
+
+        if current:
+            merged.append(current)
+
+        return merged
+
     return result
 
 # 古い関数は互換性のためwrapperとして定義
@@ -2480,12 +2512,14 @@ def split_text_for_voicevox(text: str) -> List[str]:
     return split_text_unified(text, max_chars=120)
 
 def split_subtitle_text(text: str, max_chars: int = 130) -> List[str]:
-    """字幕用テキスト分割（統一ロジックを使用）
+    """字幕用テキスト分割（統一ロジックを使用、小さいチャンク結合機能あり）
 
     注：max_charsパラメータは互換性のため受け取りますが、
     統一ロジックではmax_charsは常に120で統一されます
+
+    解説パートでは150字に到達しない文を結合して字幕を繋ぎます
     """
-    return split_text_unified(text, max_chars=120)
+    return split_text_unified(text, max_chars=120, merge_small_chunks=True, merge_threshold=150)
 
 def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tuple:
     """
