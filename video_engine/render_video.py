@@ -3450,6 +3450,9 @@ async def build_video_with_subtitles(
 
         # 統一タイムラインを使用して動画を生成
         try:
+            # title_audio_durationを定義
+            title_audio_duration = part_durations[0] if part_durations else title_duration
+
             video = build_unified_timeline(
                 script_parts=script_parts,
                 part_durations=part_durations,
