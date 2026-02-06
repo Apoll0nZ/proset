@@ -2508,8 +2508,12 @@ def split_text_unified(text: str, max_chars: int = 120, merge_small_chunks: bool
 
 # 古い関数は互換性のためwrapperとして定義
 def split_text_for_voicevox(text: str) -> List[str]:
-    """VoiceVox用テキスト分割（統一ロジックを使用）"""
-    return split_text_unified(text, max_chars=120)
+    """VoiceVox用テキスト分割（統一ロジックを使用、小さいチャンク結合機能あり）
+
+    字幕生成と同じ分割ロジックを使用することで、音声と字幕の完全同期を実現
+    1文が150字に到達しない場合は、次の文と自動的に結合される
+    """
+    return split_text_unified(text, max_chars=120, merge_small_chunks=True, merge_threshold=150)
 
 def split_subtitle_text(text: str, max_chars: int = 130) -> List[str]:
     """字幕用テキスト分割（統一ロジックを使用、小さいチャンク結合機能あり）
