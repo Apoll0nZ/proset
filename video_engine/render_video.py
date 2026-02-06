@@ -228,12 +228,12 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                         method="caption",
                         size=(1600, None),
                         bg_color="white",
-                        text_align="left",
+                        text_align="center",
                         stroke_color="black",
                         stroke_width=1
                     )
                     txt_clip = subtitle_slide_scale_animation(txt_clip)
-                    txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'bottom'))
+                    txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'center'))
 
                     all_clips_by_layer['subtitles'].append({
                         'clip': txt_clip,
@@ -275,12 +275,12 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                             method="caption",
                             size=(1600, None),
                             bg_color="white",
-                            text_align="left",
+                            text_align="center",
                             stroke_color="black",
                             stroke_width=1
                         )
                         txt_clip = subtitle_slide_scale_animation(txt_clip)
-                        txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'bottom'))
+                        txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'center'))
 
                         all_clips_by_layer['subtitles'].append({
                             'clip': txt_clip,
@@ -2363,6 +2363,47 @@ def get_latest_script_object() -> Dict[str, Any]:
     body = obj["Body"].read().decode("utf-8")
     data = json.loads(body)
     return {"key": key, "data": data}
+
+
+def extract_voice_timing_from_query_data(query_data: dict) -> float:
+    """
+    Voicevox の query_data から実際の音声持続時間を計算
+
+    query_data 内のモーラの vowel_length を合計して
+    実際の音声時間（秒）を計算する
+
+    Args:
+        query_data: Voicevox /audio_query エンドポイントからの返すJSON
+
+    Returns:
+        実際の音声持続時間（秒）
+    """
+    total_duration = 0.0
+
+    try:
+        if not query_data or 'accent_phrases' not in query_data:
+            return 0.0
+
+        for accent_phrase in query_data.get('accent_phrases', []):
+            for mora in accent_phrase.get('moras', []):
+                vowel_length = mora.get('vowel_length', 0.0)
+                if vowel_length > 0:
+                    total_duration += vowel_length
+
+                consonant_length = mora.get('consonant_length', 0.0)
+                if consonant_length and consonant_length > 0:
+                    total_duration += consonant_length
+
+        # ポーズ（pause_length）も加算
+        for accent_phrase in query_data.get('accent_phrases', []):
+            pause_length = accent_phrase.get('pause_length', 0.0)
+            if pause_length and pause_length > 0:
+                total_duration += pause_length
+
+    except Exception as e:
+        print(f"[WARNING] Failed to extract timing from query_data: {e}")
+
+    return total_duration if total_duration > 0 else 0.0
 
 
 def split_text_unified(text: str, max_chars: int = 120) -> List[str]:
