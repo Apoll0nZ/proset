@@ -204,11 +204,9 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         print(f"[TIMELINE] Positioning {len(image_clips)} images...")
         for img_clip in image_clips:
             # image_clipsは既にwith_start()とwith_duration()が適用されたImageClipオブジェクト
-            # ズームアニメーション：登場時は60%→100%、その後95%-100%サイクル
-            img_clip_with_animation = scale_animation_image_entrance(img_clip)
-
+            # アニメーションはマイケルコレクションの際に既に適用済み（FadeInのみ）
             all_clips_by_layer['images'].append({
-                'clip': img_clip_with_animation,
+                'clip': img_clip,
                 'start': getattr(img_clip, 'start', 0.0),
                 'duration': img_clip.duration
             })
@@ -3337,8 +3335,9 @@ async def build_video_with_subtitles(
             print(f"[DEBUG] Image positioned randomly: x={random_x}px, y={random_y}px (image: {img_width}x{img_height}, screen: {VIDEO_WIDTH}x{VIDEO_HEIGHT})")
             clip = clip.with_position((random_x, random_y))
 
-            # 60%→100%拡大アニメーションで表示（ズームは最後）
-            clip = transition_scale_animation(clip, is_fade_out=False)
+            # 画像はアニメーションなしで直接表示（リサイズ済みサイズを保持）
+            # FadeIn効果のみを適用
+            clip = clip.with_effects([vfx.FadeIn(0.3)])
 
             # 画像クリップ生存確認（作成直後）
             if hasattr(clip, 'size') and clip.size == (0, 0):
@@ -3584,7 +3583,16 @@ async def build_video_with_subtitles(
                 if not text:
                     continue
 
-                chunks = split_subtitle_text(text, max_chars=120)
+                # 字幕チャンクを決定：音声合成で使用した実際のテキスト分割を優先
+                if text_parts_list_all and i in text_parts_list_all:
+                    # 実際の音声合成で使用したテキスト部分を使用（完全同期を確保）
+                    chunks = text_parts_list_all[i]
+                    print(f"[SUBTITLE PREP] Part {i}: Using actual text_parts_list_all (from synthesis) - {len(chunks)} chunks")
+                else:
+                    # Fallback: 新しく分割を作成
+                    chunks = split_subtitle_text(text, max_chars=120)
+                    print(f"[SUBTITLE PREP] Part {i}: Using fresh split - {len(chunks)} chunks")
+
                 chunk_count = len(chunks)
                 chunk_duration = part_durations[i] / chunk_count if chunk_count > 0 else part_durations[i]
 
