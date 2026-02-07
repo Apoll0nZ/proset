@@ -940,8 +940,10 @@ def subtitle_slide_scale_animation(clip):
         return scale
     
     try:
-        # 位置アニメーションのみ適用（スケールアニメーションは一旦外す）
-        return clip.with_position(animate)
+        # 位置アニメーション + スケールアニメーション両方を適用
+        return clip.with_effects([
+            vfx.Resize(lambda t: scale_animate(t))
+        ]).with_position(animate)
     except Exception as e:
         print(f"[DEBUG] Animation error: {e}")
         # フォールバック：静止状態で配置（中央揃え、画面外防止）
@@ -2602,6 +2604,122 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tup
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, out_path: str) -> tuple:
+    """
+    字幕チャンク単位で分割済みテキストを音声合成。
+    text_parts と query_data_list の1対1対応を保証。
+
+    Args:
+        text_parts: 既に分割済みテキスト配列（字幕チャンク）
+        speaker_id: VOICEVOX のスピーカーID
+        out_path: 出力音声ファイルパス
+
+    Returns:
+        (音声ファイルパス, query_data_list（1対1対応）, text_parts（入力と同じ）)
+    """
+    import time
+
+    if not text_parts or len(text_parts) == 0:
+        raise RuntimeError("テキストパーツが空です")
+
+    # 空でないテキストのみをフィルタリング
+    valid_parts = [t for t in text_parts if t.strip()]
+    if not valid_parts:
+        raise RuntimeError("有効なテキストパーツがありません")
+
+    audio_clips = []
+    query_data_list = []  # 1対1対応を保証
+    temp_dir = tempfile.mkdtemp()
+
+    try:
+        # 各テキストパーツを音声合成
+        for i, part_text in enumerate(valid_parts):
+            print(f"[PRECUT SYNTH] Part {i}: Synthesizing '{part_text[:30]}...'")
+
+            # 音声クエリ生成のリトライロジック
+            query_data = None
+            for attempt in range(1, 4):  # 最大3回リトライ
+                try:
+                    query_url = f"{VOICEVOX_API_URL}/audio_query"
+                    query_params = {
+                        "text": part_text,
+                        "speaker": speaker_id
+                    }
+                    query_resp = requests.post(query_url, params=query_params, timeout=30)
+                    if query_resp.status_code != 200:
+                        raise RuntimeError(f"Query generation failed: {query_resp.status_code}")
+
+                    query_data = query_resp.json()
+                    break  # 成功
+
+                except Exception as e:
+                    if attempt < 3:
+                        print(f"[PRECUT] Attempt {attempt} failed, retrying...")
+                        time.sleep(2)
+                    else:
+                        raise RuntimeError(f"Failed query generation after 3 attempts: {str(e)}")
+
+            # 音声合成のリトライロジック
+            synthesis_content = None
+            for attempt in range(1, 4):  # 最大3回リトライ
+                try:
+                    synthesis_url = f"{VOICEVOX_API_URL}/synthesis"
+                    synthesis_params = {"speaker": speaker_id}
+                    synthesis_resp = requests.post(
+                        synthesis_url,
+                        params=synthesis_params,
+                        json=query_data,
+                        timeout=60,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    if synthesis_resp.status_code != 200:
+                        raise RuntimeError(f"Synthesis failed: {synthesis_resp.status_code}")
+
+                    synthesis_content = synthesis_resp.content
+                    break  # 成功
+
+                except Exception as e:
+                    if attempt < 3:
+                        print(f"[PRECUT] Synthesis attempt {attempt} failed, retrying...")
+                        time.sleep(2)
+                    else:
+                        raise RuntimeError(f"Failed synthesis after 3 attempts: {str(e)}")
+
+            # 一時音声ファイルとして保存
+            temp_audio_path = os.path.join(temp_dir, f"temp_audio_{i}.wav")
+            with open(temp_audio_path, "wb") as out_f:
+                out_f.write(synthesis_content)
+
+            clip = AudioFileClip(temp_audio_path)
+            audio_clips.append(clip)
+            query_data_list.append(query_data)  # 1対1対応を保証
+
+            print(f"[PRECUT SYNTH] Part {i}: OK (query_data added)")
+
+        if not audio_clips:
+            raise RuntimeError("No audio clips were generated")
+
+        # すべての音声クリップを結合
+        print(f"[PRECUT SYNTH] Concatenating {len(audio_clips)} clips...")
+        final_audio = concatenate_audioclips(audio_clips)
+        final_audio.write_audiofile(out_path, codec="pcm_s16le", fps=44100)
+
+        # クリップを解放
+        for clip in audio_clips:
+            clip.close()
+        final_audio.close()
+
+        print(f"[PRECUT SYNTH] Output: {out_path}")
+        print(f"[PRECUT SYNTH] Returning {len(query_data_list)} query_data items matching {len(valid_parts)} text_parts")
+
+        return out_path, query_data_list, valid_parts
+
+    finally:
+        # 一時ファイルを削除
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str) -> tuple:
     """
     複数のセリフを順番に音声合成し、結合した音声ファイルを生成。
@@ -2655,9 +2773,21 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 
                 audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
 
-                # 音声合成（内部でリトライロジックが動作）
-                print(f"Synthesizing part {i} (attempt {attempt}/3): {text[:50]}...")
-                audio_file, query_data_list, text_parts_from_synthesis = synthesize_speech_voicevox(text, speaker_id, audio_path)
+                # ===== 新しい処理流れ：字幕優先 =====
+                # Step 1: テキストを字幕チャンク単位で分割
+                print(f"[REORDER] Part {i}: Splitting text into subtitle chunks...")
+                subtitle_text_parts = split_subtitle_text(text, max_chars=120)
+
+                if not subtitle_text_parts:
+                    raise RuntimeError(f"Failed to split text for part {i}")
+
+                print(f"[REORDER] Part {i}: Split into {len(subtitle_text_parts)} chunks")
+
+                # Step 2: 分割済みテキストを音声合成（1対1対応を保証）
+                print(f"[REORDER] Part {i}: Synthesizing {len(subtitle_text_parts)} chunks...")
+                audio_file, query_data_list, text_parts_from_synthesis = synthesize_precut_speech_voicevox(
+                    subtitle_text_parts, speaker_id, audio_path
+                )
 
                 if os.path.exists(audio_path):
                     # AudioFileClipを作成してリストに追加
@@ -2667,9 +2797,14 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                     generated_audio_files.append(audio_path)
                     part_durations.append(part_duration)
 
-                    # query_dataとtext_partsを保存
+                    # query_dataとtext_partsを保存（完全1対1対応を確保）
                     query_data_list_all[i] = query_data_list
                     text_parts_list_all[i] = text_parts_from_synthesis
+
+                    # 同期確認ログ
+                    print(f"[REORDER] Part {i}: ✓ Chunks={len(text_parts_from_synthesis)}, Query_data={len(query_data_list)}")
+                    if len(text_parts_from_synthesis) != len(query_data_list):
+                        print(f"[WARNING] Part {i}: Mismatch detected! chunks={len(text_parts_from_synthesis)} vs query_data={len(query_data_list)}")
 
                     successful_parts += 1
                     success = True
@@ -3335,9 +3470,8 @@ async def build_video_with_subtitles(
             print(f"[DEBUG] Image positioned randomly: x={random_x}px, y={random_y}px (image: {img_width}x{img_height}, screen: {VIDEO_WIDTH}x{VIDEO_HEIGHT})")
             clip = clip.with_position((random_x, random_y))
 
-            # 画像はアニメーションなしで直接表示（リサイズ済みサイズを保持）
-            # FadeIn効果のみを適用
-            clip = clip.with_effects([vfx.FadeIn(0.3)])
+            # 60%→100%拡大アニメーションで表示（ズームは登場時のみ）
+            clip = transition_scale_animation(clip, is_fade_out=False)
 
             # 画像クリップ生存確認（作成直後）
             if hasattr(clip, 'size') and clip.size == (0, 0):
@@ -3577,21 +3711,23 @@ async def build_video_with_subtitles(
             title_audio_duration = part_durations[0] if part_durations else title_duration
 
             # 各パートの字幕チャンク情報を計算
+            # 新しい処理流れ：text_parts_list_all[i]は既に字幕チャンクと完全に同期
             subtitle_chunks = {}
             for i, part in enumerate(script_parts):
                 text = part.get("text", "")
                 if not text:
                     continue
 
-                # 字幕チャンクを決定：音声合成で使用した実際のテキスト分割を優先
+                # text_parts_list_all[i] は synthesize_precut_speech_voicevox() で
+                # 既に split_subtitle_text() と同じ分割になっている（完全1対1対応）
                 if text_parts_list_all and i in text_parts_list_all:
-                    # 実際の音声合成で使用したテキスト部分を使用（完全同期を確保）
                     chunks = text_parts_list_all[i]
-                    print(f"[SUBTITLE PREP] Part {i}: Using actual text_parts_list_all (from synthesis) - {len(chunks)} chunks")
+                    print(f"[SUBTITLE PREP] Part {i}: Using text_parts_list_all - {len(chunks)} chunks (synchronized with audio synthesis)")
                 else:
-                    # Fallback: 新しく分割を作成
+                    # Fallback: 新しく分割を作成（通常は発生しない）
+                    print(f"[SUBTITLE PREP] Part {i}:WARNING - text_parts_list_all not found, using fallback split")
                     chunks = split_subtitle_text(text, max_chars=120)
-                    print(f"[SUBTITLE PREP] Part {i}: Using fresh split - {len(chunks)} chunks")
+                    print(f"[SUBTITLE PREP] Part {i}: Fallback split - {len(chunks)} chunks")
 
                 chunk_count = len(chunks)
                 chunk_duration = part_durations[i] / chunk_count if chunk_count > 0 else part_durations[i]
@@ -3601,7 +3737,7 @@ async def build_video_with_subtitles(
                     'chunk_count': chunk_count,
                     'chunk_duration': chunk_duration
                 }
-                print(f"[SUBTITLE PREP] Part {i}: {chunk_count} chunks × {chunk_duration:.2f}s each")
+                print(f"[SUBTITLE PREP] Part {i}: {chunk_count} chunks × {chunk_duration:.2f}s each (audio duration: {part_durations[i]:.2f}s)")
 
             video = build_unified_timeline(
                 script_parts=script_parts,
