@@ -2928,6 +2928,7 @@ async def build_video_with_subtitles(
     out_video_path: str,
     query_data_list_all: dict = None,
     text_parts_list_all: dict = None,
+    duration_list_all: dict = None,
 ) -> None:
     """
     新しい映像生成ワークフロー：
@@ -4034,6 +4035,7 @@ async def main() -> None:
                 out_video_path=video_path,
                 query_data_list_all=query_data_list_all,
                 text_parts_list_all=text_parts_list_all,
+                duration_list_all=duration_list_all,
             )
 
             # 4. サムネイル生成
