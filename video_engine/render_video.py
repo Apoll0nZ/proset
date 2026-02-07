@@ -1130,7 +1130,7 @@ FPS = int(os.environ.get("FPS", "30"))
 VIDEO_BITRATE = "8M"  # 高画質設定：8Mbps
 
 # デバッグモード（Trueの時は最初の60秒のみ書き出し）
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 # デバッグモードでの処理制限
 DEBUG_MAX_PARTS = 2 if DEBUG_MODE else None  # 最初の2パーツのみ処理
