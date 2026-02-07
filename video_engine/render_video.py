@@ -716,11 +716,15 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
     print(f"[MAIN SEGMENT DEBUG] audio_clip duration: {audio_clip.duration:.2f}s")
     print(f"[MAIN SEGMENT DEBUG] text length: {len(text)} chars")
     print(f"[MAIN SEGMENT DEBUG] image_clips available: {len(image_clips)}")
-    
+
     try:
         # 背景クリップを作成
         bg_clip = create_background_clip(duration)
-        print(f"[MAIN SEGMENT DEBUG] Background clip created: {bg_clip.duration:.2f}s")
+
+        if bg_clip is None:
+            print(f"[MAIN SEGMENT DEBUG] Background clip not available (S3 download failed or file missing)")
+        else:
+            print(f"[MAIN SEGMENT DEBUG] Background clip created: {bg_clip.duration:.2f}s")
 
         # このパートの音声を抽出
         # audio_start_timeが指定されている場合はそれを使用、否則start_timeを使用
@@ -738,7 +742,7 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
 
         part_audio = audio_clip.subclipped(audio_extract_start, end_time)
         print(f"[MAIN SEGMENT DEBUG] Part audio extracted: {part_audio.duration:.2f}s")
-        
+
         # 字幕を生成（このセグメント内での相対時間）
         subtitle_clips = []
 
@@ -769,16 +773,20 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
         for i, txt in enumerate(subtitle_clips[:3]):  # 最初の3つだけ表示
             if hasattr(txt, 'start') and hasattr(txt, 'duration'):
                 print(f"[MAIN SEGMENT DEBUG] Subtitle {i}: start={txt.start:.2f}s, duration={txt.duration:.2f}s")
-        
+
         # 画像を配置
         segment_images = get_images_for_time_range(image_clips, start_time, start_time + duration)
         print(f"[MAIN SEGMENT DEBUG] Images for segment: {len(segment_images)} clips")
         for i, img in enumerate(segment_images[:3]):  # 最初の3つだけ表示
             print(f"[MAIN SEGMENT DEBUG] Image {i}: start={img.start:.2f}s, duration={img.duration:.2f}s")
-        
+
         # 全クリップを合成
-        clips = [bg_clip] + segment_images + subtitle_clips
-        print(f"[MAIN SEGMENT DEBUG] Total clips to composite: {len(clips)}")
+        # 背景がある場合のみ含める
+        if bg_clip is not None:
+            clips = [bg_clip] + segment_images + subtitle_clips
+        else:
+            clips = segment_images + subtitle_clips
+        print(f"[MAIN SEGMENT DEBUG] Total clips to composite: {len(clips)} (background: {'yes' if bg_clip else 'no'})")
         
         if heading_clip and part_type != "owner_comment":
             heading_part = heading_clip.with_duration(duration)
@@ -833,7 +841,12 @@ def create_closing_segment(bgm_clip: AudioFileClip, heading_clip: ImageClip) -> 
         return None
 
 def create_background_clip(duration: float) -> VideoFileClip:
-    """背景クリップを生成"""
+    """
+    背景クリップを生成
+
+    成功時: 背景動画クリップを返す
+    失敗時: None を返す（背景なしで動作）
+    """
     try:
         print("\n=== Creating Background Clip ===")
 
@@ -843,13 +856,13 @@ def create_background_clip(duration: float) -> VideoFileClip:
 
         if not bg_video_path:
             print("[Step 1 FAILED] No background video downloaded from S3")
-            print("[Fallback] Creating solid color background...")
-            return create_fallback_background(duration)
+            print("[RESULT] No background will be used")
+            return None
 
         if not os.path.exists(bg_video_path):
             print(f"[Step 1 FAILED] Downloaded file does not exist: {bg_video_path}")
-            print("[Fallback] Creating solid color background...")
-            return create_fallback_background(duration)
+            print("[RESULT] No background will be used")
+            return None
 
         # ステップ2: 背景動画を処理
         print(f"[Step 2] Processing background video: {bg_video_path}")
@@ -857,23 +870,23 @@ def create_background_clip(duration: float) -> VideoFileClip:
 
         if bg_clip is None:
             print("[Step 2 FAILED] Background processing returned None")
-            print("[Fallback] Creating solid color background...")
-            return create_fallback_background(duration)
+            print("[RESULT] No background will be used")
+            return None
 
         print("[SUCCESS] Background clip created successfully")
         return bg_clip
 
     except FileNotFoundError as e:
         print(f"[ERROR] File not found during background creation: {e}")
-        print("[Fallback] Creating solid color background...")
-        return create_fallback_background(duration)
+        print("[RESULT] No background will be used")
+        return None
     except Exception as e:
         print(f"[ERROR] Unexpected error during background creation: {e}")
         print(f"[ERROR] Error type: {type(e).__name__}")
         import traceback
         traceback.print_exc()
-        print("[Fallback] Creating solid color background...")
-        return create_fallback_background(duration)
+        print("[RESULT] No background will be used")
+        return None
 
 
 def create_fallback_background(duration: float) -> VideoFileClip:
