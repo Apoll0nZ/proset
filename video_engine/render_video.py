@@ -3587,16 +3587,16 @@ async def build_video_with_subtitles(
                 # ヘッダー画像を読み込んでImageClipとして配置
                 heading_img = ImageClip(heading_path)
                 
-                # サイズが大きすぎる場合は幅80px程度にリサイズ（1/5サイズ）
+                # サイズを拡大（幅120px程度に拡大して存在感を出す）
                 img_w, img_h = heading_img.size
-                if img_w > 80:
-                    scale = 80 / img_w
-                    target_width = 80
+                if img_w > 120:
+                    scale = 120 / img_w
+                    target_width = 120
                     target_height = int(img_h * scale)
                     heading_img = heading_img.resized(width=target_width, height=target_height)
                 
-                # 左上に固定配置（スライドインなし）
-                heading_clip = heading_img.with_position((30, 30)).with_start(0.0).with_duration(total_duration).with_opacity(1.0).with_fps(FPS)
+                # 中央より少し左寄りに配置して存在感を出す
+                heading_clip = heading_img.with_position((100, 40)).with_start(0.0).with_duration(total_duration).with_opacity(1.0).with_fps(FPS)
                 print(f"[SUCCESS] Heading image loaded at top-left: {heading_img.size}")
             else:
                 print("[WARNING] Heading image not available, using text fallback")

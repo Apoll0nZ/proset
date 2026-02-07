@@ -361,9 +361,9 @@ def create_thumbnail(
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
     
-    # 中央配置
+    # 中央配置（上に寄せる）
     text_x = (THUMBNAIL_WIDTH - text_width) // 2
-    text_y = TOP_AREA_HEIGHT + (BOTTOM_AREA_HEIGHT - text_height) // 2
+    text_y = TOP_AREA_HEIGHT + (BOTTOM_AREA_HEIGHT - text_height) // 3  # 1/3の位置に配置して上に寄せる
     
     # 極太ゴシック風に描画（縁取り付き）
     draw_text_with_outline(
