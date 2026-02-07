@@ -106,6 +106,24 @@ jobs:
             --s3-bucket "${{ github.event.client_payload.s3_bucket }}" \
             --content-hash "${{ github.event.client_payload.content_hash }}"
 
+      - name: Check generated artifacts
+        if: always()  # エラーが起きても実行
+        run: |
+          echo "=== Checking for generated artifacts ==="
+          echo "Current directory: $(pwd)"
+          echo "Repository root contents:"
+          ls -lah ~/actions-runner/_work/youtube/youtube/ 2>/dev/null || ls -lah . 2>/dev/null || true
+          echo ""
+          echo "Checking for video.mp4:"
+          [ -f "video.mp4" ] && echo "✓ video.mp4 found" || echo "✗ video.mp4 NOT found"
+          [ -f "./video.mp4" ] && echo "✓ ./video.mp4 found" || echo "✗ ./video.mp4 NOT found"
+          [ -f "../video.mp4" ] && echo "✓ ../video.mp4 found" || echo "✗ ../video.mp4 NOT found"
+          echo ""
+          echo "Checking for thumbnail.png:"
+          [ -f "thumbnail.png" ] && echo "✓ thumbnail.png found" || echo "✗ thumbnail.png NOT found"
+          [ -f "./thumbnail.png" ] && echo "✓ ./thumbnail.png found" || echo "✗ ./thumbnail.png NOT found"
+          [ -f "../thumbnail.png" ] && echo "✓ ../thumbnail.png found" || echo "✗ ../thumbnail.png NOT found"
+
       - name: Upload Video Artifact
         if: always()  # エラーが起きても実行
         uses: actions/upload-artifact@v4
