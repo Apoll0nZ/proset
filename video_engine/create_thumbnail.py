@@ -162,13 +162,19 @@ def get_article_images(topic_summary: str, meta: Optional[Dict] = None, used_ima
             # その他
             return 3
         
-        # スコアリングして上位2枚を選択
+        # スコアリングして上位2枚を選択（重複を避ける）
         scored_paths = []
+        used_paths = set()  # 使用済みパスを追跡
+        
         for path in image_paths:
+            if path in used_paths:
+                continue  # 既に使用済みのパスはスキップ
+            
             score = get_domain_score(path)
             # 同点の場合はランダム性を加える
             score += random.randint(0, 2)
             scored_paths.append((score, path))
+            used_paths.add(path)  # 使用済みとしてマーク
         
         # スコアで降順にソートして上位2枚を選択
         scored_paths.sort(key=lambda x: x[0], reverse=True)
