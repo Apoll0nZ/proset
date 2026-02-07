@@ -4058,28 +4058,29 @@ async def main() -> None:
                 print(traceback.format_exc())
                 thumbnail_path = None
 
-                        # 4.5. 成果物をカレントディレクトリにコピー（GitHub Actions用）
-                        print("Copying artifacts to current directory for GitHub Actions...")
-                        try:
-                            import shutil
-                            
-                            # debug-video-artifacts ディレクトリを作成
-                            artifacts_dir = os.path.join(workspace_root, "debug-video-artifacts")
-                            os.makedirs(artifacts_dir, exist_ok=True)
-                            
-                            # 動画ファイルをプロジェクトルートにコピー
-                            if video_path and os.path.exists(video_path):
-                                video_dest = os.path.join(artifacts_dir, "video.mp4")
-                                shutil.copy2(video_path, video_dest)
-                                print(f"[INFO] Copied video to: {video_dest}")
-                                
-                                # コピー直後にファイルの存在を検証
-                                if os.path.exists(video_dest):
-                                    print(f"[SUCCESS] Verified artifact exists at: {video_dest}")
-                                else:
-                                    print(f"[ERROR] Verification failed! Artifact not found at: {video_dest} after copy!")
-                            else:
-                                print(f"[WARNING] Video file not found: {video_path}")                
+            # 4.5. 成果物をカレントディレクトリにコピー（GitHub Actions用）
+            print("Copying artifacts to current directory for GitHub Actions...")
+            try:
+                import shutil
+                
+                # debug-video-artifacts ディレクトリを作成
+                artifacts_dir = os.path.join(workspace_root, "debug-video-artifacts")
+                os.makedirs(artifacts_dir, exist_ok=True)
+                
+                # 動画ファイルをプロジェクトルートにコピー
+                if video_path and os.path.exists(video_path):
+                    video_dest = os.path.join(artifacts_dir, "video.mp4")
+                    shutil.copy2(video_path, video_dest)
+                    print(f"[INFO] Copied video to: {video_dest}")
+                    
+                    # コピー直後にファイルの存在を検証
+                    if os.path.exists(video_dest):
+                        print(f"[SUCCESS] Verified artifact exists at: {video_dest}")
+                    else:
+                        print(f"[ERROR] Verification failed! Artifact not found at: {video_dest} after copy!")
+                else:
+                    print(f"[WARNING] Video file not found: {video_path}")
+                
                 # サムネイルファイルの確認（既にworkspace_rootに存在）
                 if thumbnail_path and os.path.exists(thumbnail_path):
                     print(f"[INFO] Thumbnail already exists at: {thumbnail_path}")
