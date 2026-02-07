@@ -3564,8 +3564,8 @@ async def build_video_with_subtitles(
             print(f"[DEBUG] Image positioned randomly: x={random_x}px, y={random_y}px (image: {img_width}x{img_height}, screen: {VIDEO_WIDTH}x{VIDEO_HEIGHT})")
             clip = clip.with_position((random_x, random_y))
 
-            # 60%→100%拡大アニメーションで表示（ズームは登場時のみ）
-            clip = transition_scale_animation(clip, is_fade_out=False)
+            # 画像を90%-100%で拡大縮小アニメーションで表示
+            clip = scale_animation_image_entrance(clip)
 
             # 画像クリップ生存確認（作成直後）
             if hasattr(clip, 'size') and clip.size == (0, 0):
