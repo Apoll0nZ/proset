@@ -4085,11 +4085,19 @@ async def main() -> None:
                 else:
                     print(f"[WARNING] Video file not found: {video_path}")
                 
-                # サムネイルファイルの確認（既にworkspace_rootに存在）
+                # サムネイルファイルをコピー
                 if thumbnail_path and os.path.exists(thumbnail_path):
-                    print(f"[INFO] Thumbnail already exists at: {thumbnail_path}")
+                    thumbnail_dest = os.path.join(artifacts_dir, "thumbnail.png")
+                    shutil.copy2(thumbnail_path, thumbnail_dest)
+                    print(f"[INFO] Copied thumbnail to: {thumbnail_dest}")
+                    
+                    # コピー直後にファイルの存在を検証
+                    if os.path.exists(thumbnail_dest):
+                        print(f"[SUCCESS] Verified thumbnail exists at: {thumbnail_dest}")
+                    else:
+                        print(f"[ERROR] Verification failed! Thumbnail not found at: {thumbnail_dest} after copy!")
                 else:
-                    print("[WARNING] Thumbnail file not found")
+                    print(f"[WARNING] Thumbnail file not found: {thumbnail_path}")
                     
             except Exception as e:
                 print(f"[ERROR] Failed to copy artifacts: {e}")
@@ -4160,6 +4168,7 @@ async def main() -> None:
         finally:
             # 一時フォルダ全体を強制的にクリーンアップ
             import shutil
+            # DEBUG_MODEでもartifactsは保持するように変更
             if DEBUG_MODE:
                 print("[DEBUG] DEBUG_MODE: Artifacts 転送のため一時ファイル削除をスキップします")
             else:
