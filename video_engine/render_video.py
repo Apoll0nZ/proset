@@ -155,7 +155,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                           audio_clip: AudioFileClip, bgm_clip: AudioFileClip,
                           image_clips: List, heading_clip: ImageClip, font_path: str,
                           background_video: VideoFileClip, subtitle_chunks: dict = None,
-                          query_data_list_all: dict = None, text_parts_list_all: dict = None) -> tuple:
+                          query_data_list_all: dict = None, text_parts_list_all: dict = None,
+                          duration_list_all: dict = None) -> tuple:
     """
     統一タイムライン方式：全要素をグローバルタイムラインに配置して単一の動画を生成
 
@@ -232,7 +233,9 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 print(f"[TIMELINE] Using measured timing for title subtitles (Case X)")
                 print(f"[DEBUG] query_data_list_all[0] length: {len(query_data_list_all[0])}")
                 print(f"[DEBUG] text_parts_list_all[0]: {text_parts_list_all[0]}")
-                measured_durations = calculate_measured_chunk_durations(query_data_list_all[0], text_parts_list_all[0])
+                # ★duration_list_allがあれば渡す
+                duration_list = duration_list_all.get(0) if duration_list_all else None
+                measured_durations = calculate_measured_chunk_durations(query_data_list_all[0], text_parts_list_all[0], duration_list)
                 print(f"[DEBUG] measured_durations: {measured_durations}")
                 print(f"[DEBUG] chunks count: {len(chunks)}, measured durations count: {len(measured_durations)}")
 
@@ -295,7 +298,9 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 measured_durations = []
                 if query_data_list_all and i in query_data_list_all and text_parts_list_all and i in text_parts_list_all:
                     print(f"[TIMELINE] Using measured timing for part {i} subtitles (Case X)")
-                    measured_durations = calculate_measured_chunk_durations(query_data_list_all[i], text_parts_list_all[i])
+                    # ★duration_list_allがあれば渡す
+                    duration_list = duration_list_all.get(i) if duration_list_all else None
+                    measured_durations = calculate_measured_chunk_durations(query_data_list_all[i], text_parts_list_all[i], duration_list)
 
                 for chunk_idx, chunk_text in enumerate(chunks):
                     # 計測タイミングが利用可能な場合は使用、なければ推定タイミングを使用
@@ -2354,13 +2359,18 @@ def extract_voice_timing_from_query_data(query_data: dict) -> float:
     return total_duration if total_duration > 0 else 0.0
 
 
-def calculate_measured_chunk_durations(query_data_list: List[Dict], text_parts: List[str]) -> List[float]:
+def calculate_measured_chunk_durations(query_data_list: List[Dict], text_parts: List[str], duration_list: List[float] = None) -> List[float]:
     """
-    Voicevoxの query_data リストから各テキストチャンクの実測時間を計算
+    各テキストチャンクの実測時間を計算
+
+    優先順序：
+    1. duration_list（ファイルベースの実測値）- 最も正確
+    2. extract_voice_timing_from_query_data()（mora計算）- フォールバック
 
     Args:
         query_data_list: 各テキストパートのquery_dataリスト
         text_parts: 分割されたテキストパートのリスト
+        duration_list: 各チャンクの実ファイルduration（秒）- Noneの場合はmora計算を使用
 
     Returns:
         各チャンクの実測時間（秒）のリスト
@@ -2372,17 +2382,26 @@ def calculate_measured_chunk_durations(query_data_list: List[Dict], text_parts: 
             print("[WARNING] query_data_list is empty, using fallback")
             return measured_durations
 
-        for idx, query_data in enumerate(query_data_list):
-            # 各query_dataから実測時間を抽出
-            measured_duration = extract_voice_timing_from_query_data(query_data)
+        # 【重要】duration_listが提供されている場合はそちらを優先
+        if duration_list and len(duration_list) == len(query_data_list):
+            print(f"[TIMING] Using file-based durations (duration_list provided): {len(duration_list)} chunks")
+            for idx, file_duration in enumerate(duration_list):
+                measured_durations.append(file_duration)
+                print(f"[MEASURED] Chunk {idx}: {file_duration:.3f}s from file duration (most accurate)")
+        else:
+            # フォールバック：mora計算を使用
+            print(f"[TIMING] Using mora-based calculation (no duration_list provided)")
+            for idx, query_data in enumerate(query_data_list):
+                # 各query_dataから実測時間を抽出
+                measured_duration = extract_voice_timing_from_query_data(query_data)
 
-            if measured_duration > 0:
-                measured_durations.append(measured_duration)
-                print(f"[MEASURED] Chunk {idx}: {measured_duration:.3f}s from query_data")
-            else:
-                # フォールバック：moras がない場合
-                print(f"[FALLBACK] Chunk {idx}: No timing data, using default")
-                measured_durations.append(0.0)
+                if measured_duration > 0:
+                    measured_durations.append(measured_duration)
+                    print(f"[MEASURED] Chunk {idx}: {measured_duration:.3f}s from query_data (mora calculation)")
+                else:
+                    # フォールバック：moras がない場合
+                    print(f"[FALLBACK] Chunk {idx}: No timing data, using default")
+                    measured_durations.append(0.0)
 
     except Exception as e:
         print(f"[ERROR] Failed to calculate measured chunk durations: {e}")
@@ -2608,6 +2627,7 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
     """
     字幕チャンク単位で分割済みテキストを音声合成。
     text_parts と query_data_list の1対1対応を保証。
+    実ファイルdurationに基づいた計測を実施。
 
     Args:
         text_parts: 既に分割済みテキスト配列（字幕チャンク）
@@ -2615,7 +2635,9 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
         out_path: 出力音声ファイルパス
 
     Returns:
-        (音声ファイルパス, query_data_list（1対1対応）, text_parts（入力と同じ）)
+        (音声ファイルパス, query_data_list, text_parts, duration_list)
+        - 各要素が1対1対応
+        - duration_list: 各チャンクの実ファイルduration（秒）
     """
     import time
 
@@ -2629,6 +2651,7 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
 
     audio_clips = []
     query_data_list = []  # 1対1対応を保証
+    duration_list = []    # 実ファイルdurationを記録
     temp_dir = tempfile.mkdtemp()
 
     try:
@@ -2690,11 +2713,15 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
             with open(temp_audio_path, "wb") as out_f:
                 out_f.write(synthesis_content)
 
+            # 【重要】実ファイルのdurationを取得
             clip = AudioFileClip(temp_audio_path)
-            audio_clips.append(clip)
-            query_data_list.append(query_data)  # 1対1対応を保証
+            file_duration = clip.duration
 
-            print(f"[PRECUT SYNTH] Part {i}: OK (query_data added)")
+            audio_clips.append(clip)
+            query_data_list.append(query_data)
+            duration_list.append(file_duration)  # 実ファイルdurationを記録
+
+            print(f"[PRECUT SYNTH] Part {i}: OK (file_duration={file_duration:.3f}s)")
 
         if not audio_clips:
             raise RuntimeError("No audio clips were generated")
@@ -2710,9 +2737,9 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
         final_audio.close()
 
         print(f"[PRECUT SYNTH] Output: {out_path}")
-        print(f"[PRECUT SYNTH] Returning {len(query_data_list)} query_data items matching {len(valid_parts)} text_parts")
+        print(f"[PRECUT SYNTH] Returning {len(query_data_list)} items with file durations: {[f'{d:.3f}s' for d in duration_list]}")
 
-        return out_path, query_data_list, valid_parts
+        return out_path, query_data_list, valid_parts, duration_list
 
     finally:
         # 一時ファイルを削除
@@ -2739,6 +2766,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     part_durations: List[float] = []
     query_data_list_all = {}  # 部分ごとのquery_dataを保存
     text_parts_list_all = {}  # 部分ごとのtext_partsを保存
+    duration_list_all = {}    # ★ファイルベースのduration_listを保存
     generated_audio_files = []
     successful_parts = 0
     failed_parts = []
@@ -2785,7 +2813,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
 
                 # Step 2: 分割済みテキストを音声合成（1対1対応を保証）
                 print(f"[REORDER] Part {i}: Synthesizing {len(subtitle_text_parts)} chunks...")
-                audio_file, query_data_list, text_parts_from_synthesis = synthesize_precut_speech_voicevox(
+                audio_file, query_data_list, text_parts_from_synthesis, duration_list = synthesize_precut_speech_voicevox(
                     subtitle_text_parts, speaker_id, audio_path
                 )
 
@@ -2797,14 +2825,16 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                     generated_audio_files.append(audio_path)
                     part_durations.append(part_duration)
 
-                    # query_dataとtext_partsを保存（完全1対1対応を確保）
+                    # query_data、text_parts、duration_list を保存（完全1対1対応を確保）
                     query_data_list_all[i] = query_data_list
                     text_parts_list_all[i] = text_parts_from_synthesis
+                    # ★ファイルベースのduration_listも保存
+                    duration_list_all[i] = duration_list
 
                     # 同期確認ログ
-                    print(f"[REORDER] Part {i}: ✓ Chunks={len(text_parts_from_synthesis)}, Query_data={len(query_data_list)}")
-                    if len(text_parts_from_synthesis) != len(query_data_list):
-                        print(f"[WARNING] Part {i}: Mismatch detected! chunks={len(text_parts_from_synthesis)} vs query_data={len(query_data_list)}")
+                    print(f"[REORDER] Part {i}: ✓ Chunks={len(text_parts_from_synthesis)}, Query_data={len(query_data_list)}, Duration_list={len(duration_list)}")
+                    if len(text_parts_from_synthesis) != len(query_data_list) or len(text_parts_from_synthesis) != len(duration_list):
+                        print(f"[WARNING] Part {i}: Mismatch detected!")
 
                     successful_parts += 1
                     success = True
@@ -3755,7 +3785,8 @@ async def build_video_with_subtitles(
                 background_video=bg_clip,
                 subtitle_chunks=subtitle_chunks,
                 query_data_list_all=query_data_list_all,
-                text_parts_list_all=text_parts_list_all
+                text_parts_list_all=text_parts_list_all,
+                duration_list_all=duration_list_all  # ★ファイルベースdurationを追加
             )
 
             if video is None:
