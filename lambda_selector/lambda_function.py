@@ -195,7 +195,42 @@ def fetch_multiple_entries(feed_url: str, max_entries: int = 15) -> List[feedpar
         print(f"RSS fetch error {feed_url}: {exc}")
         return []
 
-    return [entry for entry in feed.entries[:max_entries] if entry.get("title")]
+    # 新鮮さチェック：30日以内の記事のみ取得
+    freshness_cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    fresh_entries = []
+    
+    for entry in feed.entries[:max_entries]:
+        if not entry.get("title"):
+            continue
+            
+        # published_atを取得して新鮮さチェック
+        published = None
+        for date_field in ['published', 'updated', 'created']:
+            if hasattr(entry, date_field) and getattr(entry, date_field):
+                published = getattr(entry, date_field)
+                break
+        
+        if published:
+            try:
+                if isinstance(published, str):
+                    published_dt = datetime.fromisoformat(published.replace('Z', '+00:00'))
+                else:
+                    published_dt = published
+                
+                if published_dt >= freshness_cutoff:
+                    fresh_entries.append(entry)
+                else:
+                    print(f"Skipping old RSS entry: {entry.get('title', 'Untitled')} (published: {published})")
+            except Exception as e:
+                print(f"Date parsing error for RSS entry: {e}")
+                continue
+        else:
+            # 日付がない記事は除外
+            print(f"Skipping RSS entry without date: {entry.get('title', 'Untitled')}")
+            continue
+    
+    print(f"Fetched {len(fresh_entries)} fresh entries from {feed_url}")
+    return fresh_entries
 
 
 def build_topic_summary(entry: feedparser.FeedParserDict) -> str:
