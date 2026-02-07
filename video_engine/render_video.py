@@ -4060,10 +4060,14 @@ async def main() -> None:
             print("Copying artifacts to current directory for GitHub Actions...")
             try:
                 import shutil
+
+                # debug-video-artifacts ディレクトリを作成
+                artifacts_dir = os.path.join(workspace_root, "debug-video-artifacts")
+                os.makedirs(artifacts_dir, exist_ok=True)
                 
                 # 動画ファイルをプロジェクトルートにコピー
                 if video_path and os.path.exists(video_path):
-                    video_dest = os.path.join(workspace_root, "video.mp4")
+                    video_dest = os.path.join(artifacts_dir, "video.mp4")
                     shutil.copy2(video_path, video_dest)
                     print(f"[INFO] Copied video to: {video_dest}")
                 else:
