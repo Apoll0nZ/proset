@@ -2915,7 +2915,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
             except Exception as e:
                 print(f"Failed to remove temporary audio file {audio_file}: {e}")
 
-    return final_audio_path, part_durations, query_data_list_all, text_parts_list_all
+    return final_audio_path, part_durations, query_data_list_all, text_parts_list_all, duration_list_all
 
 
 async def build_video_with_subtitles(
@@ -4019,7 +4019,7 @@ async def main() -> None:
 
             # 2. VOICEVOX で音声生成（複数セリフ対応）
             print("Generating audio...")
-            audio_path, part_durations, query_data_list_all, text_parts_list_all = synthesize_multiple_speeches(script_parts, tmpdir)
+            audio_path, part_durations, query_data_list_all, text_parts_list_all, duration_list_all = synthesize_multiple_speeches(script_parts, tmpdir)
 
             # 3. Video 合成
             print("Generating video...")
