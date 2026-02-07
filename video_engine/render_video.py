@@ -3405,10 +3405,10 @@ async def build_video_with_subtitles(
                 remaining_segments = len(script_parts) - i - 1
                 if remaining_segments > 0:
                     print(f"[INFO] 画像収集完了（60枚）。残り{remaining_segments}セグメントの処理をスキップして動画合成を開始します")
-                    # 残りのセグメントの時間分をcurrent_timeに加算して時間の飛びを防ぐ
+                    # 残りのセグメントの時間分をcurrent_image_timeに加算して時間の飛びを防ぐ
                     for j in range(i + 1, len(script_parts)):
                         if j < len(part_durations):
-                            current_time += part_durations[j]
+                            current_image_time += part_durations[j]
                     break
 
         if not image_schedule:
