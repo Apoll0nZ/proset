@@ -835,14 +835,78 @@ def create_closing_segment(bgm_clip: AudioFileClip, heading_clip: ImageClip) -> 
 def create_background_clip(duration: float) -> VideoFileClip:
     """背景クリップを生成"""
     try:
+        print("\n=== Creating Background Clip ===")
+
+        # ステップ1: 背景動画をS3からダウンロード
+        print("[Step 1] Attempting to download background video from S3...")
         bg_video_path = download_random_background_video()
-        if bg_video_path and os.path.exists(bg_video_path):
-            return process_background_video_for_hd(bg_video_path, duration)
-        else:
-            return ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=duration)
+
+        if not bg_video_path:
+            print("[Step 1 FAILED] No background video downloaded from S3")
+            print("[Fallback] Creating solid color background...")
+            return create_fallback_background(duration)
+
+        if not os.path.exists(bg_video_path):
+            print(f"[Step 1 FAILED] Downloaded file does not exist: {bg_video_path}")
+            print("[Fallback] Creating solid color background...")
+            return create_fallback_background(duration)
+
+        # ステップ2: 背景動画を処理
+        print(f"[Step 2] Processing background video: {bg_video_path}")
+        bg_clip = process_background_video_for_hd(bg_video_path, duration)
+
+        if bg_clip is None:
+            print("[Step 2 FAILED] Background processing returned None")
+            print("[Fallback] Creating solid color background...")
+            return create_fallback_background(duration)
+
+        print("[SUCCESS] Background clip created successfully")
+        return bg_clip
+
+    except FileNotFoundError as e:
+        print(f"[ERROR] File not found during background creation: {e}")
+        print("[Fallback] Creating solid color background...")
+        return create_fallback_background(duration)
     except Exception as e:
-        print(f"[BACKGROUND ERROR] Failed to create background: {e}")
-        return ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=duration)
+        print(f"[ERROR] Unexpected error during background creation: {e}")
+        print(f"[ERROR] Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+        print("[Fallback] Creating solid color background...")
+        return create_fallback_background(duration)
+
+
+def create_fallback_background(duration: float) -> VideoFileClip:
+    """
+    フォールバック背景を作成（ダーク背景）
+    黒塗りではなく、グラデーションまたは暗いグレーを使用
+    """
+    import numpy as np
+
+    try:
+        print("[Fallback] Creating gradient background...")
+
+        # ダークグレー背景を作成（RGB: 20, 20, 20）
+        # 純粋な黒（0, 0, 0）よりも見やすく、プロフェッショナルな見た目
+        color = (20, 20, 20)  # Dark gray instead of pure black
+
+        bg_clip = ColorClip(
+            size=(VIDEO_WIDTH, VIDEO_HEIGHT),
+            color=color,
+            duration=duration
+        )
+
+        print(f"[SUCCESS] Fallback background created: {VIDEO_WIDTH}x{VIDEO_HEIGHT}, duration={duration:.2f}s, color=RGB{color}")
+        return bg_clip
+
+    except Exception as e:
+        print(f"[ERROR] Even fallback background creation failed: {e}")
+        # 最後の手段：純粋な黒塗り
+        return ColorClip(
+            size=(VIDEO_WIDTH, VIDEO_HEIGHT),
+            color=(0, 0, 0),
+            duration=duration
+        )
 
 def create_subtitles_for_segment(text: str, duration: float, segment_start_time: float, font_path: str) -> List:
     """セグメント内の字幕を生成（簡潔な均等分配方式）"""
@@ -1112,57 +1176,80 @@ def download_random_background_video() -> str:
     """S3のassetsフォルダからs*.mp4形式の背景動画をランダムに1つ選択してダウンロード"""
     try:
         # assets/フォルダからs*.mp4ファイルをリストアップ
-        print(f"Listing s*.mp4 files in s3://{S3_BUCKET}/assets/")
+        print(f"[BACKGROUND] Listing s*.mp4 files in s3://{S3_BUCKET}/assets/")
         resp = s3_client.list_objects_v2(
             Bucket=S3_BUCKET,
             Prefix="assets/",
             MaxKeys=100
         )
-        
+
         mp4_files = []
         contents = resp.get("Contents", [])
+
+        if not contents:
+            print("[BACKGROUND] ERROR: No objects found in assets/ folder")
+            print("[BACKGROUND] Please ensure S3_BUCKET is correctly configured and assets folder exists")
+            return None
+
+        print(f"[BACKGROUND] Found {len(contents)} total objects in assets/ folder")
+
         for obj in contents:
             key = obj["Key"]
             # s*.mp4またはS*.mp4パターンに一致するファイルを対象
             filename = os.path.basename(key)
             if filename.lower().startswith("s") and filename.lower().endswith(".mp4"):
                 mp4_files.append(key)
-        
+
         if not mp4_files:
-            print("[WARNING] No s*.mp4 files found in assets/ folder")
-            print("[DEBUG] Available files in assets/:")
+            print("[BACKGROUND] WARNING: No s*.mp4 files found in assets/ folder")
+            print("[BACKGROUND] Available MP4 files in assets/:")
+            mp4_count = 0
             for obj in contents:
                 filename = os.path.basename(obj["Key"])
                 if filename.lower().endswith(".mp4"):
-                    print(f"  - {obj['Key']} (filename: {filename})")
+                    print(f"                        - {obj['Key']} (filename: {filename})")
+                    mp4_count += 1
+
+            if mp4_count == 0:
+                print("[BACKGROUND] No MP4 files at all in assets/ folder")
+                print("[BACKGROUND] All objects in assets/:")
+                for obj in contents[:10]:  # 最初の10個表示
+                    print(f"                        - {obj['Key']}")
+
             return None
-        
+
         # ランダムに1つ選択
         selected_key = random.choice(mp4_files)
-        print(f"[DEBUG] Selected background video: {selected_key}")
-        print(f"[DEBUG] Available s*.mp4 files: {mp4_files}")
-        
+        print(f"[BACKGROUND] Selected from {len(mp4_files)} available s*.mp4 files: {selected_key}")
+
         # ダウンロード
         temp_dir = tempfile.mkdtemp()
         filename = os.path.basename(selected_key)
         local_path = os.path.join(temp_dir, filename)
-        
-        print(f"[DEBUG] Downloading background video from S3: s3://{S3_BUCKET}/{selected_key}")
-        print(f"[DEBUG] Local path: {local_path}")
+
+        print(f"[BACKGROUND] Downloading from S3: s3://{S3_BUCKET}/{selected_key}")
+        print(f"[BACKGROUND] Local destination: {local_path}")
+
         s3_client.download_file(S3_BUCKET, selected_key, local_path)
-        print(f"[DEBUG] Successfully downloaded to: {local_path}")
-        
+
+        if not os.path.exists(local_path):
+            print(f"[BACKGROUND] ERROR: File was not created after download: {local_path}")
+            return None
+
         # ファイルサイズ確認
         file_size = os.path.getsize(local_path)
-        print(f"[DEBUG] Background video file size: {file_size / (1024*1024):.2f} MB")
-        
-        if file_size < 1024 * 1024:  # 1MB未満
-            print("[WARNING] Background video file is very small (< 1MB)")
-        
+        print(f"[BACKGROUND] Successfully downloaded: {file_size / (1024*1024):.2f} MB")
+
+        if file_size < 1024 * 100:  # 100KB未満は異常
+            print(f"[BACKGROUND] WARNING: File is suspiciously small ({file_size} bytes)")
+
         return local_path
-        
+
     except Exception as e:
-        print(f"Failed to download background video: {e}")
+        print(f"[BACKGROUND] ERROR during download: {type(e).__name__}: {e}")
+        import traceback
+        print("[BACKGROUND] Debug traceback:")
+        traceback.print_exc()
         return None
 
 
@@ -1227,55 +1314,73 @@ def debug_background_video(bg_clip, total_duration):
 def process_background_video_for_hd(bg_path: str, total_duration: float):
     """背景動画をシンプルに読み込んで中央配置（リサイズなし）"""
     try:
-        print(f"Processing background video: {bg_path}")
-        
+        print(f"\n[BACKGROUND] Processing background video: {bg_path}")
+
         # ファイル存在確認
         if not os.path.exists(bg_path):
-            raise RuntimeError(f"背景動画ファイルが存在しません: {bg_path}")
-        
+            print(f"[BACKGROUND] ERROR: File does not exist: {bg_path}")
+            return None
+
+        # ファイルサイズ確認
+        file_size = os.path.getsize(bg_path)
+        print(f"[BACKGROUND] File size: {file_size / (1024*1024):.2f} MB")
+
         # 動画ファイルであることを確認
         if not bg_path.lower().endswith(('.mp4', '.mov', '.avi', '.mkv', '.webm')):
-            raise RuntimeError(f"背景動画が動画ファイルではありません: {bg_path}")
-        
+            print(f"[BACKGROUND] ERROR: Not a video file: {bg_path}")
+            return None
+
         # 動画を元の解像度で読み込み（リサイズなし）
-        print(f"[DEBUG] VideoFileClipを生成します: {bg_path}")
-        bg_clip = VideoFileClip(bg_path)
-        
+        print(f"[BACKGROUND] Loading video with VideoFileClip: {bg_path}")
+        try:
+            bg_clip = VideoFileClip(bg_path)
+        except Exception as load_error:
+            print(f"[BACKGROUND] ERROR: Failed to load video: {type(load_error).__name__}: {load_error}")
+            return None
+
         # VideoFileClipであることを確認
         if not isinstance(bg_clip, VideoFileClip):
-            raise RuntimeError(f"背景動画がVideoFileClipではありません: {type(bg_clip)}")
-        
-        print(f"[SUCCESS] VideoFileClip生成成功: {type(bg_clip)}")
-        print(f"[DEBUG] Duration: {bg_clip.duration}s, Original Size: {bg_clip.size}")
-        
+            print(f"[BACKGROUND] ERROR: Loaded clip is not VideoFileClip: {type(bg_clip)}")
+            return None
+
+        print(f"[BACKGROUND] VideoFileClip loaded successfully")
+        print(f"[BACKGROUND] Duration: {bg_clip.duration:.2f}s, Size: {bg_clip.size}")
+
         # 音声を保持（素材動画の音声をミックスするため）
         if hasattr(bg_clip, 'audio') and bg_clip.audio:
-            print(f"[AUDIO] Background video has audio: duration={bg_clip.audio.duration}s")
+            print(f"[BACKGROUND] Background has audio: {bg_clip.audio.duration:.2f}s")
         else:
-            print("[AUDIO] Background video has no audio")
-        
+            print("[BACKGROUND] Background has no audio track")
+
         # 動画をトリムして総動画長に合わせる
-        bg_clip = bg_clip.subclipped(0, total_duration)
-        print(f"Background video trimmed to {total_duration:.2f}s")
-        
+        try:
+            bg_clip = bg_clip.subclipped(0, total_duration)
+            print(f"[BACKGROUND] Video trimmed/looped to {total_duration:.2f}s")
+        except Exception as trim_error:
+            print(f"[BACKGROUND] WARNING: Failed to trim video: {trim_error}")
+            print(f"[BACKGROUND] Using original duration: {bg_clip.duration:.2f}s")
+
         # 中央配置設定（1920x1080キャンバスの中央に）
-        bg_clip = bg_clip.with_position("center").with_start(0).with_opacity(1.0).with_fps(FPS)
-        print(f"[DEBUG] Background positioned at center, start=0, opacity=1.0, fps={FPS}")
-        
+        try:
+            bg_clip = bg_clip.with_position("center").with_start(0).with_opacity(1.0).with_fps(FPS)
+            print(f"[BACKGROUND] Applied positioning: center, start=0, opacity=1.0, fps={FPS}")
+        except Exception as pos_error:
+            print(f"[BACKGROUND] WARNING: Failed to apply positioning: {pos_error}")
+
         # 型チェックを緩和：hasattrで映像機能を判定
         if hasattr(bg_clip, 'get_frame'):
-            print(f"[SUCCESS] Background video confirmed as functional video clip: {type(bg_clip)}")
+            print(f"[BACKGROUND] SUCCESS: Background clip is functional")
+            print(f"[BACKGROUND] Final size: {bg_clip.size}, duration: {bg_clip.duration:.2f}s")
+            return bg_clip
         else:
-            raise RuntimeError(f"背景動画が映像として機能しません: {type(bg_clip)}")
-        
-        print(f"[DEBUG] Background clip final size: {bg_clip.size}")
-        print(f"[DEBUG] Background will be centered in 1920x1080 canvas")
-        
-        return bg_clip
-        
+            print(f"[BACKGROUND] ERROR: Clip is not functional: {type(bg_clip)}")
+            return None
+
     except Exception as e:
-        print(f"[ERROR] 背景動画処理に失敗: {e}")
-        raise
+        print(f"[BACKGROUND] ERROR: Unexpected error during processing: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 def download_heading_image() -> str:
