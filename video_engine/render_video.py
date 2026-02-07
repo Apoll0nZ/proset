@@ -426,6 +426,10 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         final_video = final_video.with_duration(total_duration)
         print(f"[TIMELINE] Composite video created: {total_duration:.2f}s")
 
+        # メモリ解放
+        del composite_clips
+        gc.collect()
+
         # ========== STAGE 11: 音声を組み立てる ==========
         print("[TIMELINE] Assembling audio...")
 
