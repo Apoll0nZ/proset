@@ -79,36 +79,36 @@ def slide_out_left(clip, duration=0.5):
         w, h = clip.size
         return clip.with_position(lambda t: (-VIDEO_WIDTH * max(0, min(1, t/duration)), 'center'))
 
-# 画像登場アニメーション関数（80%→120%ズーム + その後110%-120%サイクル）
+# 画像登場アニメーション関数（60%→100%ズーム + その後95%-100%サイクル）
 def scale_animation_image_entrance(clip):
-    """画像登場時は80%→120%でズーム、その後は110%-120%でサイクル"""
+    """画像登場時は60%→100%でズーム、その後は95%-100%でサイクル"""
     def rescale(t):
         entrance_duration = 0.5  # 登場アニメーション0.5秒
 
-        # 登場期間（0-0.5秒）：80%→120%へズーム
+        # 登場期間（0-0.5秒）：60%→100%へズーム
         if t < entrance_duration:
             progress = t / entrance_duration  # 0-1
-            scale = 0.8 + 0.4 * progress  # 80%から120%へ
+            scale = 0.6 + 0.4 * progress  # 60%から100%へ
             return scale
 
-        # 登場後（0.5秒以降）：110%-120%で4秒周期のサイクル
+        # 登場後（0.5秒以降）：95%-100%で4秒周期のサイクル
         remaining_t = t - entrance_duration
         cycle = (remaining_t % 4) / 4  # 0-1の範囲
         if cycle < 0.5:
-            # 110% -> 120%
-            scale = 1.1 + 0.1 * (cycle * 2)
+            # 95% -> 100%
+            scale = 0.95 + 0.05 * (cycle * 2)
         else:
-            # 120% -> 110%
-            scale = 1.2 - 0.1 * ((cycle - 0.5) * 2)
+            # 100% -> 95%
+            scale = 1.0 - 0.05 * ((cycle - 0.5) * 2)
         return scale
 
     try:
         return clip.with_effects([vfx.Resize(lambda t: rescale(t))])
     except:
         # フォールバック：シンプルな登場ズーム
-        return clip.resize(lambda t: 0.8 + 0.4 * min(1.0, t / 0.5))
+        return clip.resize(lambda t: 0.6 + 0.4 * min(1.0, t / 0.5))
 
-# 画像切り替えアニメーション関数（80%縮小→消去 / 80%→120%拡大）
+# 画像切り替えアニメーション関数（60%縮小→消去 / 60%→100%拡大）
 def transition_scale_animation(clip, is_fade_out=False):
     """画像切り替え時のスケール+フェードアニメーション"""
     def rescale(t):
@@ -118,17 +118,17 @@ def transition_scale_animation(clip, is_fade_out=False):
         # フェードイン：最初の0.5秒
         if not is_fade_out and t < fade_duration:
             fade_progress = t / fade_duration  # 0-1
-            scale = 0.8 + 0.4 * fade_progress  # 80%から120%へ
+            scale = 0.6 + 0.4 * fade_progress  # 60%から100%へ
             return scale
 
         # フェードアウト：最後の0.5秒
         if is_fade_out and t >= (duration - fade_duration):
             fade_progress = (t - (duration - fade_duration)) / fade_duration  # 0-1
-            scale = 1.2 - 0.4 * fade_progress  # 120%から80%へ
+            scale = 1.0 - 0.4 * fade_progress  # 100%から60%へ
             return scale
 
-        # 通常状態：スケール120%
-        return 1.2
+        # 通常状態：スケール100%
+        return 1.0
 
     try:
         clip = clip.with_effects([vfx.Resize(lambda t: rescale(t))])

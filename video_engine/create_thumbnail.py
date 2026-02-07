@@ -426,10 +426,8 @@ def create_thumbnail(
             x_max = max(x_min + 1, THUMBNAIL_WIDTH - final_sub_img.width - 100)
             sub_x_random = random.randint(x_min, x_max)
             
-            # 縦軸(Y): メイン字幕の下に固定配置（被らないように）
-            # メイン字幕の下端から20px空けて配置
-            main_text_bottom = text_y + text_height
-            adjusted_sub_y = main_text_bottom + 20
+            # 縦軸(Y): メイン字幕の上端から60px上に配置
+            adjusted_sub_y = text_y - 60
             
             # 貼り付け
             img.paste(final_sub_img, (sub_x_random, adjusted_sub_y), final_sub_img)
