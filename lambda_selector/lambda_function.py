@@ -475,9 +475,32 @@ def evaluate_new_articles(new_articles: List[Dict[str, Any]], context: Any) -> L
     # 評価対象を増やす（最大30件に拡張）
     max_evaluation_count = min(30, len(new_articles))
     
+    # 新鮮さチェック：published_atが30日以内の記事のみ評価対象に
+    fresh_articles = []
+    freshness_cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    
+    for article in new_articles[:max_evaluation_count]:
+        published_at = article.get("published_at", "")
+        if published_at:
+            try:
+                published_dt = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                if published_dt >= freshness_cutoff:
+                    fresh_articles.append(article)
+                else:
+                    print(f"Skipping old article before evaluation: {article['title']} (published: {published_at})")
+            except Exception as e:
+                print(f"Published date parsing error for {article['title']}: {e}")
+                continue
+        else:
+            # published_atがない記事は評価対象外
+            print(f"Skipping article without published_at: {article['title']}")
+            continue
+    
+    print(f"Fresh articles for evaluation: {len(fresh_articles)}件")
+    
     # 新着記事を評価（リトライ機能付き）
-    for i, article in enumerate(new_articles[:max_evaluation_count]):
-        print(f"Evaluating new article {i+1}/{max_evaluation_count}: {article['title']}")
+    for i, article in enumerate(fresh_articles):
+        print(f"Evaluating fresh article {i+1}/{len(fresh_articles)}: {article['title']}")
         
         # リトライ機能で評価を実行
         score = None
