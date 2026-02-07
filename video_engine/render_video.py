@@ -718,13 +718,9 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
     print(f"[MAIN SEGMENT DEBUG] image_clips available: {len(image_clips)}")
 
     try:
-        # 背景クリップを作成
+        # 背景クリップを作成（必須）
         bg_clip = create_background_clip(duration)
-
-        if bg_clip is None:
-            print(f"[MAIN SEGMENT DEBUG] Background clip not available (S3 download failed or file missing)")
-        else:
-            print(f"[MAIN SEGMENT DEBUG] Background clip created: {bg_clip.duration:.2f}s")
+        print(f"[MAIN SEGMENT DEBUG] Background clip created: {bg_clip.duration:.2f}s")
 
         # このパートの音声を抽出
         # audio_start_timeが指定されている場合はそれを使用、否則start_timeを使用
@@ -780,13 +776,9 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
         for i, img in enumerate(segment_images[:3]):  # 最初の3つだけ表示
             print(f"[MAIN SEGMENT DEBUG] Image {i}: start={img.start:.2f}s, duration={img.duration:.2f}s")
 
-        # 全クリップを合成
-        # 背景がある場合のみ含める
-        if bg_clip is not None:
-            clips = [bg_clip] + segment_images + subtitle_clips
-        else:
-            clips = segment_images + subtitle_clips
-        print(f"[MAIN SEGMENT DEBUG] Total clips to composite: {len(clips)} (background: {'yes' if bg_clip else 'no'})")
+        # 全クリップを合成（背景クリップが必須）
+        clips = [bg_clip] + segment_images + subtitle_clips
+        print(f"[MAIN SEGMENT DEBUG] Total clips to composite: {len(clips)}")
         
         if heading_clip and part_type != "owner_comment":
             heading_part = heading_clip.with_duration(duration)
@@ -856,13 +848,11 @@ def create_background_clip(duration: float) -> VideoFileClip:
 
         if not bg_video_path:
             print("[Step 1 FAILED] No background video downloaded from S3")
-            print("[RESULT] No background will be used")
-            return None
+            raise RuntimeError(f"Failed to download background video from S3 bucket: {S3_BUCKET}/assets/")
 
         if not os.path.exists(bg_video_path):
             print(f"[Step 1 FAILED] Downloaded file does not exist: {bg_video_path}")
-            print("[RESULT] No background will be used")
-            return None
+            raise RuntimeError(f"Background video file was not created after download: {bg_video_path}")
 
         # ステップ2: 背景動画を処理
         print(f"[Step 2] Processing background video: {bg_video_path}")
@@ -870,56 +860,21 @@ def create_background_clip(duration: float) -> VideoFileClip:
 
         if bg_clip is None:
             print("[Step 2 FAILED] Background processing returned None")
-            print("[RESULT] No background will be used")
-            return None
+            raise RuntimeError(f"Failed to process background video: {bg_video_path}")
 
         print("[SUCCESS] Background clip created successfully")
         return bg_clip
 
     except FileNotFoundError as e:
         print(f"[ERROR] File not found during background creation: {e}")
-        print("[RESULT] No background will be used")
-        return None
+        raise
     except Exception as e:
         print(f"[ERROR] Unexpected error during background creation: {e}")
         print(f"[ERROR] Error type: {type(e).__name__}")
         import traceback
         traceback.print_exc()
-        print("[RESULT] No background will be used")
-        return None
+        raise
 
-
-def create_fallback_background(duration: float) -> VideoFileClip:
-    """
-    フォールバック背景を作成（ダーク背景）
-    黒塗りではなく、グラデーションまたは暗いグレーを使用
-    """
-    import numpy as np
-
-    try:
-        print("[Fallback] Creating gradient background...")
-
-        # ダークグレー背景を作成（RGB: 20, 20, 20）
-        # 純粋な黒（0, 0, 0）よりも見やすく、プロフェッショナルな見た目
-        color = (20, 20, 20)  # Dark gray instead of pure black
-
-        bg_clip = ColorClip(
-            size=(VIDEO_WIDTH, VIDEO_HEIGHT),
-            color=color,
-            duration=duration
-        )
-
-        print(f"[SUCCESS] Fallback background created: {VIDEO_WIDTH}x{VIDEO_HEIGHT}, duration={duration:.2f}s, color=RGB{color}")
-        return bg_clip
-
-    except Exception as e:
-        print(f"[ERROR] Even fallback background creation failed: {e}")
-        # 最後の手段：純粋な黒塗り
-        return ColorClip(
-            size=(VIDEO_WIDTH, VIDEO_HEIGHT),
-            color=(0, 0, 0),
-            duration=duration
-        )
 
 def create_subtitles_for_segment(text: str, duration: float, segment_start_time: float, font_path: str) -> List:
     """セグメント内の字幕を生成（簡潔な均等分配方式）"""
@@ -3250,15 +3205,8 @@ async def build_video_with_subtitles(
                     bg_clip = None
             
             if bg_clip is None:
-                print("Failed to process background video, falling back to gradient")
-        
-        if bg_clip is None:
-            print("Creating BLACK background fallback")
-            # 黒い背景動画を生成
-            from moviepy import ColorClip
-            bg_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=total_duration).with_fps(FPS)
-            bg_clip = bg_clip.with_start(0).with_opacity(1.0)
-            print(f"[DEBUG] Created BLACK background: {VIDEO_WIDTH}x{VIDEO_HEIGHT} for {total_duration}s with {FPS} fps")
+                print("Failed to process background video")
+                raise RuntimeError("Background video processing failed - no valid background clip available")
 
         # Layer 2: 画像スライド（セグメント連動）
         image_clips = []
