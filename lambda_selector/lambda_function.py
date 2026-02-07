@@ -402,8 +402,22 @@ def filter_and_collect_candidates(all_articles: List[Dict[str, Any]]) -> tuple[L
     stock_candidates = []  # 過去のストック記事（基準点以上）
     
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=STOCK_DAYS)
+    # 新鮮さチェック：30日以内の記事のみ対象
+    freshness_cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     
     for article in all_articles:
+        # 新鮮さチェック：published_atが30日以内か確認
+        published_at = article.get("published_at", "")
+        if published_at:
+            try:
+                published_dt = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                if published_dt < freshness_cutoff:
+                    print(f"Skipping old article: {article['title']} (published: {published_at})")
+                    continue
+            except Exception as e:
+                print(f"Published date parsing error for {article['title']}: {e}")
+                continue
+        
         url = article["url"]
         existing_info = get_article_info(url)
         
