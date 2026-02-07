@@ -3306,15 +3306,13 @@ async def build_video_with_subtitles(
                     part_images.append(selected_image)
                     print(f"[INFO] セグメント {i} に既存画像を再利用: {os.path.basename(selected_image)}")
                 else:
-                    print(f"[WARNING] セグメント {i} に画像を割り当てられません（背景のみ）")
-                    image_schedule.append({"start": current_image_time, "duration": duration, "path": None})
+                    print(f"[WARNING] セグメント {i} に画像を割り当てられません（スキップ）")
                     current_image_time += duration
                     continue
 
             if not part_images:
                 print(f"[WARNING] No images found for segment {i}, keyword: {search_keyword}")
-                print(f"[INFO] セグメント {i} は背景のみで続行します")
-                image_schedule.append({"start": current_image_time, "duration": duration, "path": None})
+                print(f"[INFO] セグメント {i} はスキップします")
                 current_image_time += duration
                 continue
 
@@ -3334,8 +3332,7 @@ async def build_video_with_subtitles(
             num_images_to_use = min(len(part_images), max_images_possible)
             
             if num_images_to_use == 0:
-                print(f"[WARNING] セグメント {i} は時間不足のため画像なし")
-                image_schedule.append({"start": current_image_time, "duration": duration, "path": None})
+                print(f"[WARNING] セグメント {i} は時間不足のため画像なし（スキップ）")
                 current_image_time += duration
                 continue
             
@@ -3415,8 +3412,8 @@ async def build_video_with_subtitles(
                     break
 
         if not image_schedule:
-            print("Using gradient background as image fallback")
-            image_schedule.append({"start": 0.0, "duration": total_duration, "path": None})
+            print("[WARNING] No images were scheduled for any segment")
+            print("[INFO] Video will proceed with background only")
         else:
             # 画像スケジュールの検証とソート
             print(f"[DEBUG] Validating image schedule with {len(image_schedule)} items")
@@ -3445,19 +3442,15 @@ async def build_video_with_subtitles(
                 print(f"[DEBUG] Item {idx}: start={start_time:.2f}s, duration={duration:.2f}s, path={'None' if not path else os.path.basename(path)}")
             
             print(f"[DEBUG] Image schedule validation completed")
-            image_schedule.append({
-                "start": current_image_time,
-                "duration": total_duration - current_image_time,
-                "path": None,
-            })
+            # 残り時間のエントリは追加しない（成功した画像のみを使用）
 
         # 画像スケジュール作成完了後のチェック
         valid_images = [item for item in image_schedule if item["path"] is not None]
         if not valid_images:
-            print("[ERROR] No images were collected for the entire video")
-            raise RuntimeError("動画全体で画像が1枚も取得できませんでした。ネットワーク接続または画像ソースを確認してください。")
-        
-        print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
+            print("[WARNING] No valid images were collected for the entire video")
+            print("[INFO] Video will proceed with background only")
+        else:
+            print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
 
         def make_pos_func(start_time: float, target_x: int, target_y: int, start_x: int):
             """画像ごとに独立した位置関数を生成するクロージャ"""
