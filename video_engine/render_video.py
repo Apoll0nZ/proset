@@ -787,10 +787,9 @@ def create_bridge_segment(modulation_video_clip: VideoFileClip, modulation_durat
     try:
         base_clip = modulation_video_clip.with_duration(modulation_duration)
         
-        # BGMを設定
+        # Modulation動画は元の音声を再生し、BGMは再生しない
         if bgm_clip:
-            bgm_part = bgm_clip.subclipped(start_time, start_time + modulation_duration)
-            base_clip = base_clip.with_audio(bgm_part)
+            print(f"[BRIDGE] Modulation video will use its original audio, BGM will be muted")
         
         print(f"[BRIDGE] Bridge segment completed: {modulation_duration:.2f}s")
         return base_clip
