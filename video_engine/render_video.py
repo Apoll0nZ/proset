@@ -622,8 +622,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                     stroke_color="black",
                     stroke_width=2,
                     method="caption",
-                    size=(VIDEO_WIDTH - 100, None),
-                    font=font_path  # 渡されたフォントパスを使用
+                    size=(VIDEO_WIDTH - 100, None)
                 )
 
                 # アニメーション効果を追加
@@ -1004,8 +1003,7 @@ def create_subtitles_for_segment(text: str, duration: float, segment_start_time:
                 bg_color="white",
                 text_align="left",
                 stroke_color="black",
-                stroke_width=1,
-                font=font_path  # 渡されたフォントパスを使用
+                stroke_width=1
             )
             
             # アニメーションを適用
@@ -4019,8 +4017,7 @@ async def build_video_with_subtitles(
                     font_size=28,
                     color="black",
                     bg_color="white",
-                    size=(250, 60),
-                    font=font_path  # 渡されたフォントパスを使用
+                    size=(250, 60)
                 ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0).with_fps(FPS)
         except Exception as e:
             print(f"[ERROR] Failed to create heading clip: {e}")
@@ -4079,8 +4076,7 @@ async def build_video_with_subtitles(
                             bg_color="white",
                             text_align="left",
                             stroke_color="black",
-                            stroke_width=1,
-                            font=font_path  # 渡されたフォントパスを使用
+                            stroke_width=1
                         )
                         
                         # アニメーションを適用（フォールバック付き）
