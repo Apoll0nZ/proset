@@ -281,45 +281,63 @@ def mark_urls_processed_batch(articles: List[Dict[str, Any]]) -> None:
     if not articles:
         return
     
+    valid_articles = []
+    skipped_count = 0
+    
+    # 公開日がある記事のみフィルタリング
+    for article in articles:
+        published_date = article.get("published_date")
+        if not published_date:
+            print(f"[SKIP] Article without published date: {article.get('title', 'Untitled')}")
+            skipped_count += 1
+            continue
+        valid_articles.append(article)
+    
+    if not valid_articles:
+        print(f"[ERROR] No valid articles with published dates (skipped {skipped_count} articles)")
+        raise RuntimeError("No articles have valid published dates")
+    
+    print(f"[INFO] Processing {len(valid_articles)} valid articles (skipped {skipped_count} without dates)")
+    
     try:
         with ddb_table.batch_writer(overwrite_by_pkeys=["url"]) as batch:
-            for article in articles:
+            for article in valid_articles:
+                published_date = article.get("published_date")
+                
                 batch.put_item(
                     Item={
                         "url": article["url"],
                         "title": article["title"],
-                        "processed_at": _iso_now(),
+                        "processed_at": published_date,  # 評価日時ではなく記事公開日を使用
                         "ttl": _ttl(1095),  # 3年間保持
                         "status": "evaluated",
                         "content_hash": article.get("content_hash", ""),
                         "score": Decimal(str(article.get("score", 0.0)))
                     }
                 )
-        print(f"Batch wrote {len(articles)} URLs to DynamoDB (3-year retention)")
+        print(f"Batch wrote {len(valid_articles)} URLs to DynamoDB (3-year retention)")
     except Exception as exc:
         print(f"DynamoDB batch_write error: {exc}")
-        # batch_writeに失敗した場合は個別に保存
-        for article in articles:
-            try:
-                score = article.get("score", 0.0)
-                save_article_with_score(article["url"], article["title"], score, "evaluated")
-            except Exception as e:
-                print(f"Fallback write failed for {article['url']}: {e}")
+        raise RuntimeError(f"Failed to save articles: {exc}")
 
 
-def save_article_with_score(url: str, title: str, score: float, status: str = "evaluated") -> None:
-    """記事をスコア付きで保存"""
+def save_article_with_score(url: str, title: str, score: float, published_date: str, status: str = "evaluated") -> None:
+    """記事をスコア付きで保存（公開日必須）"""
+    if not published_date:
+        raise RuntimeError(f"Cannot save article without published date: {title}")
+    
     try:
         ddb_table.put_item(
             Item={
                 "url": url,
                 "title": title,
-                "processed_at": _iso_now(),
+                "processed_at": published_date,  # 評価日時ではなく記事公開日を使用
                 "ttl": _ttl(1095),  # 3年間保持
                 "status": status,
                 "score": Decimal(str(score))
             }
         )
+        print(f"Saved article with score: {title} ({score}点)")
     except Exception as exc:
         print(f"DynamoDB put_item error: {exc}")
         raise
@@ -535,9 +553,14 @@ def evaluate_new_articles(new_articles: List[Dict[str, Any]], context: Any) -> L
             article["score"] = score
             evaluated_articles.append(article)
             
-            # 基準点以上の場合のみ保存
+            # 基準点以上の場合のみ保存（公開日必須）
             if score >= BASE_SCORE_THRESHOLD:
-                save_article_with_score(article["url"], article["title"], score, "evaluated")
+                published_date = article.get("published_date")
+                if not published_date:
+                    print(f"[SKIP] Qualified article without published date: {article['title']} ({score}点)")
+                    continue
+                
+                save_article_with_score(article["url"], article["title"], score, published_date, "evaluated")
                 print(f"Saved qualified article: {article['title']} ({score}点)")
             else:
                 print(f"Low score article not saved: {article['title']} ({score}点)")
@@ -651,6 +674,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         for entry in entries:
             url = normalize_url(entry, feed_url)
             topic_summary = build_topic_summary(entry)
+            published_date = _extract_published(entry)
+            
+            # 公開日がない記事は除外
+            if not published_date:
+                print(f"[SKIP] RSS entry without published date: {entry.get('title', 'Untitled')}")
+                continue
+                
             all_articles.append(
                 {
                     "entry": entry,
@@ -659,7 +689,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "topic_summary": topic_summary,
                     "content_hash": hash_text(topic_summary),
                     "source_url": feed_url,
-                    "published_at": _extract_published(entry),
+                    "published_at": published_date,
+                    "published_date": published_date,  # processed_atとして使用する公開日
                 }
             )
 

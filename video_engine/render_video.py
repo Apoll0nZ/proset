@@ -268,9 +268,11 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                         break
             
             print(f"[TIMELINE] Positioning modulation video ({modulation_duration:.2f}s) at {modulation_start_time:.2f}s...")
-            modulation_video_only = modulation_video_clip.without_audio().with_duration(modulation_duration)
+            modulation_video_with_audio = modulation_video_clip.with_duration(modulation_duration)
+            # 元のサイズを維持し、中央に配置
+            modulation_video_positioned = modulation_video_with_audio.with_position("center")
             all_clips_by_layer['videos'].append({
-                'clip': modulation_video_only,
+                'clip': modulation_video_positioned,
                 'start': modulation_start_time,
                 'duration': modulation_duration
             })
@@ -635,8 +637,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 # まとめパートはsummary_audioに
                 summary_audio_parts.append((i, part, duration))
                 summary_audio_duration += duration
-            elif part_type != "title_video":
-                # title_videoを除くすべてのメインパート（main_titleを含む）はmain_audioに
+            elif part_type not in ["title_video", "main_title"]:
+                # title_videoとmain_titleを除くメインパートのみをmain_audioに
                 main_audio_parts.append((i, part, duration))
                 main_audio_duration += duration
         
@@ -649,29 +651,31 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             audio_elements.append(main_audio_with_start)
             print(f"[TIMELINE] Added main audio: {main_audio_duration:.2f}s starting at {main_audio_start:.2f}s")
         
-        # Modulation動画の音声（メインパート終了後）
-        if modulation_video_clip and modulation_video_clip.audio:
-            # Modulation開始時間を動画と同じ計算式で求める
-            modulation_audio_start_time = title_duration
-            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-                part_type = part.get("part", "")
-                if part_type not in ["title_video", "owner_comment"]:  # main_titleは含める
-                    modulation_audio_start_time += duration
-                # 次のパートがowner_commentならそこでmodulation開始
-                next_part_idx = i + 1
-                if next_part_idx < len(script_parts):
-                    next_part = script_parts[next_part_idx]
-                    if next_part.get("part") == "owner_comment":
-                        break
-                modulation_audio = modulation_video_clip.audio.with_start(modulation_audio_start_time)
-            audio_elements.append(modulation_audio)
-            print(f"[TIMELINE] Added modulation audio: {modulation_video_clip.audio.duration:.2f}s starting at {modulation_audio_start_time:.2f}s")
+        # main_title用の音声クリップを生成
+        main_title_duration = 0.0
+        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+            if part.get("part") == "main_title":
+                main_title_duration = duration
+                break
         
-        # BGM（メインパートのみ、title_video期間中は再生しない）
-        # main_titleパートを含むメインパート全体にBGMを再生
+        if main_title_duration > 0 and audio_clip:
+            # main_titleはメイン音声の直後から開始
+            main_title_start = main_audio_start + main_audio_duration
+            main_title_audio = audio_clip.subclipped(main_audio_duration, main_audio_duration + main_title_duration)
+            main_title_audio_with_start = main_title_audio.with_start(main_title_start)
+            audio_elements.append(main_title_audio_with_start)
+            print(f"[TIMELINE] Added main_title audio: {main_title_duration:.2f}s starting at {main_title_start:.2f}s")
+        
+        # Modulation動画の音声は動画自体に含まれるため別途追加しない
+        if modulation_video_clip and modulation_video_clip.audio:
+            print(f"[TIMELINE] Modulation video has embedded audio: {modulation_video_clip.audio.duration:.2f}s")
+            print(f"[TIMELINE] No separate audio track needed for modulation")
+        
+        # BGM（main_titleから開始）
         if bgm_clip:
+            # メインパートのBGM（main_titleを含む）
             bgm_start = title_duration  # title_video終了後からBGM開始（main_titleを含む）
-            bgm_duration = main_audio_duration  # メインパートの長さ（main_titleを含む）
+            bgm_duration = main_audio_duration + main_title_duration  # メインパートとmain_titleの合計長さ
             bgm_main = bgm_clip.subclipped(0, bgm_duration)
             bgm_main_with_start = bgm_main.with_start(bgm_start)
             audio_elements.append(bgm_main_with_start)
@@ -679,10 +683,10 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         
         # まとめ音声クリップを生成
         if summary_audio_parts and audio_clip:
-            summary_audio_start = main_audio_start + main_audio_duration + modulation_duration
+            summary_audio_start = main_audio_start + main_audio_duration + main_title_duration + modulation_duration
             summary_audio_end = summary_audio_start + summary_audio_duration
-            # audio_clipからまとめ部分を抽出
-            summary_start_offset = main_audio_duration
+            # audio_clipからまとめ部分を抽出（main_titleも含めたオフセット）
+            summary_start_offset = main_audio_duration + main_title_duration
             summary_end_offset = summary_start_offset + summary_audio_duration
             summary_audio = audio_clip.subclipped(summary_start_offset, summary_end_offset)
             summary_audio_with_start = summary_audio.with_start(summary_audio_start)
@@ -890,11 +894,8 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
                         title_text: str = "", font_path: str = None) -> VideoFileClip:
     """オープニングセグメントを生成（Title動画のみ）"""
     try:
-        # ビデオのみを取得（元の音声は除去）
-        base_clip = title_video_clip.without_audio()
-
-        # ビデオをタイトル時間に合わせる（ビデオのみ、音声なし）
-        base_clip = base_clip.with_duration(title_duration)
+        # ビデオを取得（元の音声を保持）
+        base_clip = title_video_clip.with_duration(title_duration)
 
         # ヘッダーを追加（ビデオ期間のみ）
         heading_clips = []
@@ -918,8 +919,8 @@ def create_opening_segment(title_video_clip: VideoFileClip, title_duration: floa
         print(f"Error creating opening segment: {e}")
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
-        # エラー時は元のclipのビデオのみを返す（元の音声なし）
-        return title_video_clip.without_audio()
+        # エラー時は元のclipをそのまま返す（音声を保持）
+        return title_video_clip
 
 def create_bridge_segment(modulation_video_clip: VideoFileClip, modulation_duration: float,
                        bgm_clip: AudioFileClip, start_time: float) -> VideoFileClip:
@@ -3584,9 +3585,10 @@ async def build_video_with_subtitles(
         if modulation_video_path and os.path.exists(modulation_video_path):
             try:
                 print("Loading modulation video")
-                modulation_video_clip = VideoFileClip(modulation_video_path).without_audio()
+                modulation_video_clip = VideoFileClip(modulation_video_path)  # 音声を保持
                 modulation_duration = modulation_video_clip.duration
                 print(f"Modulation video duration: {modulation_duration:.2f} seconds")
+                print(f"[MODULATION DEBUG] Modulation video has audio: {modulation_video_clip.audio is not None}")
             except Exception as e:
                 print(f"Failed to load modulation video: {e}")
                 modulation_video_clip = None
@@ -4779,7 +4781,8 @@ async def main() -> None:
         item = {
             "url": url,  # 主キーをurlに変更
             "title": title,
-            "processed_at": now,
+            "processed_at": now,  # 動画生成完了日時（selectorの記事公開日とは異なる）
+            "video_completed_at": now,  # 動画生成完了日時を明示的に記録
             "status": "completed",  # 動画生成完了
             "score": meta.get("score", 0.0),  # スコアがあれば保存
             "ttl": ttl_timestamp,
