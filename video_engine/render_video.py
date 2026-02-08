@@ -245,9 +245,9 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # ========== STAGE 3: Title動画を配置 ==========
         print(f"[TIMELINE] Positioning title video ({title_duration:.2f}s)...")
         if title_video_clip:
-            title_video_only = title_video_clip.without_audio().with_duration(title_duration)
+            title_video_with_audio = title_video_clip.with_duration(title_duration)
             all_clips_by_layer['videos'].append({
-                'clip': title_video_only,
+                'clip': title_video_with_audio,
                 'start': 0.0,
                 'duration': title_duration
             })
@@ -2708,71 +2708,109 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
     try:
         # 1. キーワードリスト抽出
         keywords = extract_image_keywords_list(script_data)
-        print(f"[DEBUG] Extracted keywords for image search: {keywords}")
+        print(f"[IMAGE SEARCH] Starting image search process")
+        print(f"[IMAGE SEARCH] Extracted {len(keywords)} keywords: {keywords}")
+        
+        if not keywords:
+            print(f"[ERROR] No keywords extracted from script data")
+            raise RuntimeError("No keywords available for image search")
         
         # 2. 各キーワードで画像検索を試行（最小枚数確保）
+        total_images_found = 0
+        total_blocked = 0
+        download_failures = 0
+        
         for i, keyword in enumerate(keywords):
-            print(f"[DEBUG] Trying keyword {i+1}/{len(keywords)}: {keyword}")
+            print(f"[IMAGE SEARCH] === Keyword {i+1}/{len(keywords)}: '{keyword}' ===")
             
             try:
+                # 画像検索実行
+                print(f"[IMAGE SEARCH] Searching images for keyword: '{keyword}'")
                 images = await search_images_with_playwright(keyword)
                 
-                if images:
-                    print(f"[DEBUG] Found {len(images)} images with keyword '{keyword}'")
-                    
-                    # ブロックドメインの画像をフィルタリング
-                    filtered_images = []
-                    for image_info in images:
-                        if not is_blocked_domain(image_info.get('url', '')):
-                            filtered_images.append(image_info)
-                        else:
-                            print(f"[SKIP] Blocked domain: {image_info.get('url', '')}")
-                    
-                    if not filtered_images:
-                        print(f"[DEBUG] No unblocked images for keyword '{keyword}', trying next")
-                        continue
-                    
-                    # Geminiで一括評価（APIコール削減）
-                    script_text = script_data.get("content", {}).get("topic_summary", "")
-                    suitable_images = evaluate_images_batch_with_gemini(filtered_images[:10], keyword, script_text)
-                    
-                    if suitable_images:
-                        # 適切な画像のうち最初のものをダウンロード
-                        selected_image = suitable_images[0]
-                        print(f"[SELECT] Batch evaluation approved image: {selected_image.get('title', 'N/A')}")
-                        
-                        image_path = download_image_from_url(selected_image['url'])
-                        
-                        if image_path:
-                            print(f"Successfully downloaded approved image: {selected_image['title']}")
-                            return image_path
-                        else:
-                            print(f"[DEBUG] Failed to download approved image, trying next keyword")
-                            continue
-                    else:
-                        print(f"[DEBUG] No suitable images found for keyword '{keyword}', trying next keyword")
-                        continue
-                else:
-                    print(f"[DEBUG] No images found with keyword '{keyword}', trying next keyword")
+                if not images:
+                    print(f"[IMAGE SEARCH] No images found for keyword: '{keyword}'")
                     continue
+                
+                total_images_found += len(images)
+                print(f"[IMAGE SEARCH] Found {len(images)} raw images for '{keyword}'")
+                
+                # ブロックドメインの画像をフィルタリング
+                filtered_images = []
+                blocked_count = 0
+                
+                for image_info in images:
+                    image_url = image_info.get('url', '')
+                    if is_blocked_domain(image_url):
+                        blocked_count += 1
+                        print(f"[IMAGE FILTER] Blocked domain: {image_url}")
+                        total_blocked += 1
+                    else:
+                        filtered_images.append(image_info)
+                
+                print(f"[IMAGE FILTER] Filtered {blocked_count} blocked images, {len(filtered_images)} remaining")
+                
+                if not filtered_images:
+                    print(f"[IMAGE SEARCH] No unblocked images for keyword '{keyword}'")
+                    continue
+                
+                # Geminiで一括評価
+                print(f"[IMAGE EVAL] Evaluating {min(30, len(filtered_images))} images with Gemini")
+                script_text = script_data.get("content", {}).get("topic_summary", "")
+                suitable_images = evaluate_images_batch_with_gemini(filtered_images[:30], keyword, script_text)
+                
+                if not suitable_images:
+                    print(f"[IMAGE EVAL] No suitable images approved by Gemini for '{keyword}'")
+                    continue
+                
+                print(f"[IMAGE EVAL] Gemini approved {len(suitable_images)} images")
+                
+                # 適切な画像のダウンロードを試行
+                for j, selected_image in enumerate(suitable_images):
+                    print(f"[IMAGE DOWNLOAD] Attempting download {j+1}/{len(suitable_images)}: {selected_image.get('title', 'N/A')}")
                     
+                    image_path = download_image_from_url(selected_image['url'])
+                    
+                    if image_path:
+                        print(f"[IMAGE SUCCESS] Successfully downloaded and validated: {selected_image.get('title', 'N/A')}")
+                        print(f"[IMAGE SUCCESS] Final image path: {image_path}")
+                        print(f"[IMAGE SUMMARY] Total processed: {total_images_found} found, {total_blocked} blocked, {download_failures} download failures")
+                        return image_path
+                    else:
+                        download_failures += 1
+                        print(f"[IMAGE DOWNLOAD] Failed to download image {j+1}, trying next suitable image")
+                        continue
+                
+                print(f"[IMAGE SEARCH] All suitable images failed to download for '{keyword}'")
+                
             except Exception as e:
-                print(f"[DEBUG] Error with keyword '{keyword}': {e}, trying next keyword")
+                print(f"[IMAGE ERROR] Error processing keyword '{keyword}': {type(e).__name__}: {e}")
+                import traceback
+                print(f"[IMAGE ERROR] Traceback: {traceback.format_exc()}")
                 continue
         
         # すべてのキーワードで失敗した場合
-        print("[WARNING] No images found for any keywords, will use background only")
-        return None
+        print(f"[IMAGE ERROR] === IMAGE SEARCH FAILED ===")
+        print(f"[IMAGE ERROR] Total statistics:")
+        print(f"[IMAGE ERROR] - Keywords tried: {len(keywords)}")
+        print(f"[IMAGE ERROR] - Total images found: {total_images_found}")
+        print(f"[IMAGE ERROR] - Total blocked domains: {total_blocked}")
+        print(f"[IMAGE ERROR] - Download failures: {download_failures}")
+        print(f"[IMAGE ERROR] No suitable images found for any keywords")
+        
+        raise RuntimeError(f"Image search failed: tried {len(keywords)} keywords, found {total_images_found} images, blocked {total_blocked}, failed to download any")
             
     except Exception as e:
-        print(f"[ERROR] AI image selection process failed: {e}")
-        # 既にRuntimeErrorの場合はNoneを返して処理を継続
+        print(f"[IMAGE CRITICAL] Critical error in image selection process: {type(e).__name__}: {e}")
+        import traceback
+        print(f"[IMAGE CRITICAL] Full traceback: {traceback.format_exc()}")
+        
+        # 既にRuntimeErrorの場合はそのまま再発生
         if isinstance(e, RuntimeError):
-            print(f"[INFO] RuntimeError occurred, returning None to continue with background only")
-            return None
+            raise
         else:
-            print(f"[INFO] Other error occurred, returning None to continue with background only")
-            return None
+            # その他のエラーはRuntimeErrorに変換
+            raise RuntimeError(f"Image selection process failed: {e}") from e
 
 
 def download_image_from_s3(image_key: str) -> str:
