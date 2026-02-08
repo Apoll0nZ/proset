@@ -310,175 +310,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 'duration': img_clip.duration
             })
 
-        # ========== STAGE 5: 字幕を配置（チャンク情報に基づいて） ==========
-        print(f"[TIMELINE] Positioning subtitles...")
-
-        # Title字幕（main_titleパート用）
-        title_text = ""
-        main_title_idx = -1
-        for i, part in enumerate(script_parts):
-            if part.get("part") == "main_title":
-                title_text = part.get("text", "")
-                main_title_idx = i
-                break
-
-        if title_text and subtitle_chunks and main_title_idx in subtitle_chunks:
-            print(f"[TIMELINE] Creating main_title subtitles from chunk info (part {main_title_idx})")
-            chunk_info = subtitle_chunks[main_title_idx]
-            chunks = chunk_info['chunks']
-            chunk_count = chunk_info['chunk_count']
-            chunk_duration = chunk_info['chunk_duration']
-
-            # Case X: 計測タイミングデータをチェック
-            measured_durations = []
-            if query_data_list_all and main_title_idx in query_data_list_all and text_parts_list_all and main_title_idx in text_parts_list_all:
-                print(f"[TIMELINE] Using measured timing for main_title subtitles (Case X)")
-                print(f"[DEBUG] query_data_list_all[{main_title_idx}] length: {len(query_data_list_all[main_title_idx])}")
-                print(f"[DEBUG] text_parts_list_all[{main_title_idx}]: {text_parts_list_all[main_title_idx]}")
-                # ★duration_list_allがあれば渡す
-                duration_list = duration_list_all.get(main_title_idx) if duration_list_all else None
-                measured_durations = calculate_measured_chunk_durations(query_data_list_all[main_title_idx], text_parts_list_all[main_title_idx], duration_list)
-                print(f"[DEBUG] measured_durations: {measured_durations}")
-                print(f"[DEBUG] chunks count: {len(chunks)}, measured durations count: {len(measured_durations)}")
-
-            # main_titleパートの開始時間を計算
-            main_title_start_time = title_duration  # title_videoの終了後から開始
-            
-            for chunk_idx, chunk_text in enumerate(chunks):
-                # 計測タイミングが利用可能な場合は使用、なければ推定タイミングを使用
-                if chunk_idx < len(measured_durations) and measured_durations[chunk_idx] > 0:
-                    chunk_duration = measured_durations[chunk_idx]
-                    relative_start = sum(measured_durations[:chunk_idx])
-                else:
-                    relative_start = chunk_idx * chunk_duration
-
-                absolute_start = main_title_start_time + relative_start
-
-                try:
-                    txt_clip = TextClip(
-                        text=f" {chunk_text} ",
-                        font_size=48,
-                        color="black",
-                        method="caption",
-                        size=(1200, None),  # 幅を1200に削減（画面の63%）
-                        bg_color="white",
-                        text_align="center",
-                        stroke_color="black",
-                        stroke_width=1,
-                        font=font_path  # 渡されたフォントパスを使用
-                    )
-                    txt_clip = subtitle_slide_scale_animation(txt_clip)
-                    txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'center'))
-
-                    all_clips_by_layer['subtitles'].append({
-                        'clip': txt_clip,
-                        'start': absolute_start,
-                        'duration': chunk_duration
-                    })
-                    timing_source = "measured" if chunk_idx < len(measured_durations) and measured_durations[chunk_idx] > 0 else "estimated"
-                    print(f"[SUBTITLE] Title chunk {chunk_idx} ({timing_source}): {absolute_start:.2f}s - {absolute_start + chunk_duration:.2f}s")
-                except Exception as e:
-                    print(f"[SUBTITLE ERROR] Failed to create title subtitle chunk {chunk_idx}: {e}")
-
-        # メイン内容の字幕（まとめパートを除く）
-        # main_titleパートの字幕もメインコンテンツとして含める
-        main_subtitle_time = title_duration  # title_video直後から開始
-        summary_subtitle_time = main_subtitle_time + sum([duration for i, (part, duration) in enumerate(zip(script_parts, part_durations)) if part.get("part") not in ["title_video", "owner_comment"]]) + modulation_duration
-        
-        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-            part_type = part.get("part", "")
-            text = part.get("text", "")
-
-            if part_type == "title_video":
-                # title_videoパートは字幕なし（動画のみ）
-                main_subtitle_time += duration
-                continue
-            
-            if part_type == "main_title":
-                # main_titleパートの字幕は上で処理済み
-                main_subtitle_time += duration
-                continue
-            
-            if not text:
-                continue
-
-            if part_type == "owner_comment":
-                # まとめパートの字幕
-                if subtitle_chunks and i in subtitle_chunks:
-                    chunk_idx = 0
-                    for chunk_text in subtitle_chunks[i]['chunks']:
-                        try:
-                            chunk_duration = measured_durations[chunk_idx] if chunk_idx < len(measured_durations) else (len(chunk_text) * 0.05)
-                            absolute_start = summary_subtitle_time
-                            
-                            txt_clip = TextClip(
-                                chunk_text,
-                                font_size=48,
-                                color='white',
-                                stroke_color='black',
-                                stroke_width=2,
-                                method='caption',
-                                size=(1920-100, None),
-                                font=font_path  # 渡されたフォントパスを使用
-                            )
-                            txt_clip = txt_clip.set_position(('center', 'bottom-100'))
-                            
-                            all_clips_by_layer['subtitles'].append({
-                                'clip': txt_clip,
-                                'start': absolute_start,
-                                'duration': chunk_duration
-                            })
-                            print(f"[SUBTITLE] Summary chunk {chunk_idx}: {absolute_start:.2f}s - {absolute_start + chunk_duration:.2f}s")
-                            summary_subtitle_time += chunk_duration
-                            chunk_idx += 1
-                        except Exception as e:
-                            print(f"[SUBTITLE ERROR] Failed to create summary subtitle chunk {chunk_idx}: {e}")
-                            print(f"[DEBUG] Error type: {type(e).__name__}")
-                            print(f"[DEBUG] Summary text: '{chunk_text[:50]}...'")
-                            print(f"[DEBUG] Font path being used: {font_path}")
-                            import traceback
-                            print(f"[DEBUG] Full traceback:")
-                            traceback.print_exc()
-                continue
-
-            # メインパートの字幕
-            if subtitle_chunks and i in subtitle_chunks:
-                measured_durations = duration_list_all.get(i, [])
-                chunk_idx = 0
-                for chunk_text in subtitle_chunks[i]['chunks']:
-                    try:
-                        chunk_duration = measured_durations[chunk_idx] if chunk_idx < len(measured_durations) else (len(chunk_text) * 0.05)
-                        absolute_start = main_subtitle_time
-                        
-                        txt_clip = TextClip(
-                            chunk_text,
-                            font_size=48,
-                            color='white',
-                            stroke_color='black',
-                            stroke_width=2,
-                            method='caption',
-                            size=(1920-100, None),
-                            font=font_path  # 渡されたフォントパスを使用
-                        )
-                        txt_clip = txt_clip.set_position(('center', 'bottom-100'))
-                        
-                        all_clips_by_layer['subtitles'].append({
-                            'clip': txt_clip,
-                            'start': absolute_start,
-                            'duration': chunk_duration
-                        })
-                        print(f"[SUBTITLE] Main part {i} chunk {chunk_idx}: {absolute_start:.2f}s - {absolute_start + chunk_duration:.2f}s")
-                        main_subtitle_time += chunk_duration
-                        chunk_idx += 1
-                    except Exception as e:
-                        print(f"[SUBTITLE ERROR] Failed to create main subtitle chunk {chunk_idx} for part {i}: {e}")
-                        print(f"[DEBUG] Error type: {type(e).__name__}")
-                        print(f"[DEBUG] Part {i} text: '{chunk_text[:50]}...'")
-                        print(f"[DEBUG] Font path being used: {font_path}")
-                        print(f"[DEBUG] TextClip parameters - text='{chunk_text[:20]}...', font_size=48, color='white', font={font_path}")
-                        import traceback
-                        print(f"[DEBUG] Full traceback:")
-                        traceback.print_exc()
+        # ========== STAGE 5: 字幕配置はメインセグメント処理で統一 ==========
+        print(f"[TIMELINE] Subtitles will be created during main segment processing...")
 
         # ========== STAGE 7: 動画全体の長さを計算 ==========
         # 最後のowner_commentパート終了までの時間を計算
@@ -725,15 +558,20 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         print(traceback.format_exc())
         raise
 
-def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_start_time: float, font_path: str) -> List[TextClip]:
+def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_start_time: float, font_path: str, 
+                                       query_data_list: List[Dict] = None, text_parts_list: List[str] = None, 
+                                       duration_list: List[float] = None) -> List[TextClip]:
     """
-    絶対時間で字幕クリップを作成
+    絶対時間で字幕クリップを作成（実態に基づいた同期対応）
 
     Parameters:
         text: 字幕テキスト
         duration: 表示時間
         absolute_start_time: グローバルタイムラインでの開始時刻（秒）
         font_path: フォントパス
+        query_data_list: VOICEVOXの音声時間情報リスト
+        text_parts_list: 分割されたテキストパーツリスト
+        duration_list: 実ファイルdurationリスト（最も正確）
 
     Returns:
         絶対時間で配置された字幕クリップのリスト
@@ -751,26 +589,40 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
             print(f"[SUBTITLE] No chunks created for text")
             return []
 
-        # 各チャンクの表示時間
-        chunk_duration = duration / chunk_count
+        # 実態に基づいたチャンク時間を計算
+        chunk_durations = []
+        if query_data_list and text_parts_list:
+            # 実際の音声時間情報を使用
+            measured_durations = calculate_measured_chunk_durations(query_data_list, text_parts_list, duration_list)
+            if measured_durations and len(measured_durations) >= chunk_count:
+                chunk_durations = measured_durations[:chunk_count]
+                print(f"[SUBTITLE] Using measured durations: {chunk_durations}")
+            else:
+                print(f"[SUBTITLE] Insufficient measured data, using equal division")
+                chunk_durations = [duration / chunk_count] * chunk_count
+        else:
+            # フォールバック：均等分割
+            chunk_durations = [duration / chunk_count] * chunk_count
+            print(f"[SUBTITLE] Using equal division: {chunk_durations}")
 
         for i, chunk in enumerate(chunks):
-            # 相対時間を計算
-            relative_start = i * chunk_duration
-            # 絶対時間に変換
+            # 実際のチャンク時間を使用
+            chunk_duration = chunk_durations[i] if i < len(chunk_durations) else (duration / chunk_count)
+            
+            # 累積時間で絶対開始時間を計算
+            relative_start = sum(chunk_durations[:i])
             absolute_chunk_start = absolute_start_time + relative_start
 
             try:
                 # テキストクリップを作成
                 txt_clip = TextClip(
                     text=chunk,
-                    font_size=30,
-                    color="black",
-                    bg_color="yellow",
-                    method="caption",
-                    size=(VIDEO_WIDTH - 100, 100),
+                    font_size=48,
+                    color="white",
                     stroke_color="black",
-                    stroke_width=1,
+                    stroke_width=2,
+                    method="caption",
+                    size=(VIDEO_WIDTH - 100, None),
                     font=font_path  # 渡されたフォントパスを使用
                 )
 
@@ -779,15 +631,17 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
 
                 # 絶対時間で配置
                 txt_clip = txt_clip.with_start(absolute_chunk_start).with_duration(chunk_duration)
-                txt_clip = txt_clip.with_position(('center', 'bottom'))
+                txt_clip = txt_clip.with_position(('center', 'bottom-100'))
 
                 subtitle_clips.append(txt_clip)
+                
+                print(f"[SUBTITLE] Chunk {i}: {absolute_chunk_start:.2f}s - {absolute_chunk_start + chunk_duration:.2f}s (duration: {chunk_duration:.3f}s)")
 
             except Exception as e:
                 print(f"[SUBTITLE ERROR] Failed to create subtitle chunk {i}: {e}")
                 continue
 
-        print(f"[SUBTITLE] Created {len(subtitle_clips)} subtitle clips")
+        print(f"[SUBTITLE] Created {len(subtitle_clips)} subtitle clips with real timing")
         return subtitle_clips
 
     except Exception as e:
@@ -988,8 +842,15 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
         if part_type == "main_title" and title_text:
             print(f"[MAIN SEGMENT DEBUG] Processing main_title subtitles...")
             
-            # main_title字幕を生成（セグメント内での相対時間で0秒から開始）
-            main_title_subtitle_clips = create_subtitles_for_segment(title_text, duration, 0, font_path)
+            # 実態に基づいた字幕同期を使用
+            query_data_list = query_data_list_all.get(main_title_idx, []) if query_data_list_all else []
+            text_parts = text_parts_list_all.get(main_title_idx, []) if text_parts_list_all else []
+            duration_list = duration_list_all.get(main_title_idx, []) if duration_list_all else []
+            
+            main_title_subtitle_clips = create_subtitles_with_absolute_timing(
+                title_text, duration, start_time, font_path,
+                query_data_list, text_parts, duration_list
+            )
             print(f"[MAIN SEGMENT DEBUG] Main title subtitles created: {len(main_title_subtitle_clips)} clips for {duration:.2f}s")
             
             # main_title字幕をsubtitle_clipsに追加
@@ -997,7 +858,15 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
 
         # メイン内容の字幕を生成（main_titleパート以外）
         if part_type != "main_title":
-            main_content_subtitle_clips = create_subtitles_for_segment(text, duration, start_time, font_path)
+            # 実態に基づいた字幕同期を使用
+            query_data_list = query_data_list_all.get(i, []) if query_data_list_all else []
+            text_parts = text_parts_list_all.get(i, []) if text_parts_list_all else []
+            duration_list = duration_list_all.get(i, []) if duration_list_all else []
+            
+            main_content_subtitle_clips = create_subtitles_with_absolute_timing(
+                text, duration, start_time, font_path,
+                query_data_list, text_parts, duration_list
+            )
             subtitle_clips.extend(main_content_subtitle_clips)
         else:
             main_content_subtitle_clips = []  # main_titleパートは上で処理済み
