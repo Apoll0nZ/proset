@@ -430,6 +430,12 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                             chunk_idx += 1
                         except Exception as e:
                             print(f"[SUBTITLE ERROR] Failed to create summary subtitle chunk {chunk_idx}: {e}")
+                            print(f"[DEBUG] Error type: {type(e).__name__}")
+                            print(f"[DEBUG] Summary text: '{chunk_text[:50]}...'")
+                            print(f"[DEBUG] Font path being used: {font_path}")
+                            import traceback
+                            print(f"[DEBUG] Full traceback:")
+                            traceback.print_exc()
                 continue
 
             # メインパートの字幕
@@ -462,6 +468,13 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                         chunk_idx += 1
                     except Exception as e:
                         print(f"[SUBTITLE ERROR] Failed to create main subtitle chunk {chunk_idx} for part {i}: {e}")
+                        print(f"[DEBUG] Error type: {type(e).__name__}")
+                        print(f"[DEBUG] Part {i} text: '{chunk_text[:50]}...'")
+                        print(f"[DEBUG] Font path being used: {font_path}")
+                        print(f"[DEBUG] TextClip parameters - text='{chunk_text[:20]}...', font_size=48, color='white', font={font_path}")
+                        import traceback
+                        print(f"[DEBUG] Full traceback:")
+                        traceback.print_exc()
 
         # ========== STAGE 7: 動画全体の長さを計算 ==========
         # 最後のowner_commentパート終了までの時間を計算
