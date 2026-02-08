@@ -752,7 +752,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                     size=(VIDEO_WIDTH - 100, 100),
                     stroke_color="black",
                     stroke_width=1,
-                    font=KEIFONT_PATH  # keifont.ttfを使用
+                    font=font_path  # 渡されたフォントパスを使用
                 )
 
                 # アニメーション効果を追加
@@ -1120,7 +1120,7 @@ def create_subtitles_for_segment(text: str, duration: float, segment_start_time:
                 text_align="left",
                 stroke_color="black",
                 stroke_width=1,
-                font=KEIFONT_PATH  # keifont.ttfを使用
+                font=font_path  # 渡されたフォントパスを使用
             )
             
             # アニメーションを適用
