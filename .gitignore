@@ -24,7 +24,7 @@ build/
 lambda/
 
 # Lambda functions (private)
-lambda_writer/
+# lambda_writer/
 # lambda_selector/
 
 # OS / editor specific
