@@ -363,7 +363,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                         text_align="center",
                         stroke_color="black",
                         stroke_width=1,
-                        font=None  # デフォルトフォントを使用
+                        font=KEIFONT_PATH  # keifont.ttfを使用
                     )
                     txt_clip = subtitle_slide_scale_animation(txt_clip)
                     txt_clip = txt_clip.with_start(absolute_start).with_duration(chunk_duration).with_position(('center', 'center'))
@@ -417,7 +417,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                                 stroke_width=2,
                                 method='caption',
                                 size=(1920-100, None),
-                                font=None  # デフォルトフォントを使用
+                                font=KEIFONT_PATH  # keifont.ttfを使用
                             ).set_position(('center', 'bottom-100'))
                             
                             all_clips_by_layer['subtitles'].append({
@@ -449,7 +449,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                             stroke_width=2,
                             method='caption',
                             size=(1920-100, None),
-                            font=None  # デフォルトフォントを使用
+                            font=KEIFONT_PATH  # keifont.ttfを使用
                         ).set_position(('center', 'bottom-100'))
                         
                         all_clips_by_layer['subtitles'].append({
@@ -752,7 +752,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                     size=(VIDEO_WIDTH - 100, 100),
                     stroke_color="black",
                     stroke_width=1,
-                    font=None  # デフォルトフォントを使用
+                    font=KEIFONT_PATH  # keifont.ttfを使用
                 )
 
                 # アニメーション効果を追加
@@ -1120,7 +1120,7 @@ def create_subtitles_for_segment(text: str, duration: float, segment_start_time:
                 text_align="left",
                 stroke_color="black",
                 stroke_width=1,
-                font=None  # デフォルトフォントを使用
+                font=KEIFONT_PATH  # keifont.ttfを使用
             )
             
             # アニメーションを適用
@@ -4074,7 +4074,7 @@ async def build_video_with_subtitles(
                     color="black",
                     bg_color="white",
                     size=(250, 60),
-                    font=None  # デフォルトフォントを使用
+                    font=KEIFONT_PATH  # keifont.ttfを使用
                 ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0).with_fps(FPS)
         except Exception as e:
             print(f"[ERROR] Failed to create heading clip: {e}")
@@ -4134,7 +4134,7 @@ async def build_video_with_subtitles(
                             text_align="left",
                             stroke_color="black",
                             stroke_width=1,
-                            font=None  # デフォルトフォントを使用
+                            font=KEIFONT_PATH  # keifont.ttfを使用
                         )
                         
                         # アニメーションを適用（フォールバック付き）
