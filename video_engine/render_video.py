@@ -349,33 +349,40 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # CompositeVideoClipにクリップを追加する際、startを直接指定
         composite_clips = []
 
-        # 10a. 背景（title_video期間とModulation期間を除いて連続再生）
+        # 10a. 背景（main_title開始からメイン動画終了まで、owner_comment開始から終了まで）
         for item in all_clips_by_layer['background']:
             clip = item['clip']
             start = item['start']
             
-            # メインパートの時間を計算（title_videoを除く、main_titleを含む）
-            main_duration = 0.0
+            # main_titleの開始時間を計算
+            main_title_start_time = title_duration
+            main_title_duration = 0.0
+            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+                if script_parts[i].get("part") == "main_title":
+                    main_title_duration = duration
+                    break
+            
+            # メインパートの時間を計算（main_titleを含む、title_videoとowner_commentを除く）
+            main_duration = main_title_duration
             for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
                 part_type = part.get("part", "")
-                if part_type not in ["title_video", "owner_comment"]:  # main_titleは含める
+                if part_type not in ["title_video", "owner_comment", "main_title"]:
                     main_duration += duration
             
-            # まとめパートの時間を計算
-            summary_duration = 0.0
+            # owner_commentの開始時間と時間を計算
+            owner_comment_start_time = title_duration + main_duration + modulation_duration
+            owner_comment_duration = 0.0
             for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
                 if script_parts[i].get("part") == "owner_comment":
-                    summary_duration += duration
+                    owner_comment_duration += duration
             
-            # メインパート用背景（main_titleを含めて開始）
+            # main_titleからメインパート終了までの背景
             if main_duration > 0:
-                main_start_time = title_duration  # title_video終了後からmain_title開始
                 if clip.duration < main_duration:
                     # メインパート用にシームレスループ
                     num_loops = math.ceil(main_duration / clip.duration)
                     print(f"[BACKGROUND] Main part seamless loops: {num_loops} loops for {main_duration:.2f}s")
                     
-                    # 隙間なく連結して前のフレームを残さない
                     loop_clips = []
                     for i in range(num_loops):
                         loop_clips.append(clip)
@@ -388,32 +395,29 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     main_bg = clip.subclipped(0, main_duration)
                     print(f"[BACKGROUND] Main part single clip: {main_duration:.2f}s")
                 
-                composite_clips.append(main_bg.with_start(main_start_time))
-                print(f"[BACKGROUND] Main background: {main_duration:.2f}s starting at {main_start_time:.2f}s (includes main_title and other main parts)")
+                composite_clips.append(main_bg.with_start(main_title_start_time))
+                print(f"[BACKGROUND] Main background: {main_duration:.2f}s starting at {main_title_start_time:.2f}s (from main_title to main part end)")
             
-            # まとめパート用背景（Modulation終了後から開始）
-            if summary_duration > 0:
-                summary_start_time = title_duration + main_duration + modulation_duration
-                
-                if clip.duration < summary_duration:
-                    # まとめパート用にシームレスループ
-                    num_loops = math.ceil(summary_duration / clip.duration)
-                    print(f"[BACKGROUND] Summary part seamless loops: {num_loops} loops for {summary_duration:.2f}s")
+            # owner_commentパート用背景
+            if owner_comment_duration > 0:
+                if clip.duration < owner_comment_duration:
+                    # owner_comment用にシームレスループ
+                    num_loops = math.ceil(owner_comment_duration / clip.duration)
+                    print(f"[BACKGROUND] Owner comment seamless loops: {num_loops} loops for {owner_comment_duration:.2f}s")
                     
-                    # 隙間なく連結して前のフレームを残さない
                     loop_clips = []
                     for i in range(num_loops):
                         loop_clips.append(clip)
                     
-                    summary_bg = concatenate_videoclips(loop_clips, method="compose")
-                    summary_bg = summary_bg.subclipped(0, summary_duration)
-                    print(f"[BACKGROUND] Summary seamless loop created: no frozen frames, no gaps")
+                    owner_bg = concatenate_videoclips(loop_clips, method="compose")
+                    owner_bg = owner_bg.subclipped(0, owner_comment_duration)
+                    print(f"[BACKGROUND] Owner comment seamless loop created: no frozen frames, no gaps")
                 else:
-                    summary_bg = clip.subclipped(0, summary_duration)
-                    print(f"[BACKGROUND] Summary part single clip: {summary_duration:.2f}s")
+                    owner_bg = clip.subclipped(0, owner_comment_duration)
+                    print(f"[BACKGROUND] Owner comment single clip: {owner_comment_duration:.2f}s")
                 
-                composite_clips.append(summary_bg.with_start(summary_start_time))
-                print(f"[BACKGROUND] Summary background: {summary_duration:.2f}s starting at {summary_start_time:.2f}s (continuous from main part timing)")
+                composite_clips.append(owner_bg.with_start(owner_comment_start_time))
+                print(f"[BACKGROUND] Owner comment background: {owner_comment_duration:.2f}s starting at {owner_comment_start_time:.2f}s")
             
             print(f"[BACKGROUND] title_video period ({title_duration:.2f}s) and Modulation period ({modulation_duration:.2f}s) have no background")
 
