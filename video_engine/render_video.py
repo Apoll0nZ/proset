@@ -220,6 +220,25 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # ========== STAGE 1: マスタータイムラインの構築 ==========
         print(f"[TIMELINE] Building master timeline with title_duration={title_duration:.2f}s, title_audio_duration={title_audio_duration:.2f}s")
 
+        modulation_start_time = title_duration + sum(
+            d for p, d in zip(script_parts, part_durations)
+            if p.get("part") not in ["title_video", "main_title", "owner_comment"]
+        )
+        owner_comment_start_time = modulation_start_time + modulation_duration
+
+        part_start_times: Dict[int, float] = {}
+        time_cursor = title_duration
+        for idx, (part, duration) in enumerate(zip(script_parts, part_durations)):
+            part_type = part.get("part")
+            if part_type == "title_video":
+                part_start_times[idx] = 0.0
+                continue
+            if part_type == "owner_comment":
+                part_start_times[idx] = owner_comment_start_time
+            else:
+                part_start_times[idx] = time_cursor
+            time_cursor += duration
+
         # グローバルタイムラインの開始時刻を追跡
         current_video_time = 0.0
 
@@ -245,7 +264,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # ========== STAGE 3: Title動画を配置 ==========
         print(f"[TIMELINE] Positioning title video ({title_duration:.2f}s)...")
         if title_video_clip:
-            title_video_with_audio = title_video_clip.with_duration(title_duration)
+            title_video_with_audio = title_video_clip.with_duration(title_duration).without_audio()
             all_clips_by_layer['videos'].append({
                 'clip': title_video_with_audio,
                 'start': 0.0,
@@ -254,21 +273,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
         # ========== STAGE 3.5: Modulation動画を配置 ==========
         if modulation_video_clip and modulation_duration > 0:
-            # Modulation開始時間を計算（title_videoとmain_titleを除く）
-            modulation_start_time = title_duration
-            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-                part_type = part.get("part", "")
-                if part_type not in ["title_video", "main_title", "owner_comment"]:
-                    modulation_start_time += duration
-                # 次のパートがowner_commentならそこでmodulation開始
-                next_part_idx = i + 1
-                if next_part_idx < len(script_parts):
-                    next_part = script_parts[next_part_idx]
-                    if next_part.get("part") == "owner_comment":
-                        break
-            
             print(f"[TIMELINE] Positioning modulation video ({modulation_duration:.2f}s) at {modulation_start_time:.2f}s...")
-            modulation_video_with_audio = modulation_video_clip.with_duration(modulation_duration)
+            modulation_video_with_audio = modulation_video_clip.with_duration(modulation_duration).without_audio()
             # 元のサイズを維持し、中央に配置
             modulation_video_positioned = modulation_video_with_audio.with_position("center")
             all_clips_by_layer['videos'].append({
@@ -279,19 +285,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
         # ========== STAGE 4: 画像を配置 ==========
         print(f"[TIMELINE] Positioning {len(image_clips)} images...")
-        
-        # Modulation開始時間を計算（STAGE 3.5と同じ計算）
-        modulation_start_time = title_duration
-        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-            part_type = part.get("part", "")
-            if part_type not in ["title_video", "owner_comment"]:  # main_titleは含める
-                modulation_start_time += duration
-            # 次のパートがowner_commentならそこでmodulation開始
-            next_part_idx = i + 1
-            if next_part_idx < len(script_parts):
-                next_part = script_parts[next_part_idx]
-                if next_part.get("part") == "owner_comment":
-                    break
+
         modulation_end_time = modulation_start_time + modulation_duration
         
         for img_clip in image_clips:
@@ -310,18 +304,24 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 'duration': img_clip.duration
             })
 
-        # ========== STAGE 5: 字幕配置はメインセグメント処理で統一 ==========
-        print(f"[TIMELINE] Subtitles will be created during main segment processing...")
-
-        # ========== STAGE 7: 動画全体の長さを計算 ==========
-        # 最後のowner_commentパート終了までの時間を計算
-        final_content_end = 0.0
+        # ========== STAGE 5: 字幕生成（絶対時間のみ） ==========
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-            part_type = part.get("part", "")
-            final_content_end += duration
-        
-        total_duration = final_content_end + 3.0  # +closing
-        print(f"[TIMELINE] Total video duration: {total_duration:.2f}s")
+            if part.get("part") in ["title_video"]:
+                continue
+
+            subs = create_subtitles_with_absolute_timing(
+                text=part.get("text", ""),
+                duration=duration,
+                absolute_start_time=part_start_times.get(i, title_duration),
+                font_path=font_path,
+                query_data_list=query_data_list_all.get(i),
+                text_parts_list=text_parts_list_all.get(i),
+                duration_list=duration_list_all.get(i),
+            )
+            for sc in subs:
+                all_clips_by_layer['subtitles'].append({'clip': sc})
+
+        total_duration = 0.0
 
         # ========== STAGE 6: ヘッディング画像を配置 ==========
         print("[TIMELINE] Positioning heading image...")
@@ -330,11 +330,15 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             all_clips_by_layer['heading'].append({
                 'clip': heading_clip,
                 'start': 0.0,
-                'duration': total_duration  # 全体の長さ
+                'duration': 0.0
             })
 
         # ========== STAGE 8: Closing画面を追加 ==========
-        closing_start = final_content_end
+        closing_start = owner_comment_start_time
+        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+            if part.get("part") == "owner_comment":
+                closing_start = owner_comment_start_time + duration
+                break
         print(f"[TIMELINE] Adding black closing screen at {closing_start:.2f}s")
         closing_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=3.0)
         all_clips_by_layer['videos'].append({
@@ -369,8 +373,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 if part_type not in ["title_video", "owner_comment", "main_title"]:
                     main_duration += duration
             
-            # owner_commentの開始時間と時間を計算
-            owner_comment_start_time = title_duration + main_duration + modulation_duration
+            # owner_commentの開始時間は STAGE 1 で確定した値を使う（再計算禁止）
             owner_comment_duration = 0.0
             for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
                 if script_parts[i].get("part") == "owner_comment":
@@ -427,23 +430,29 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             start = item['start']
             composite_clips.append(clip.with_start(start))
 
-        # 10c. ヘッディング（ビデオの上に配置）
-        for item in all_clips_by_layer['heading']:
-            clip = item['clip'].with_duration(item['duration'])
-            start = item['start']
-            composite_clips.append(clip.with_start(start))
-
-        # 10d. 画像（ヘディングの上に配置）
+        # 10c. 画像（ヘディングの上に配置）
         for item in all_clips_by_layer['images']:
             clip = item['clip'].with_duration(item['duration'])
             start = item['start']
             composite_clips.append(clip.with_start(start))
 
-        # 10e. 字幕（最上レイヤーに配置）
+        # 10d. 字幕（最上レイヤーに配置）
         for item in all_clips_by_layer['subtitles']:
             clip = item['clip']
             # 字幕はすでに適切なstartを持っている
             composite_clips.append(clip)
+
+        # total_duration を確定（手計算しない）
+        if composite_clips:
+            total_duration = max((getattr(c, 'start', 0.0) or 0.0) + c.duration for c in composite_clips)
+        else:
+            total_duration = 0.0
+
+        # 10e. ヘッディング（最上に重ねる、全期間表示）
+        for item in all_clips_by_layer['heading']:
+            clip = item['clip'].with_duration(total_duration)
+            start = item['start']
+            composite_clips.append(clip.with_start(start))
 
         # 最終的なCompositeVideoClipを作成
         final_video = CompositeVideoClip(composite_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
@@ -459,85 +468,51 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
         audio_elements = []
 
-        # Title音声はメインコンテンツとして扱うため、ここでは追加しない
-        # Title音声はメイン音声の一部として含まれる
+        # Title音声は title_video_clip の元音声を使用（audio_clipとは混ぜない）
+        if title_video_clip and getattr(title_video_clip, 'audio', None) and title_duration > 0:
+            title_audio = title_video_clip.audio.subclipped(0, title_duration)
+            audio_elements.append(title_audio.with_start(0))
+            print(f"[TIMELINE] Added title embedded audio: {title_duration:.2f}s at 0.0s")
 
-        # メイン音声（まとめパートを除く）
-        main_audio_parts = []
-        main_audio_duration = 0.0
-        summary_audio_parts = []
-        summary_audio_duration = 0.0
-        
-        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-            part_type = part.get("part", "")
-            if part_type == "owner_comment":
-                # まとめパートはsummary_audioに
-                summary_audio_parts.append((i, part, duration))
-                summary_audio_duration += duration
-            elif part_type not in ["title_video", "main_title"]:
-                # title_videoとmain_titleを除くメインパートのみをmain_audioに
-                main_audio_parts.append((i, part, duration))
-                main_audio_duration += duration
-        
-        # メイン音声クリップを生成
-        if main_audio_parts and audio_clip:
-            main_audio_start = title_duration  # title_video終了後から開始
-            main_audio_end = main_audio_start + main_audio_duration
-            main_audio = audio_clip.subclipped(0, main_audio_duration)
-            main_audio_with_start = main_audio.with_start(main_audio_start)
-            audio_elements.append(main_audio_with_start)
-            print(f"[TIMELINE] Added main audio: {main_audio_duration:.2f}s starting at {main_audio_start:.2f}s")
-        
-        # main_title用の音声クリップを生成
-        main_title_duration = 0.0
-        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-            if part.get("part") == "main_title":
-                main_title_duration = duration
-                break
-        
-        if main_title_duration > 0 and audio_clip:
-            # main_titleはメイン音声の直後から開始
-            main_title_start = main_audio_start + main_audio_duration
-            main_title_audio = audio_clip.subclipped(main_audio_duration, main_audio_duration + main_title_duration)
-            main_title_audio_with_start = main_title_audio.with_start(main_title_start)
-            audio_elements.append(main_title_audio_with_start)
-            print(f"[TIMELINE] Added main_title audio: {main_title_duration:.2f}s starting at {main_title_start:.2f}s")
-        
-        # Modulation動画の音声は動画自体に含まれるため別途追加しない
-        if modulation_video_clip and modulation_video_clip.audio:
-            print(f"[TIMELINE] Modulation video has embedded audio: {modulation_video_clip.audio.duration:.2f}s")
-            print(f"[TIMELINE] No separate audio track needed for modulation")
-        
+        # modulation 音声を「明示的に」追加
+        if modulation_video_clip and getattr(modulation_video_clip, 'audio', None):
+            mod_audio = modulation_video_clip.audio.with_start(modulation_start_time)
+            audio_elements.append(mod_audio)
+            print(f"[TIMELINE] Added modulation audio at {modulation_start_time:.2f}s")
+
+        # ナレーション音声（audio_clip）はパートごとに絶対時間で配置
+        if audio_clip:
+            audio_src_cursor = title_audio_duration
+            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+                part_type = part.get("part", "")
+                if part_type in ["title_video"]:
+                    continue
+                if audio_src_cursor + duration > audio_clip.duration:
+                    break
+                part_audio = audio_clip.subclipped(audio_src_cursor, audio_src_cursor + duration)
+                audio_elements.append(part_audio.with_start(part_start_times.get(i, title_duration)))
+                audio_src_cursor += duration
+
         # BGM（main_titleから開始）
         if bgm_clip:
-            # メインパートのBGM（main_titleを含む）
-            bgm_start = title_duration  # title_video終了後からBGM開始（main_titleを含む）
-            bgm_duration = main_audio_duration + main_title_duration  # メインパートとmain_titleの合計長さ
-            bgm_main = bgm_clip.subclipped(0, bgm_duration)
-            bgm_main_with_start = bgm_main.with_start(bgm_start)
-            audio_elements.append(bgm_main_with_start)
-            print(f"[TIMELINE] Added BGM (main including main_title): {bgm_duration:.2f}s starting at {bgm_start:.2f}s")
-        
-        # まとめ音声クリップを生成
-        if summary_audio_parts and audio_clip:
-            summary_audio_start = main_audio_start + main_audio_duration + main_title_duration + modulation_duration
-            summary_audio_end = summary_audio_start + summary_audio_duration
-            # audio_clipからまとめ部分を抽出（main_titleも含めたオフセット）
-            summary_start_offset = main_audio_duration + main_title_duration
-            summary_end_offset = summary_start_offset + summary_audio_duration
-            summary_audio = audio_clip.subclipped(summary_start_offset, summary_end_offset)
-            summary_audio_with_start = summary_audio.with_start(summary_audio_start)
-            audio_elements.append(summary_audio_with_start)
-            print(f"[TIMELINE] Added summary audio: {summary_audio_duration:.2f}s starting at {summary_audio_start:.2f}s")
-            
-            # BGM（まとめパート用：最初から再生）
-            if bgm_clip:
-                bgm_summary_start = summary_audio_start  # まとめパート開始と同時にBGM開始
-                bgm_summary_duration = summary_audio_duration  # まとめパートの長さのみ
-                bgm_summary = bgm_clip.subclipped(0, bgm_summary_duration)
-                bgm_summary_with_start = bgm_summary.with_start(bgm_summary_start)
-                audio_elements.append(bgm_summary_with_start)
-                print(f"[TIMELINE] Added BGM (summary): {bgm_summary_duration:.2f}s starting at {bgm_summary_start:.2f}s")
+            # メイン（title後〜modulation前）
+            main_bgm_start = title_duration
+            main_bgm_duration = max(0.0, modulation_start_time - title_duration)
+            if main_bgm_duration > 0:
+                bgm_main = bgm_clip.subclipped(0, main_bgm_duration)
+                audio_elements.append(bgm_main.with_start(main_bgm_start))
+                print(f"[TIMELINE] Added BGM (main): {main_bgm_duration:.2f}s starting at {main_bgm_start:.2f}s")
+
+            # まとめ（owner_comment期間）
+            owner_comment_duration = 0.0
+            for part, duration in zip(script_parts, part_durations):
+                if part.get("part") == "owner_comment":
+                    owner_comment_duration = duration
+                    break
+            if owner_comment_duration > 0:
+                bgm_summary = bgm_clip.subclipped(0, owner_comment_duration)
+                audio_elements.append(bgm_summary.with_start(owner_comment_start_time))
+                print(f"[TIMELINE] Added BGM (summary): {owner_comment_duration:.2f}s starting at {owner_comment_start_time:.2f}s")
 
         # 音声を合成
         if audio_elements:
@@ -626,7 +601,8 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                     stroke_color="black",
                     stroke_width=2,
                     method="caption",
-                    size=(VIDEO_WIDTH - 100, None)
+                    size=(VIDEO_WIDTH - 100, None),
+                    font=font_path
                 )
 
                 # アニメーション効果を追加
@@ -1006,7 +982,8 @@ def create_subtitles_for_segment(text: str, duration: float, segment_start_time:
                 bg_color="white",
                 text_align="left",
                 stroke_color="black",
-                stroke_width=1
+                stroke_width=1,
+                font=font_path
             )
             
             # アニメーションを適用
@@ -2220,24 +2197,37 @@ def evaluate_images_batch_with_gemini(images_list: List[Dict], keyword: str, scr
 """
         
         prompt = f"""
-以下の複数の画像情報を基に、動画に適している画像を選択してください。
+以下の複数の画像情報を基に、動画の解説内容に適した画像だけを選択してください。
 
-検索キーワード：{keyword}
-動画の内容：{script_text[:200]}...
+### 指示
+- **厳格な評価**: 各画像を評価基準に基づき厳格に評価し、基準を満たさない画像はすべて除外してください。
+- **回答形式**: 最も適している画像の番号をカンマ区切りで回答してください (例: 1,3)。適切な画像が一つもなければ「なし」と回答してください。
 
+### コンテキスト
+- **検索キーワード**: {keyword}
+- **動画のテーマ**: {script_text[:200]}...
+
+### 評価対象の画像リスト
 {images_info_text}
 
-評価基準：
-1. 製品・企業・サービスを象徴する公式画像やロゴである（高評価）
-2. 第三者が作成した記事の画像やスクリーンショットである（低評価）
-3. 検索キーワードと直接的な関係がある（高評価）
-4. 一般的なストックフォトや無関係な画像である（低評価）
-5. 人物画像・顔写真・ポートレートは除外する（低評価）
-6. スクリーンショット・UI画像・アプリ画面は除外する（低評価）
+### 評価基準
+#### 【最優先】
+- **テーマとの関連性**: 画像は「{keyword}」および動画のテーマに直接関連している必要があります。
+- **公式画像・ロゴ**: 製品、企業、サービスの公式サイトで使われているような、高品質なロゴや製品画像を最優先します。
 
-回答形式：
-適切な画像番号のみをカンマ区切りで回答してください（例：1,3）。
-適切な画像がない場合は「なし」と回答してください。
+#### 【除外対象】
+- **無関係なコンテンツ**: 解説しているテーマと無関係な製品、企業、人物、事象の画像はすべて除外します。
+- **第三者のコンテンツ**:
+    - 他のYouTubeチャンネルのサムネイルや動画キャプチャ
+    - 個人のブログやニュース記事のスクリーンショット
+    - SNSの投稿画像
+- **低品質な画像**:
+    - 解像度が低い、ぼやけている、ノイズが多い画像
+    - 過度な装飾や文字が追加されている画像
+- **不適切なコンテンツ**:
+    - 人物の顔写真やポートレート（製品の公式モデルを除く）
+    - 一般的なストックフォト（iStockphoto, Getty Imagesなど）
+    - アプリのUIスクリーンショットや操作画面
 """
         
         print(f"[DEBUG] Batch evaluating {len(images_list)} images with Gemini")
@@ -3709,16 +3699,22 @@ async def build_video_with_subtitles(
                     continue
 
             if not part_images:
-                print(f"[WARNING] No images found for segment {i}, keyword: {search_keyword}")
-                print(f"[INFO] セグメント {i} はスキップします")
-                current_image_time += duration
-                continue
+                print(f"[WARNING] No images found for segment {i}, attempting to reuse existing images.")
+                if _used_image_paths:
+                    # 既存の画像からランダムに選択して再利用
+                    selected_image = random.choice(_used_image_paths)
+                    part_images.append(selected_image)
+                    print(f"[INFO] Reusing image for segment {i}: {os.path.basename(selected_image)}")
+                else:
+                    print(f"[ERROR] No images found for segment {i} and no existing images to reuse. Skipping segment.")
+                    current_image_time += duration
+                    continue
 
             # 画像が1枚でも取得できた場合は続行
             print(f"[DEBUG] Found {len(part_images)} images for segment {i}")
 
             # 1枚あたり最低7秒表示、切り替えに0.5秒のフェードアウト時間を確保
-            min_duration = 7.0  # 最低表示時間
+            min_duration = 14.0  # 最低表示時間
             fade_out_duration = 0.5  # フェードアウト時間
             seg_start = current_image_time
             seg_end = seg_start + duration  # セグメント終了時間
@@ -4020,7 +4016,8 @@ async def build_video_with_subtitles(
                     font_size=28,
                     color="black",
                     bg_color="white",
-                    size=(250, 60)
+                    size=(250, 60),
+                    font=font_path
                 ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0).with_fps(FPS)
         except Exception as e:
             print(f"[ERROR] Failed to create heading clip: {e}")
@@ -4079,7 +4076,8 @@ async def build_video_with_subtitles(
                             bg_color="white",
                             text_align="left",
                             stroke_color="black",
-                            stroke_width=1
+                            stroke_width=1,
+                            font=font_path
                         )
                         
                         # アニメーションを適用（フォールバック付き）
