@@ -4417,11 +4417,20 @@ async def main() -> None:
             print("Saving to DynamoDB...")
             now = datetime.now(timezone.utc).isoformat()
             
-            # URLのチェック（GitHub Actions完走のため緩和）
+            # URLのチェック（重複動画量産防止のため）
             url = meta.get("url")
             if not url:
-                print("WARNING: meta.url が存在しません。ダミーURLを使用して続行します。")
-                url = f"https://example.com/placeholder/{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+                print("ERROR: meta.url が存在しません。重複動画量産防止のため処理を中止します。")
+                print("INFO: 記事URLがない場合は動画生成をスキップしてください。")
+                return None  # 処理を中止してNoneを返す
+            
+            # 既存のURLをチェックして重複を防止
+            print(f"Checking for existing video with URL: {url}")
+            existing_item = get_video_history_item(url)
+            if existing_item:
+                print(f"WARNING: 動画が既に存在します (status: {existing_item.get('status', 'unknown')})")
+                print("INFO: 重複動画量産防止のため処理を中止します。")
+                return None  # 重複がある場合は処理を中止
 
             # TTL（3年後）
             from datetime import timedelta

@@ -325,19 +325,33 @@ def save_article_with_score(url: str, title: str, score: float, status: str = "e
         raise
 
 def mark_url_processed(url: str, score: float, title: str = "", status: str = "selected") -> None:
+    """記事のステータスのみを更新（既存情報を保持）"""
     try:
-        ddb_table.put_item(
-            Item={
-                "url": url,
-                "title": title,
-                "processed_at": _iso_now(),
-                "ttl": _ttl(1095),  # 3年間保持
-                "status": status,
-                "score": Decimal(str(score))
-            }
+        update_expression = "SET #s = :status, #ua = :updated_at"
+        expression_names = {
+            "#s": "status",
+            "#ua": "updated_at"
+        }
+        expression_values = {
+            ":status": status,
+            ":updated_at": _iso_now()
+        }
+        
+        # タイトルが空でない場合のみタイトルも更新
+        if title:
+            update_expression += ", #t = :title"
+            expression_names["#t"] = "title"
+            expression_values[":title"] = title
+        
+        ddb_table.update_item(
+            Key={"url": url},
+            UpdateExpression=update_expression,
+            ExpressionAttributeNames=expression_names,
+            ExpressionAttributeValues=expression_values
         )
+        print(f"Updated status for {url} to '{status}'")
     except Exception as exc:
-        print(f"DynamoDB put_item error: {exc}")
+        print(f"DynamoDB update_item error: {exc}")
         raise
 
 
