@@ -278,6 +278,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # メイン内容の字幕
         current_subtitle_time = title_duration + title_audio_duration
         import random
+        
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             part_type = part.get("part", "")
             text = part.get("text", "")
@@ -286,6 +287,30 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 if part_type != "title":
                     current_subtitle_time += duration
                 continue
+
+            # ネットの反応パートの終了直後にModulation動画を配置
+            if part_type != "owner_comment":
+                # このパートがネットの反応パートの場合、次のパートの前にModulation動画を配置
+                next_part_idx = i + 1
+                if next_part_idx < len(script_parts):
+                    next_part = script_parts[next_part_idx]
+                    if next_part.get("part") == "owner_comment":
+                        # Modulation動画を現在の字幕時間に配置
+                        modulation_start = current_subtitle_time + duration
+                        print(f"[TIMELINE] Positioning modulation video at {modulation_start:.2f}s (after {part_type}, before owner_comment)")
+                        if modulation_video_clip:
+                            all_clips_by_layer['videos'].append({
+                                'clip': modulation_video_clip.with_duration(modulation_duration),
+                                'start': modulation_start,
+                                'duration': modulation_duration
+                            })
+
+            # owner_comment以降の字幕はModulation動画の後に配置
+            if part_type == "owner_comment":
+                # title動画とメインコンテンツの関係のように、
+                # Modulation動画の終了直後にまとめパートを開始
+                current_subtitle_time += modulation_duration
+                print(f"[TIMELINE] owner_comment starts after modulation video: +{modulation_duration:.2f}s")
 
             if subtitle_chunks and i in subtitle_chunks:
                 print(f"[TIMELINE] Creating subtitles for part {i} '{part_type}' from chunk info")
@@ -351,6 +376,17 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
             current_subtitle_time += duration
 
+        # ========== STAGE 7: 動画全体の長さを計算 ==========
+        # 最後のowner_commentパート終了までの時間を計算
+        final_content_end = title_duration + title_audio_duration
+        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+            part_type = part.get("part", "")
+            if part_type != "title":  # titleは既に含まれている
+                final_content_end += duration
+        
+        total_duration = final_content_end + 3.0  # +closing
+        print(f"[TIMELINE] Total video duration: {total_duration:.2f}s")
+
         # ========== STAGE 6: ヘッディング画像を配置 ==========
         print("[TIMELINE] Positioning heading image...")
         if heading_clip:
@@ -358,25 +394,11 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             all_clips_by_layer['heading'].append({
                 'clip': heading_clip,
                 'start': 0.0,
-                'duration': current_subtitle_time  # 全体の長さ
+                'duration': total_duration  # 全体の長さ
             })
 
-        # ========== STAGE 7: 動画全体の長さを計算 ==========
-        total_duration = current_subtitle_time + modulation_duration + 3.0  # +modulation+closing
-        print(f"[TIMELINE] Total video duration: {total_duration:.2f}s")
-
-        # ========== STAGE 8: Modulation動画の位置を計算して追加 ==========
-        modulation_start = current_subtitle_time
-        print(f"[TIMELINE] Positioning modulation video at {modulation_start:.2f}s")
-        if modulation_video_clip:
-            all_clips_by_layer['videos'].append({
-                'clip': modulation_video_clip.with_duration(modulation_duration),
-                'start': modulation_start,
-                'duration': modulation_duration
-            })
-
-        # ========== STAGE 9: Closing画面を追加 ==========
-        closing_start = modulation_start + modulation_duration
+        # ========== STAGE 8: Closing画面を追加 ==========
+        closing_start = final_content_end
         print(f"[TIMELINE] Adding black closing screen at {closing_start:.2f}s")
         closing_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=3.0)
         all_clips_by_layer['videos'].append({
