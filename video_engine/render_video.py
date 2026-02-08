@@ -488,6 +488,27 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             audio_elements.append(bgm_with_start)
             print(f"[TIMELINE] Added BGM: {bgm_clip.duration:.2f}s starting at {bgm_start:.2f}s")
 
+        # Modulation動画の音声
+        if modulation_video_clip and modulation_video_clip.audio:
+            # modulation動画の開始時間を計算
+            modulation_audio_start = title_duration + title_audio_duration
+            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+                part_type = part.get("part", "")
+                if part_type != "title":
+                    modulation_audio_start += duration
+                    # 次のパートがowner_commentならそこでmodulation開始
+                    next_part_idx = i + 1
+                    if next_part_idx < len(script_parts):
+                        next_part = script_parts[next_part_idx]
+                        if next_part.get("part") == "owner_comment":
+                            break
+            
+            modulation_audio = modulation_video_clip.audio.with_start(modulation_audio_start)
+            audio_elements.append(modulation_audio)
+            print(f"[TIMELINE] Added modulation audio: {modulation_video_clip.audio.duration:.2f}s starting at {modulation_audio_start:.2f}s")
+        elif modulation_video_clip:
+            print(f"[TIMELINE] Warning: No audio found in modulation video clip")
+
         # 音声を合成
         if audio_elements:
             final_audio = CompositeAudioClip(audio_elements)
