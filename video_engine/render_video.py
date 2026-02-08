@@ -252,9 +252,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 try:
                     txt_clip = TextClip(
                         text=f" {chunk_text} ",
-                        font_size=48,
+                        fontsize=48,
                         color="black",
-                        font=font_path,
                         method="caption",
                         size=(1200, None),  # 幅を1200に削減（画面の63%）
                         bg_color="white",
@@ -299,7 +298,6 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                                 chunk_text,
                                 fontsize=48,
                                 color='white',
-                                font=font_path,
                                 stroke_color='black',
                                 stroke_width=2,
                                 method='caption',
@@ -331,7 +329,6 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                             chunk_text,
                             fontsize=48,
                             color='white',
-                            font=font_path,
                             stroke_color='black',
                             stroke_width=2,
                             method='caption',
@@ -400,29 +397,29 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             background_end_time -= modulation_duration
             composite_clips.append(clip.with_start(start).with_duration(background_end_time))
 
-        # 10b. 画像
-        for item in all_clips_by_layer['images']:
-            clip = item['clip'].with_duration(item['duration'])
-            start = item['start']
-            composite_clips.append(clip.with_start(start))
-
-        # 10c. ビデオ
+        # 10b. ビデオ（背景の上に配置）
         for item in all_clips_by_layer['videos']:
             clip = item['clip'].with_duration(item['duration'])
             start = item['start']
             composite_clips.append(clip.with_start(start))
 
-        # 10d. 字幕
-        for item in all_clips_by_layer['subtitles']:
-            clip = item['clip']
-            # 字幕はすでに適切なstartを持っている
-            composite_clips.append(clip)
-
-        # 10e. ヘッディング
+        # 10c. ヘッディング（ビデオの上に配置）
         for item in all_clips_by_layer['heading']:
             clip = item['clip'].with_duration(item['duration'])
             start = item['start']
             composite_clips.append(clip.with_start(start))
+
+        # 10d. 画像（ヘディングの上に配置）
+        for item in all_clips_by_layer['images']:
+            clip = item['clip'].with_duration(item['duration'])
+            start = item['start']
+            composite_clips.append(clip.with_start(start))
+
+        # 10e. 字幕（最上レイヤーに配置）
+        for item in all_clips_by_layer['subtitles']:
+            clip = item['clip']
+            # 字幕はすでに適切なstartを持っている
+            composite_clips.append(clip)
 
         # 最終的なCompositeVideoClipを作成
         final_video = CompositeVideoClip(composite_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
@@ -574,7 +571,6 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                 txt_clip = TextClip(
                     text=chunk,
                     fontsize=30,
-                    font=font_path or "Arial",
                     color="black",
                     bg_color="yellow",
                     method="caption",
@@ -950,9 +946,8 @@ def create_subtitles_for_segment(text: str, duration: float, segment_start_time:
             padded_chunk = f" {chunk} "
             txt_clip = TextClip(
                 text=padded_chunk,
-                font_size=48,
+                fontsize=48,
                 color="black",
-                font=font_path,
                 method="caption",
                 size=(1600, None),
                 bg_color="white",
@@ -3446,6 +3441,19 @@ async def build_video_with_subtitles(
         total_images_collected = 0
         # 数珠つなぎロジック：画像もtitle_durationから開始
         current_image_time = title_duration + 1.0  # オープニング動画の後、1.0秒後に画像を開始
+        
+        # modulation開始時間を計算
+        modulation_start_time = title_duration + title_audio_duration
+        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+            part_type = part.get("part", "")
+            if part_type != "title" and part_type != "owner_comment":
+                modulation_start_time += duration
+                # 次のパートがowner_commentならそこでmodulation開始
+                next_part_idx = i + 1
+                if next_part_idx < len(script_parts):
+                    next_part = script_parts[next_part_idx]
+                    if next_part.get("part") == "owner_comment":
+                        break
 
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
@@ -3555,6 +3563,15 @@ async def build_video_with_subtitles(
             seg_end = seg_start + duration  # セグメント終了時間
             available_time = seg_end - seg_start
             
+            # modulation期間を考慮して画像表示時間を調整
+            if seg_start < modulation_start_time and seg_end > modulation_start_time:
+                # このセグメントがmodulation期間と重複する場合
+                modulation_end_time = modulation_start_time + modulation_duration
+                if seg_start < modulation_end_time:
+                    # modulation前の時間のみを使用
+                    available_time = modulation_start_time - seg_start
+                    print(f"[DEBUG] Segment {i} overlaps with modulation, adjusted available_time: {available_time}s")
+            
             # 画像1枚あたりの時間 = 表示時間 + フェードアウト時間
             time_per_image = min_duration + fade_out_duration
             max_images_possible = int(available_time / time_per_image)
@@ -3619,9 +3636,16 @@ async def build_video_with_subtitles(
             if images_scheduled == 0:
                 print(f"[WARNING] No valid images scheduled for segment {i}")
 
-            # current_image_timeを厳密に管理（セグメント終了時間に同期）
+            # current_image_timeを厳密に管理（modulation期間を考慮）
             print(f"[DEBUG] Segment {i} completed. Current image time before update: {current_image_time:.2f}s")
-            current_image_time = seg_end  # セグメント終了時間に同期して隙間をなくす
+            
+            # modulation期間と重複する場合は、modulation終了後に時間をシフト
+            if seg_start < modulation_start_time and seg_end > modulation_start_time:
+                current_image_time = modulation_start_time + modulation_duration
+                print(f"[DEBUG] Segment {i} overlaps with modulation, shifted image time to: {current_image_time:.2f}s")
+            else:
+                current_image_time = seg_end  # セグメント終了時間に同期して隙間をなくす
+                
             print(f"[DEBUG] Segment {i} completed. Current image time after update: {current_image_time:.2f}s")
 
             # メモリ解放：各セグメント処理後にクリーンアップ
@@ -3832,9 +3856,8 @@ async def build_video_with_subtitles(
                 # フォールバックとしてテキストを表示
                 heading_clip = TextClip(
                     text="概要",
-                    font_size=28,
+                    fontsize=28,
                     color="black",
-                    font=font_path,
                     bg_color="white",
                     size=(250, 60)
                 ).with_position((80, 60)).with_duration(total_duration).with_opacity(1.0).with_fps(FPS)
@@ -3888,9 +3911,8 @@ async def build_video_with_subtitles(
                         
                         txt_clip = TextClip(
                             text=padded_chunk,
-                            font_size=48,
+                            fontsize=48,
                             color="black",
-                            font=font_path,
                             method="caption",
                             size=(1600, None),
                             bg_color="white",
