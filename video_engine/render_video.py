@@ -418,7 +418,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                                 method='caption',
                                 size=(1920-100, None),
                                 font=font_path  # 渡されたフォントパスを使用
-                            ).set_position(('center', 'bottom-100'))
+                            )
+                            txt_clip = txt_clip.set_position(('center', 'bottom-100'))
                             
                             all_clips_by_layer['subtitles'].append({
                                 'clip': txt_clip,
@@ -456,7 +457,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                             method='caption',
                             size=(1920-100, None),
                             font=font_path  # 渡されたフォントパスを使用
-                        ).set_position(('center', 'bottom-100'))
+                        )
+                        txt_clip = txt_clip.set_position(('center', 'bottom-100'))
                         
                         all_clips_by_layer['subtitles'].append({
                             'clip': txt_clip,
@@ -1884,7 +1886,10 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                 }
                             }
                             
-                            console.log(`Found ${images.length} total images before filtering`);
+                            console.log(`Found ${images.length} total images before filtering`)
+                            for (let i = 0; i < Math.min(5, images.length); i++) {
+                                console.log(`Sample ${i}: ${images[i].src} (${images[i].width}x${images[i].height})`);
+                            }
                             return images;
                         }
                     """)
@@ -1908,17 +1913,36 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                 # URLパターンでもチェック（拡張子がない場合）
                                 if not has_valid_extension:
                                     # Bingの画像URLパターンをチェック
-                                    if ('bing.net' in original_url or 'bing.com' in original_url) and len(original_url) > 50:
+                                    if ('bing.net' in original_url or 'bing.com' in original_url) and len(original_url) > 30:
+                                        has_valid_extension = True
+                                    # その他の画像ホスティングサービスも許可
+                                    elif any(domain in original_url for domain in ['thepowerofplaybook.com', 'msn.com', 'wordpress.com', 'cloudfront.com']):
+                                        has_valid_extension = True
+                                    # Apple公式サイトも許可
+                                    elif 'apple.com' in original_url:
+                                        has_valid_extension = True
+                                    # 主要なCDNも許可
+                                    elif any(cdn in original_url for cdn in ['cdn.', 'cloudfront', 'kxcdn']):
                                         has_valid_extension = True
                                 
                                 if has_valid_extension:
                                     # 人物画像とYouTube風サムネイルを除外
                                     if width > 0 and height > 0:
-                                        if width < 100 or height < 100:
-                                            print(f"[DEBUG] Skipping small image: {width}x{height}")
+                                        if width < 50 or height < 50:
+                                            print(f"[DEBUG] Skipping very small image: {width}x{height}")
                                             continue
-                                        
-                                        # フィルタリング：人物画像はプロンプトで除外するため、ここではフィルタリングしない
+                                    elif width == 0 and height == 0:
+                                        # サイズ情報がない場合は許可（Bingメタデータ経由の場合）
+                                        pass
+                                    
+                                    # 画像をリストに追加
+                                    images.append({
+                                        'url': original_url,
+                                        'title': alt,
+                                        'is_google_thumbnail': False
+                                    })
+                                    
+                                    # フィルタリング：人物画像はプロンプトで除外するため、ここではフィルタリングしない
                                     if len(images) >= max_results:
                                         break
                                 else:
