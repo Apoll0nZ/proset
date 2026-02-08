@@ -461,37 +461,73 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # CompositeVideoClipにクリップを追加する際、startを直接指定
         composite_clips = []
 
-        # 10a. 背景（メインパート用とまとめパート用で分ける）
+        # 10a. 背景（Modulation期間を除いて連続再生）
         for item in all_clips_by_layer['background']:
             clip = item['clip']
             start = item['start']
             
-            # メインパート用背景：title_durationからメインパート終了まで
-            main_background_start = title_duration
-            main_background_end = title_duration + title_audio_duration
+            # メインパートの時間を計算
+            main_duration = title_audio_duration
             for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
                 part_type = part.get("part", "")
                 if part_type != "title" and part_type != "owner_comment":
-                    main_background_end += duration
+                    main_duration += duration
             
-            # メインパート用背景クリップ
-            main_bg_duration = main_background_end - main_background_start
-            if main_bg_duration > 0:
-                main_bg = clip.subclipped(0, main_bg_duration)
-                composite_clips.append(main_bg.with_start(main_background_start))
-                print(f"[BACKGROUND] Main background: {main_bg_duration:.2f}s starting at {main_background_start:.2f}s")
-            
-            # まとめパート用背景：最初から再生
-            summary_start_time = main_background_end + modulation_duration
+            # まとめパートの時間を計算
             summary_duration = 0
             for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
                 if script_parts[i].get("part") == "owner_comment":
                     summary_duration += duration
             
+            # メインパート用背景（Title直後から開始）
+            if main_duration > 0:
+                if clip.duration < main_duration:
+                    # メインパート用にシームレスループ
+                    num_loops = math.ceil(main_duration / clip.duration)
+                    print(f"[BACKGROUND] Main part seamless loops: {num_loops} loops for {main_duration:.2f}s")
+                    
+                    # 隙間なく連結して前のフレームを残さない
+                    loop_clips = []
+                    for i in range(num_loops):
+                        loop_clips.append(clip)
+                    
+                    from moviepy.video.compositing.concatenate import concatenate_videoclips
+                    main_bg = concatenate_videoclips(loop_clips, method="compose")
+                    main_bg = main_bg.subclipped(0, main_duration)
+                    print(f"[BACKGROUND] Seamless loop created: no frozen frames, no gaps")
+                else:
+                    main_bg = clip.subclipped(0, main_duration)
+                    print(f"[BACKGROUND] Main part single clip: {main_duration:.2f}s")
+                
+                main_start_time = title_duration
+                composite_clips.append(main_bg.with_start(main_start_time))
+                print(f"[BACKGROUND] Main background: {main_duration:.2f}s starting at {main_start_time:.2f}s")
+            
+            # まとめパート用背景（Modulation終了後から開始）
             if summary_duration > 0:
-                summary_bg = clip.subclipped(0, summary_duration)
+                summary_start_time = title_duration + main_duration + modulation_duration
+                
+                if clip.duration < summary_duration:
+                    # まとめパート用にシームレスループ
+                    num_loops = math.ceil(summary_duration / clip.duration)
+                    print(f"[BACKGROUND] Summary part seamless loops: {num_loops} loops for {summary_duration:.2f}s")
+                    
+                    # 隙間なく連結して前のフレームを残さない
+                    loop_clips = []
+                    for i in range(num_loops):
+                        loop_clips.append(clip)
+                    
+                    summary_bg = concatenate_videoclips(loop_clips, method="compose")
+                    summary_bg = summary_bg.subclipped(0, summary_duration)
+                    print(f"[BACKGROUND] Summary seamless loop created: no frozen frames, no gaps")
+                else:
+                    summary_bg = clip.subclipped(0, summary_duration)
+                    print(f"[BACKGROUND] Summary part single clip: {summary_duration:.2f}s")
+                
                 composite_clips.append(summary_bg.with_start(summary_start_time))
-                print(f"[BACKGROUND] Summary background: {summary_duration:.2f}s starting at {summary_start_time:.2f}s (restarted from beginning)")
+                print(f"[BACKGROUND] Summary background: {summary_duration:.2f}s starting at {summary_start_time:.2f}s (continuous from main part timing)")
+            
+            print(f"[BACKGROUND] Modulation period ({modulation_duration:.2f}s) has no background")
 
         # 10b. ビデオ（背景の上に配置）
         for item in all_clips_by_layer['videos']:
@@ -4379,6 +4415,14 @@ def upload_to_youtube(
     YouTube に「非公開」で動画をアップロードし、videoId を返す。
     サムネイルも設定する。
     """
+    # 動画ファイルの存在確認
+    if not os.path.exists(video_path):
+        print(f"[ERROR] Video file not found: {video_path}")
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+    
+    print(f"[INFO] Uploading video: {video_path}")
+    print(f"[INFO] File size: {os.path.getsize(video_path) / (1024*1024):.2f} MB")
+    
     body = {
         "snippet": {
             "title": title,
@@ -4390,7 +4434,12 @@ def upload_to_youtube(
         },
     }
 
-    media = MediaFileUpload(video_path, chunksize=-1, resumable=True, mimetype="video/mp4")
+    try:
+        media = MediaFileUpload(video_path, chunksize=-1, resumable=True, mimetype="video/mp4")
+    except Exception as e:
+        print(f"[ERROR] Failed to create MediaFileUpload: {e}")
+        print(f"[ERROR] Video path: {video_path}")
+        raise
     request = youtube.videos().insert(
         part="snippet,status",
         body=body,
@@ -4441,29 +4490,32 @@ def put_video_history_item(item: Dict[str, Any]) -> None:
 
 async def main() -> None:
     """ローカル/Actions 実行用エントリポイント。"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        script_obj = None
-        audio_path = None
-        video_path = None
-        thumbnail_path = None
-        
-        try:
-            # 1. 最新スクリプト JSON を S3 から取得
-            script_obj = get_latest_script_object()
-            s3_key = script_obj["key"]
-            data = script_obj["data"]
+    # 一時ディレクトリを自動削除しないように変更
+    tmpdir = tempfile.mkdtemp()
+    print(f"[INFO] Using temporary directory: {tmpdir}")
+    
+    script_obj = None
+    audio_path = None
+    video_path = None
+    thumbnail_path = None
+    
+    try:
+        # 1. 最新スクリプト JSON を S3 から取得
+        script_obj = get_latest_script_object()
+        s3_key = script_obj["key"]
+        data = script_obj["data"]
 
-            # JSONデータのバリデーションとデフォルト値設定
-            title = data.get("title", "PCニュース解説")
-            description = data.get("description", "")
-            content = data.get("content", {})
-            topic_summary = content.get("topic_summary", "")
-            script_parts = content.get("script_parts", [])
-            thumbnail_data = data.get("thumbnail", {})
-            meta = data.get("meta", {})
+        # JSONデータのバリデーションとデフォルト値設定
+        title = data.get("title", "PCニュース解説")
+        description = data.get("description", "")
+        content = data.get("content", {})
+        topic_summary = content.get("topic_summary", "")
+        script_parts = content.get("script_parts", [])
+        thumbnail_data = data.get("thumbnail", {})
+        meta = data.get("meta", {})
 
-            if not script_parts:
-                raise RuntimeError("script_parts が空です。Gemini の出力を確認してください。")
+        if not script_parts:
+            raise RuntimeError("script_parts が空です。Gemini の出力を確認してください。")
             
             # 0. タイトル読み上げパートを先頭に追加（ずんだもん: ID 3）
             title_part = {
@@ -4628,20 +4680,20 @@ async def main() -> None:
             
             print(f"Successfully completed! Video ID: {video_id}")
 
-        except Exception as e:
-            print(f"Error in main process: {str(e)}")
-            raise
-        
-        finally:
-            # 一時フォルダ全体を強制的にクリーンアップ
-            import shutil
-            # DEBUG_MODEでもartifactsは保持するように変更
-            if DEBUG_MODE:
-                print("[DEBUG] DEBUG_MODE: Artifacts 転送のため一時ファイル削除をスキップします")
-            else:
-                # プロジェクトルートに生成された動画とサムネイルファイルを削除
-                try:
-                    # クリップを明示的にクローズしてファイルハンドルを解放
+    except Exception as e:
+        print(f"Error in main process: {str(e)}")
+        raise
+    
+    finally:
+        # 一時フォルダ全体を強制的にクリーンアップ
+        import shutil
+        # DEBUG_MODEでもartifactsは保持するように変更
+        if DEBUG_MODE:
+            print("[DEBUG] DEBUG_MODE: Artifacts 転送のため一時ファイル削除をスキップします")
+        else:
+            # プロジェクトルートに生成された動画とサムネイルファイルを削除
+            try:
+                # クリップを明示的にクローズしてファイルハンドルを解放
                     if 'video' in locals() and hasattr(video, 'close'):
                         try:
                             video.close()
@@ -4675,22 +4727,24 @@ async def main() -> None:
                         print(f"[INFO] Removed thumbnail file: {thumbnail_file}")
                         
                 except Exception as e:
-                    print(f"[WARNING] Failed to remove project root files: {e}")
-                try:
-                    shutil.rmtree(tmpdir, ignore_errors=True)
-                    print(f"[INFO] Cleaned up temporary directory: {tmpdir}")
-                except Exception as e:
-                    print(f"[WARNING] Failed to cleanup temp directory: {e}")
-                try:
-                    if os.path.exists(LOCAL_TEMP_DIR):
-                        files = [os.path.join(LOCAL_TEMP_DIR, name) for name in os.listdir(LOCAL_TEMP_DIR)]
-                        if files:
-                            print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
-                        shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
-                        print(f"[INFO] Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
-                        print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
-                except Exception as e:
-                    print(f"Failed to cleanup image temp directory: {e}")
+                print(f"[WARNING] Failed to remove project root files: {e}")
+        
+        try:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            print(f"[INFO] Cleaned up temporary directory: {tmpdir}")
+        except Exception as e:
+            print(f"[WARNING] Failed to cleanup temp directory: {e}")
+        
+        try:
+            if os.path.exists(LOCAL_TEMP_DIR):
+                files = [os.path.join(LOCAL_TEMP_DIR, name) for name in os.listdir(LOCAL_TEMP_DIR)]
+                if files:
+                    print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
+                shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
+                print(f"[INFO] Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
+                print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
+        except Exception as e:
+            print(f"Failed to cleanup image temp directory: {e}")
 
 
 if __name__ == "__main__":
