@@ -355,7 +355,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 try:
                     txt_clip = TextClip(
                         text=f" {chunk_text} ",
-                        fontsize=48,
+                        font_size=48,
                         color="black",
                         method="caption",
                         size=(1200, None),  # 幅を1200に削減（画面の63%）
@@ -410,7 +410,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                             
                             txt_clip = TextClip(
                                 chunk_text,
-                                fontsize=48,
+                                font_size=48,
                                 color='white',
                                 stroke_color='black',
                                 stroke_width=2,
@@ -441,7 +441,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                         
                         txt_clip = TextClip(
                             chunk_text,
-                            fontsize=48,
+                            font_size=48,
                             color='white',
                             stroke_color='black',
                             stroke_width=2,
@@ -527,7 +527,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     for i in range(num_loops):
                         loop_clips.append(clip)
                     
-                    from moviepy.video.compositing.concatenate import concatenate_videoclips
+                    from moviepy.editor import concatenate_videoclips
                     main_bg = concatenate_videoclips(loop_clips, method="compose")
                     main_bg = main_bg.subclipped(0, main_duration)
                     print(f"[BACKGROUND] Seamless loop created: no frozen frames, no gaps")
@@ -742,7 +742,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                 # テキストクリップを作成
                 txt_clip = TextClip(
                     text=chunk,
-                    fontsize=30,
+                    font_size=30,
                     color="black",
                     bg_color="yellow",
                     method="caption",
@@ -1108,7 +1108,7 @@ def create_subtitles_for_segment(text: str, duration: float, segment_start_time:
             padded_chunk = f" {chunk} "
             txt_clip = TextClip(
                 text=padded_chunk,
-                fontsize=48,
+                font_size=48,
                 color="black",
                 method="caption",
                 size=(1600, None),
@@ -4065,7 +4065,7 @@ async def build_video_with_subtitles(
                 # フォールバックとしてテキストを表示
                 heading_clip = TextClip(
                     text="概要",
-                    fontsize=28,
+                    font_size=28,
                     color="black",
                     bg_color="white",
                     size=(250, 60)
@@ -4120,7 +4120,7 @@ async def build_video_with_subtitles(
                         
                         txt_clip = TextClip(
                             text=padded_chunk,
-                            fontsize=48,
+                            font_size=48,
                             color="black",
                             method="caption",
                             size=(1600, None),
