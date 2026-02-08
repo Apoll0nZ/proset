@@ -106,16 +106,88 @@ def create_placeholder_image(width: int, height: int, color: tuple = (200, 200, 
 
 def get_article_images(topic_summary: str, meta: Optional[Dict] = None, used_image_paths: List[str] = None) -> Tuple[Image.Image, Image.Image]:
     """
-    記事関連画像を2枚取得（動画生成で使用した画像から再利用）。
+    記事関連画像を2枚取得（サムネイル生成時に独立して画像検索を行う）。
     """
-    # 使用された画像パスのリストを取得
-    image_paths = used_image_paths or []
-    
     img1 = None
     img2 = None
     
-    # 動画生成で使用した画像から2枚をスコアリングして選択
-    if image_paths and len(image_paths) >= 2:
+    # サムネイル生成時に独立して画像検索を行う
+    try:
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+        from render_video import search_images_with_playwright, download_image_from_url
+        import asyncio
+        
+        async def search_thumbnail_images():
+            # トピック要約からキーワードを抽出して画像検索
+            keywords = []
+            if topic_summary:
+                # 簡単なキーワード抽出
+                words = topic_summary.split()[:3]  # 最初の3単語を使用
+                keywords = [word for word in words if len(word) > 2]
+            
+            # メタ情報からキーワードを抽出
+            if meta and 'source_url' in meta:
+                source_url = meta['source_url']
+                if 'apple' in source_url.lower():
+                    keywords.insert(0, 'Apple')
+                elif 'microsoft' in source_url.lower():
+                    keywords.insert(0, 'Microsoft')
+                elif 'google' in source_url.lower():
+                    keywords.insert(0, 'Google')
+            
+            # キーワードがなければデフォルトを使用
+            if not keywords:
+                keywords = ['technology', 'innovation']
+            
+            print(f"[THUMBNAIL] Searching images with keywords: {keywords}")
+            
+            # 画像検索
+            for keyword in keywords[:2]:  # 最大2つのキーワードで試行
+                try:
+                    images = await search_images_with_playwright(keyword, max_results=3)
+                    if images:
+                        print(f"[THUMBNAIL] Found {len(images)} images for keyword: {keyword}")
+                        
+                        # 最初の2枚をダウンロード
+                        downloaded_paths = []
+                        for img in images[:2]:
+                            try:
+                                path = download_image_from_url(img['url'])
+                                if path and os.path.exists(path):
+                                    downloaded_paths.append(path)
+                                    print(f"[THUMBNAIL] Downloaded image: {os.path.basename(path)}")
+                            except Exception as e:
+                                print(f"[THUMBNAIL] Failed to download image: {e}")
+                                continue
+                        
+                        # 画像を読み込んで返す
+                        if len(downloaded_paths) >= 2:
+                            img1 = Image.open(downloaded_paths[0]).convert("RGBA")
+                            img2 = Image.open(downloaded_paths[1]).convert("RGBA")
+                            print(f"[THUMBNAIL] Successfully loaded 2 images for thumbnail")
+                            return img1, img2
+                        elif len(downloaded_paths) == 1:
+                            img1 = Image.open(downloaded_paths[0]).convert("RGBA")
+                            print(f"[THUMBNAIL] Successfully loaded 1 image for thumbnail")
+                            break
+                except Exception as e:
+                    print(f"[THUMBNAIL] Failed to search with keyword '{keyword}': {e}")
+                    continue
+            
+            return None, None
+        
+        # 非同期関数を実行
+        img1, img2 = asyncio.run(search_thumbnail_images())
+        
+    except Exception as e:
+        print(f"[THUMBNAIL] Error in independent image search: {e}")
+        print("[THUMBNAIL] Falling back to video images or default images")
+    
+    # 動画生成で使用した画像からフォールバック（従来通り）
+    image_paths = used_image_paths or []
+    if img1 is None and img2 is None and image_paths and len(image_paths) >= 2:
         import random
         
         def get_domain_score(image_path: str) -> int:
