@@ -4539,180 +4539,180 @@ async def main() -> None:
         thumbnail_data = data.get("thumbnail", {})
         meta = data.get("meta", {})
 
+        # 0. タイトル読み上げパートを先頭に追加（ずんだもん: ID 3）
+        title_part = {
+            "part": "title",
+            "text": title,
+            "speaker_id": 3
+        }
+        script_parts = [title_part] + script_parts
+
         if not script_parts:
             raise RuntimeError("script_parts が空です。Gemini の出力を確認してください。")
             
-            # 0. タイトル読み上げパートを先頭に追加（ずんだもん: ID 3）
-            title_part = {
-                "part": "title",
-                "text": title,
-                "speaker_id": 3
-            }
-            script_parts = [title_part] + script_parts
-            
-            # DEBUG_MODE の場合は処理数を制限
-            if DEBUG_MODE and DEBUG_MAX_PARTS:
-                script_parts = script_parts[:DEBUG_MAX_PARTS]
-                print(f"DEBUG_MODE: Limited to {len(script_parts)} script parts")
-            
-            print(f"Processing {len(script_parts)} script parts (title included)...")
+        # DEBUG_MODE の場合は処理数を制限
+        if DEBUG_MODE and DEBUG_MAX_PARTS:
+            script_parts = script_parts[:DEBUG_MAX_PARTS]
+            print(f"DEBUG_MODE: Limited to {len(script_parts)} script parts")
+        
+        print(f"Processing {len(script_parts)} script parts (title included)...")
 
-            # 2. VOICEVOX で音声生成（複数セリフ対応）
-            print("Generating audio...")
-            audio_path, part_durations, query_data_list_all, text_parts_list_all, duration_list_all = synthesize_multiple_speeches(script_parts, tmpdir)
+        # 2. VOICEVOX で音声生成（複数セリフ対応）
+        print("Generating audio...")
+        audio_path, part_durations, query_data_list_all, text_parts_list_all, duration_list_all = synthesize_multiple_speeches(script_parts, tmpdir)
 
-            # 2.5. Titleパートを動画部分と音声部分に分割
-            print("Splitting title part into video and audio sections...")
-            title_duration = 1.81  # Title動画の固定長
-            title_audio_duration = part_durations[0] if part_durations else title_duration
-            
-            script_parts, part_durations, title_video_duration, title_audio_only_duration = split_title_part(
-                script_parts, part_durations, title_duration, title_audio_duration
-            )
+        # 2.5. Titleパートを動画部分と音声部分に分割
+        print("Splitting title part into video and audio sections...")
+        title_duration = 1.81  # Title動画の固定長
+        title_audio_duration = part_durations[0] if part_durations else title_duration
+        
+        script_parts, part_durations, title_video_duration, title_audio_only_duration = split_title_part(
+            script_parts, part_durations, title_duration, title_audio_duration
+        )
 
             # 3. Video 合成
-            print("Generating video...")
-            video_path = os.path.join(tmpdir, "video.mp4")
-            await build_video_with_subtitles(
-                background_path=BACKGROUND_IMAGE_PATH,
-                font_path=FONT_PATH,
-                script_parts=script_parts,
-                script_data=data,
-                part_durations=part_durations,
-                audio_path=audio_path,
-                out_video_path=video_path,
-                query_data_list_all=query_data_list_all,
-                text_parts_list_all=text_parts_list_all,
-                duration_list_all=duration_list_all,
-            )
+        print("Generating video...")
+        video_path = os.path.join(tmpdir, "video.mp4")
+        await build_video_with_subtitles(
+            background_path=BACKGROUND_IMAGE_PATH,
+            font_path=FONT_PATH,
+            script_parts=script_parts,
+            script_data=data,
+            part_durations=part_durations,
+            audio_path=audio_path,
+            out_video_path=video_path,
+            query_data_list_all=query_data_list_all,
+            text_parts_list_all=text_parts_list_all,
+            duration_list_all=duration_list_all,
+        )
 
-            # 4. サムネイル生成
-            print("Generating thumbnail...")
-            workspace_root = os.environ.get('GITHUB_WORKSPACE', '.')
-            thumbnail_path = os.path.join(workspace_root, "thumbnail.png")
-            try:
-                create_thumbnail(
-                    title=title,
-                    topic_summary=topic_summary,
-                    thumbnail_data=thumbnail_data,
-                    output_path=thumbnail_path,
-                    meta=meta,
-                    used_image_paths=_used_image_paths,
-                )
-                print(f"[SUCCESS] サムネイル生成完了: {thumbnail_path}")
-            except Exception as e:
-                import traceback
-                print(f"[ERROR] サムネイル生成中に致命的なエラーが発生しました:")
-                print(traceback.format_exc())
-                thumbnail_path = None
+        # 4. サムネイル生成
+        print("Generating thumbnail...")
+        workspace_root = os.environ.get('GITHUB_WORKSPACE', '.')
+        thumbnail_path = os.path.join(workspace_root, "thumbnail.png")
+        try:
+            create_thumbnail(
+                title=title,
+                topic_summary=topic_summary,
+                thumbnail_data=thumbnail_data,
+                output_path=thumbnail_path,
+                meta=meta,
+                used_image_paths=_used_image_paths,
+            )
+            print(f"[SUCCESS] サムネイル生成完了: {thumbnail_path}")
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] サムネイル生成中に致命的なエラーが発生しました:")
+            print(traceback.format_exc())
+            thumbnail_path = None
 
             # 4.5. 成果物をカレントディレクトリにコピー（GitHub Actions用）
-            print("Copying artifacts to current directory for GitHub Actions...")
-            try:
-                import shutil
-                
-                # debug-video-artifacts ディレクトリを作成
-                artifacts_dir = os.path.join(workspace_root, "debug-video-artifacts")
-                os.makedirs(artifacts_dir, exist_ok=True)
-                
-                # 動画ファイルをプロジェクトルートにコピー
-                if video_path and os.path.exists(video_path):
-                    video_dest = os.path.join(artifacts_dir, "video.mp4")
-                    shutil.copy2(video_path, video_dest)
-                    print(f"[INFO] Copied video to: {video_dest}")
-                    
-                    # コピー直後にファイルの存在を検証
-                    if os.path.exists(video_dest):
-                        print(f"[SUCCESS] Verified artifact exists at: {video_dest}")
-                    else:
-                        print(f"[ERROR] Verification failed! Artifact not found at: {video_dest} after copy!")
-                else:
-                    print(f"[WARNING] Video file not found: {video_path}")
-                
-                # サムネイルファイルをコピー
-                if thumbnail_path and os.path.exists(thumbnail_path):
-                    thumbnail_dest = os.path.join(artifacts_dir, "thumbnail.png")
-                    shutil.copy2(thumbnail_path, thumbnail_dest)
-                    print(f"[INFO] Copied thumbnail to: {thumbnail_dest}")
-                    
-                    # コピー直後にファイルの存在を検証
-                    if os.path.exists(thumbnail_dest):
-                        print(f"[SUCCESS] Verified thumbnail exists at: {thumbnail_dest}")
-                    else:
-                        print(f"[ERROR] Verification failed! Thumbnail not found at: {thumbnail_dest} after copy!")
-                else:
-                    print(f"[WARNING] Thumbnail file not found: {thumbnail_path}")
-                    
-            except Exception as e:
-                print(f"[ERROR] Failed to copy artifacts: {e}")
+        print("Copying artifacts to current directory for GitHub Actions...")
+        try:
+            import shutil
             
-            # 5. YouTube へアップロード
-            if DEBUG_MODE:
-                print(f"[DEBUG_MODE] YouTubeアップロードをスキップします。Artifactsに保存済みです。")
-                print(f"[DEBUG_MODE] 動画ファイル: {video_path}")
-                print(f"[DEBUG_MODE] サムネイルファイル: {thumbnail_path}")
-                return  # DEBUG_MODEはここで終了
+            # debug-video-artifacts ディレクトリを作成
+            artifacts_dir = os.path.join(workspace_root, "debug-video-artifacts")
+            os.makedirs(artifacts_dir, exist_ok=True)
+            
+            # 動画ファイルをプロジェクトルートにコピー
+            if video_path and os.path.exists(video_path):
+                video_dest = os.path.join(artifacts_dir, "video.mp4")
+                shutil.copy2(video_path, video_dest)
+                print(f"[INFO] Copied video to: {video_dest}")
+                
+                # コピー直後にファイルの存在を検証
+                if os.path.exists(video_dest):
+                    print(f"[SUCCESS] Verified artifact exists at: {video_dest}")
+                else:
+                    print(f"[ERROR] Verification failed! Artifact not found at: {video_dest} after copy!")
+            else:
+                print(f"[WARNING] Video file not found: {video_path}")
+            
+            # サムネイルファイルをコピー
+            if thumbnail_path and os.path.exists(thumbnail_path):
+                thumbnail_dest = os.path.join(artifacts_dir, "thumbnail.png")
+                shutil.copy2(thumbnail_path, thumbnail_dest)
+                print(f"[INFO] Copied thumbnail to: {thumbnail_dest}")
+                
+                # コピー直後にファイルの存在を検証
+                if os.path.exists(thumbnail_dest):
+                    print(f"[SUCCESS] Verified thumbnail exists at: {thumbnail_dest}")
+                else:
+                    print(f"[ERROR] Verification failed! Thumbnail not found at: {thumbnail_dest} after copy!")
+            else:
+                print(f"[WARNING] Thumbnail file not found: {thumbnail_path}")
+                    
+        except Exception as e:
+            print(f"[ERROR] Failed to copy artifacts: {e}")
+        
+        # 5. YouTube へアップロード
+        if DEBUG_MODE:
+            print(f"[DEBUG_MODE] YouTubeアップロードをスキップします。Artifactsに保存済みです。")
+            print(f"[DEBUG_MODE] 動画ファイル: {video_path}")
+            print(f"[DEBUG_MODE] サムネイルファイル: {thumbnail_path}")
+            return  # DEBUG_MODEはここで終了
             
             print("Uploading to YouTube...")
-            youtube_client = build_youtube_client()
-            # 5. 動画品質チェック（アップロード前）
-            print("Performing video quality check before upload...")
-            quality_ok = check_video_quality(video_path)
-            if not quality_ok:
-                print("[ERROR] 動画品質チェックに失敗しました。アップロードを中止します。")
-                sys.exit(1)
-            
-            # 6. YouTube アップロード
-            video_id = upload_to_youtube(
-                youtube=youtube_client,
-                title=title,
-                description=description,
-                video_path=video_path,
-                thumbnail_path=thumbnail_path,
-            )
+        youtube_client = build_youtube_client()
+        # 5. 動画品質チェック（アップロード前）
+        print("Performing video quality check before upload...")
+        quality_ok = check_video_quality(video_path)
+        if not quality_ok:
+            print("[ERROR] 動画品質チェックに失敗しました。アップロードを中止します。")
+            sys.exit(1)
+        
+        # 6. YouTube アップロード
+        video_id = upload_to_youtube(
+            youtube=youtube_client,
+            title=title,
+            description=description,
+            video_path=video_path,
+            thumbnail_path=thumbnail_path,
+        )
 
-            # 7. DynamoDB に履歴登録
-            print("Saving to DynamoDB...")
-            now = datetime.now(timezone.utc).isoformat()
-            
-            # URLのチェック（重複動画量産防止のため）
-            url = meta.get("url")
-            if not url:
-                print("ERROR: meta.url が存在しません。重複動画量産防止のため処理を中止します。")
-                print("INFO: 記事URLがない場合は動画生成をスキップしてください。")
-                return None  # 処理を中止してNoneを返す
-            
-            # 既存のURLをチェックして重複を防止
-            print(f"Checking for existing video with URL: {url}")
-            existing_item = get_video_history_item(url)
-            if existing_item:
-                print(f"WARNING: 動画が既に存在します (status: {existing_item.get('status', 'unknown')})")
-                print("INFO: 重複動画量産防止のため処理を中止します。")
-                return None  # 重複がある場合は処理を中止
+        # 7. DynamoDB に履歴登録
+        print("Saving to DynamoDB...")
+        now = datetime.now(timezone.utc).isoformat()
+        
+        # URLのチェック（重複動画量産防止のため）
+        url = meta.get("url")
+        if not url:
+            print("ERROR: meta.url が存在しません。重複動画量産防止のため処理を中止します。")
+            print("INFO: 記事URLがない場合は動画生成をスキップしてください。")
+            return None  # 処理を中止してNoneを返す
+        
+        # 既存のURLをチェックして重複を防止
+        print(f"Checking for existing video with URL: {url}")
+        existing_item = get_video_history_item(url)
+        if existing_item:
+            print(f"WARNING: 動画が既に存在します (status: {existing_item.get('status', 'unknown')})")
+            print("INFO: 重複動画量産防止のため処理を中止します。")
+            return None  # 重複がある場合は処理を中止
 
-            # TTL（3年後）
-            from datetime import timedelta
-            ttl_timestamp = int((datetime.now(timezone.utc) + timedelta(days=1095)).timestamp())
+        # TTL（3年後）
+        from datetime import timedelta
+        ttl_timestamp = int((datetime.now(timezone.utc) + timedelta(days=1095)).timestamp())
 
-            item = {
-                "url": url,  # 主キーをurlに変更
-                "title": title,
-                "processed_at": now,
-                "status": "completed",  # 動画生成完了
-                "score": meta.get("score", 0.0),  # スコアがあれば保存
-                "ttl": ttl_timestamp,
-                # 追加情報（既存項目を維持）
-                "source_url": meta.get("source_url", ""),
-                "published_at": meta.get("published_at", ""),
-                "topic_summary": topic_summary,
-                "youtube_video_id": video_id,
-                "registered_at": now,
-                "script_s3_bucket": S3_BUCKET,
-                "script_s3_key": s3_key,
-            }
-            put_video_history_item(item)
-            
-            print(f"Successfully completed! Video ID: {video_id}")
+        item = {
+            "url": url,  # 主キーをurlに変更
+            "title": title,
+            "processed_at": now,
+            "status": "completed",  # 動画生成完了
+            "score": meta.get("score", 0.0),  # スコアがあれば保存
+            "ttl": ttl_timestamp,
+            # 追加情報（既存項目を維持）
+            "source_url": meta.get("source_url", ""),
+            "published_at": meta.get("published_at", ""),
+            "topic_summary": topic_summary,
+            "youtube_video_id": video_id,
+            "registered_at": now,
+            "script_s3_bucket": S3_BUCKET,
+            "script_s3_key": s3_key,
+        }
+        put_video_history_item(item)
+        
+        print(f"Successfully completed! Video ID: {video_id}")
 
     except Exception as e:
         print(f"Error in main process: {str(e)}")
