@@ -201,14 +201,59 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 'duration': title_duration
             })
 
+        # ========== STAGE 3.5: Modulation動画を配置 ==========
+        if modulation_video_clip and modulation_duration > 0:
+            # Modulation開始時間を計算
+            modulation_start_time = title_duration + title_audio_duration
+            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+                part_type = part.get("part", "")
+                if part_type != "title" and part_type != "owner_comment":
+                    modulation_start_time += duration
+                # 次のパートがowner_commentならそこでmodulation開始
+                next_part_idx = i + 1
+                if next_part_idx < len(script_parts):
+                    next_part = script_parts[next_part_idx]
+                    if next_part.get("part") == "owner_comment":
+                        break
+            
+            print(f"[TIMELINE] Positioning modulation video ({modulation_duration:.2f}s) at {modulation_start_time:.2f}s...")
+            modulation_video_only = modulation_video_clip.without_audio().with_duration(modulation_duration)
+            all_clips_by_layer['videos'].append({
+                'clip': modulation_video_only,
+                'start': modulation_start_time,
+                'duration': modulation_duration
+            })
+
         # ========== STAGE 4: 画像を配置 ==========
         print(f"[TIMELINE] Positioning {len(image_clips)} images...")
+        
+        # Modulation開始時間を計算（STAGE 3.5と同じ計算）
+        modulation_start_time = title_duration + title_audio_duration
+        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+            part_type = part.get("part", "")
+            if part_type != "title" and part_type != "owner_comment":
+                modulation_start_time += duration
+            # 次のパートがowner_commentならそこでmodulation開始
+            next_part_idx = i + 1
+            if next_part_idx < len(script_parts):
+                next_part = script_parts[next_part_idx]
+                if next_part.get("part") == "owner_comment":
+                    break
+        modulation_end_time = modulation_start_time + modulation_duration
+        
         for img_clip in image_clips:
+            img_start = getattr(img_clip, 'start', 0.0)
+            img_end = img_start + img_clip.duration
+            
+            # Modulation期間と重複する場合はスキップ
+            if not (img_start >= modulation_end_time or img_end <= modulation_start_time):
+                print(f"[TIMELINE] Skipping image that overlaps with modulation: {img_start:.2f}s - {img_end:.2f}s")
+                continue
+            
             # image_clipsは既にwith_start()とwith_duration()が適用されたImageClipオブジェクト
-            # アニメーションはマイケルコレクションの際に既に適用済み（FadeInのみ）
             all_clips_by_layer['images'].append({
                 'clip': img_clip,
-                'start': getattr(img_clip, 'start', 0.0),
+                'start': img_start,
                 'duration': img_clip.duration
             })
 
@@ -275,14 +320,47 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     print(f"[SUBTITLE ERROR] Failed to create title subtitle chunk {chunk_idx}: {e}")
 
         # メイン内容の字幕（まとめパートを除く）
-        main_subtitle_time = title_duration + title_audio_duration
-        summary_subtitle_time = main_subtitle_time + sum([duration for i, (part, duration) in enumerate(zip(script_parts, part_durations)) if part.get("part") != "owner_comment" and part.get("part") != "title"]) + modulation_duration
+        # Titleパートの字幕もメインコンテンツとして含める
+        main_subtitle_time = title_duration  # Title動画直後から開始
+        summary_subtitle_time = main_subtitle_time + sum([duration for i, (part, duration) in enumerate(zip(script_parts, part_durations)) if part.get("part") != "owner_comment"]) + modulation_duration
         
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             part_type = part.get("part", "")
             text = part.get("text", "")
 
-            if part_type == "title" or not text:
+            if part_type == "title":
+                # Titleパートの字幕をメインコンテンツとして処理
+                if subtitle_chunks and i in subtitle_chunks:
+                    measured_durations = duration_list_all.get(i, [])
+                    chunk_idx = 0
+                    for chunk_text in subtitle_chunks[i]['chunks']:
+                        try:
+                            chunk_duration = measured_durations[chunk_idx] if chunk_idx < len(measured_durations) else (len(chunk_text) * 0.05)
+                            absolute_start = main_subtitle_time
+                            
+                            txt_clip = TextClip(
+                                chunk_text,
+                                fontsize=48,
+                                color='white',
+                                stroke_color='black',
+                                stroke_width=2,
+                                method='caption',
+                                size=(1920-100, None)
+                            ).set_position(('center', 'bottom-100'))
+                            
+                            all_clips_by_layer['subtitles'].append({
+                                'clip': txt_clip,
+                                'start': absolute_start,
+                                'duration': chunk_duration
+                            })
+                            print(f"[SUBTITLE] Title part {i} chunk {chunk_idx}: {absolute_start:.2f}s - {absolute_start + chunk_duration:.2f}s")
+                            main_subtitle_time += chunk_duration
+                            chunk_idx += 1
+                        except Exception as e:
+                            print(f"[SUBTITLE ERROR] Failed to create title subtitle chunk {chunk_idx} for part {i}: {e}")
+                continue
+            
+            if not text:
                 continue
 
             if part_type == "owner_comment":
@@ -383,19 +461,37 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # CompositeVideoClipにクリップを追加する際、startを直接指定
         composite_clips = []
 
-        # 10a. 背景（メイン＋まとめの時間のみ）
+        # 10a. 背景（メインパート用とまとめパート用で分ける）
         for item in all_clips_by_layer['background']:
             clip = item['clip']
             start = item['start']
-            # 背景はメイン＋まとめの時間を表示（modulation.mp4期間は除外）
-            background_end_time = title_duration + title_audio_duration
+            
+            # メインパート用背景：title_durationからメインパート終了まで
+            main_background_start = title_duration
+            main_background_end = title_duration + title_audio_duration
             for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
                 part_type = part.get("part", "")
-                if part_type != "title":
-                    background_end_time += duration
-            # modulation期間を除いた最終時間
-            background_end_time -= modulation_duration
-            composite_clips.append(clip.with_start(start).with_duration(background_end_time))
+                if part_type != "title" and part_type != "owner_comment":
+                    main_background_end += duration
+            
+            # メインパート用背景クリップ
+            main_bg_duration = main_background_end - main_background_start
+            if main_bg_duration > 0:
+                main_bg = clip.subclipped(0, main_bg_duration)
+                composite_clips.append(main_bg.with_start(main_background_start))
+                print(f"[BACKGROUND] Main background: {main_bg_duration:.2f}s starting at {main_background_start:.2f}s")
+            
+            # まとめパート用背景：最初から再生
+            summary_start_time = main_background_end + modulation_duration
+            summary_duration = 0
+            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+                if script_parts[i].get("part") == "owner_comment":
+                    summary_duration += duration
+            
+            if summary_duration > 0:
+                summary_bg = clip.subclipped(0, summary_duration)
+                composite_clips.append(summary_bg.with_start(summary_start_time))
+                print(f"[BACKGROUND] Summary background: {summary_duration:.2f}s starting at {summary_start_time:.2f}s (restarted from beginning)")
 
         # 10b. ビデオ（背景の上に配置）
         for item in all_clips_by_layer['videos']:
@@ -435,15 +531,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
         audio_elements = []
 
-        # Title音声
-        if title_audio_duration > 0:
-            # タイトル動画から音声を抽出（または音声クリップから該当部分を取得）
-            if title_video_clip and title_video_clip.audio:
-                title_audio = title_video_clip.audio.with_start(0.0)
-                audio_elements.append(title_audio)
-                print(f"[TIMELINE] Added title audio: {title_audio.duration:.2f}s")
-            else:
-                print(f"[TIMELINE] Warning: No title audio found in title video clip")
+        # Title音声はメインコンテンツとして扱うため、ここでは追加しない
+        # Title音声はメイン音声の一部として含まれる
 
         # メイン音声（まとめパートを除く）
         main_audio_parts = []
@@ -457,8 +546,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 # まとめパートはsummary_audioに
                 summary_audio_parts.append((i, part, duration))
                 summary_audio_duration += duration
-            elif part_type != "title":
-                # その他のメインパートはmain_audioに
+            else:
+                # Titleパートを含むすべてのメインパートはmain_audioに
                 main_audio_parts.append((i, part, duration))
                 main_audio_duration += duration
         
@@ -473,19 +562,31 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         
         # Modulation動画の音声（メインパート終了後）
         if modulation_video_clip and modulation_video_clip.audio:
-            modulation_audio_start = main_audio_start + main_audio_duration
-            modulation_audio = modulation_video_clip.audio.with_start(modulation_audio_start)
+            # Modulation開始時間を動画と同じ計算式で求める
+            modulation_audio_start_time = title_duration + title_audio_duration
+            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+                part_type = part.get("part", "")
+                if part_type != "title" and part_type != "owner_comment":
+                    modulation_audio_start_time += duration
+                # 次のパートがowner_commentならそこでmodulation開始
+                next_part_idx = i + 1
+                if next_part_idx < len(script_parts):
+                    next_part = script_parts[next_part_idx]
+                    if next_part.get("part") == "owner_comment":
+                        break
+            
+            modulation_audio = modulation_video_clip.audio.with_start(modulation_audio_start_time)
             audio_elements.append(modulation_audio)
-            print(f"[TIMELINE] Added modulation audio: {modulation_video_clip.audio.duration:.2f}s starting at {modulation_audio_start:.2f}s")
+            print(f"[TIMELINE] Added modulation audio: {modulation_video_clip.audio.duration:.2f}s starting at {modulation_audio_start_time:.2f}s")
         
-        # BGM（メインパートのみ）
+        # BGM（メインパートのみ、Title動画期間中は再生しない）
         if bgm_clip:
             bgm_start = title_duration  # Title動画終了後からBGM開始
             bgm_duration = main_audio_duration  # メインパートの長さのみ
             bgm_main = bgm_clip.subclipped(0, bgm_duration)
             bgm_main_with_start = bgm_main.with_start(bgm_start)
             audio_elements.append(bgm_main_with_start)
-            print(f"[TIMELINE] Added BGM (main): {bgm_duration:.2f}s starting at {bgm_start:.2f}s")
+            print(f"[TIMELINE] Added BGM (main only): {bgm_duration:.2f}s starting at {bgm_start:.2f}s")
         
         # まとめ音声クリップを生成
         if summary_audio_parts and audio_clip:
@@ -1505,6 +1606,149 @@ def is_duplicate_image(image_path: str) -> bool:
     return False
 
 
+def is_likely_person_image(url: str, alt: str, width: int, height: int) -> bool:
+    """人物画像を検出して除外"""
+    url_lower = url.lower()
+    alt_lower = alt.lower()
+    
+    # 人物関連のキーワードを検出
+    person_keywords = [
+        'person', 'people', 'human', 'face', 'portrait', 'headshot',
+        'man', 'woman', 'people', 'crowd', 'group', 'team',
+        'celebrity', 'influencer', 'model', 'actor', 'actress',
+        'speaker', 'presenter', 'host', 'interview', 'talking'
+    ]
+    
+    # 画像URLやaltテキストに人物関連キーワードが含まれるか
+    for keyword in person_keywords:
+        if keyword in url_lower or keyword in alt_lower:
+            return True
+    
+    # 画像サイズから人物画像を推定（縦長い画像は人物写真が多い）
+    if width > 0 and height > 0:
+        aspect_ratio = height / width
+        # 人物写真は縦長い傾向がある（ポートレート）
+        if aspect_ratio > 1.2:  # 縦が横より20%以上長い
+            print(f"[PERSON] Portrait aspect ratio detected: {aspect_ratio:.2f}")
+            return True
+    
+    # YouTubeのプロフィール画像URLパターンを検出
+    if any(pattern in url_lower for pattern in [
+        'profile', 'avatar', 'user', 'channel', 'youtuber', 'influencer'
+    ]):
+        return True
+    
+    return False
+
+def is_youtube_style_thumbnail(url: str, alt: str, width: int, height: int) -> bool:
+    """YouTube風サムネイルを検出して除外"""
+    url_lower = url.lower()
+    alt_lower = alt.lower()
+    
+    # YouTubeサムネイルの特徴を検出
+    youtube_patterns = [
+        # YouTubeのURLパターン
+        'youtube.com', 'youtu.be', 'ytimg.com',
+        # サムネイル関連のキーワード
+        'thumbnail', 'thumb', 'preview', 'cover',
+        # 動画プレイヤー関連
+        'video', 'player', 'play', 'pause', 'stop'
+    ]
+    
+    # 画像URLやaltテキストにYouTube関連キーワードが含まれるか
+    for pattern in youtube_patterns:
+        if pattern in url_lower or pattern in alt_lower:
+            return True
+    
+    # 画像サイズからYouTubeサムネイルを推定
+    if width > 0 and height > 0:
+        # YouTubeサムネイルは16:9の比率が多い
+        aspect_ratio = width / height
+        if 0.8 < aspect_ratio < 1.2:  # 16:9 = 1.777, 4:3 = 1.333
+            print(f"[YOUTUBE] YouTube-like aspect ratio detected: {aspect_ratio:.2f}")
+            return True
+    
+    # 文字が多く含まれるaltテキストはYouTube風サムネイルの可能性
+    if alt_lower:
+        text_indicators = ['subscribe', 'like', 'comment', 'share', 'watch', 'click', 'link']
+        if any(indicator in alt_lower for indicator in text_indicators):
+            return True
+    
+    return True  # YouTube風サムネイルは積極的に使用するため除外しない
+
+def is_screenshot(url: str, alt: str) -> bool:
+    """スクリーンショットを検出して除外"""
+    url_lower = url.lower()
+    alt_lower = alt.lower()
+    
+    # スクリーンショット関連のキーワード
+    screenshot_keywords = [
+        'screenshot', 'screen', 'capture', 'snap', 'shot',
+        'display', 'monitor', 'interface', 'ui', 'gui',
+        'desktop', 'mobile', 'app', 'application', 'software'
+    ]
+    
+    # 画像URLやaltテキストにスクリーンショット関連キーワードが含まれるか
+    for keyword in screenshot_keywords:
+        if keyword in url_lower or keyword in alt_lower:
+            return True
+    
+    # 画像ファイル名パターン
+    if any(pattern in url_lower for pattern in [
+        'screenshot', 'screen', 'capture', 'snap', 'ss_'
+    ]):
+        return True
+    
+    return True  # スクリーンショットは積極的に使用するため除外しない
+
+def is_corporate_logo_or_icon(url: str, alt: str, width: int, height: int) -> bool:
+    """企業ロゴやアプリアイコンを検出して積極的に使用"""
+    url_lower = url.lower()
+    alt_lower = alt.lower()
+    
+    # 企業ロゴ・ブランド関連のキーワード
+    corporate_keywords = [
+        'logo', 'brand', 'icon', 'symbol', 'emblem', 'trademark',
+        'company', 'corporate', 'business', 'enterprise', 'organization',
+        'microsoft', 'apple', 'google', 'amazon', 'facebook', 'twitter',
+        'adobe', 'oracle', 'salesforce', 'ibm', 'intel', 'nvidia'
+    ]
+    
+    # アプリアイコン関連のキーワード
+    app_keywords = [
+        'app', 'application', 'software', 'program', 'tool', 'utility',
+        'mobile app', 'desktop app', 'web app', 'service', 'platform'
+    ]
+    
+    # 画像URLやaltテキストに企業関連キーワードが含まれるか
+    for keyword in corporate_keywords + app_keywords:
+        if keyword in url_lower or keyword in alt_lower:
+            print(f"[CORPORATE] Detected corporate/app icon: {keyword}")
+            return True
+    
+    # 画像サイズからロゴやアイコンを推定
+    if width > 0 and height > 0:
+        aspect_ratio = width / height
+        
+        # 正方形に近い画像はロゴやアイコンが多い
+        if 0.8 <= aspect_ratio <= 1.2:  # ほぼ正方形
+            print(f"[CORPORATE] Square aspect ratio detected: {aspect_ratio:.2f}")
+            return True
+        
+        # 横長い画像はバナーなどが多い
+        if aspect_ratio > 2.0:  # 横に長い
+            print(f"[CORPORATE] Wide aspect ratio detected: {aspect_ratio:.2f}")
+            return True
+    
+    # 透明背景の画像（ロゴやアイコンが多い）
+    if 'transparent' in url_lower or 'png' in url_lower:
+        # 小さな正方形画像はアイコンの可能性
+        if width < 200 and height < 200:
+            print(f"[CORPORATE] Small transparent image detected: {width}x{height}")
+            return True
+    
+    return False  # 企業ロゴやアイコンは積極的に使用するため除外しない
+
 async def search_images_with_playwright(keyword: str, max_results: int = 10) -> List[Dict[str, str]]:
     """Bing Image SearchからJSONメタデータで画像URLを取得（固有名詞のみ・直接抽出）"""
     
@@ -1680,25 +1924,18 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                         has_valid_extension = True
                                 
                                 if has_valid_extension:
-                                    # 小さな画像やアイコンを除外
+                                    # 人物画像とYouTube風サムネイルを除外
                                     if width > 0 and height > 0:
                                         if width < 100 or height < 100:
                                             print(f"[DEBUG] Skipping small image: {width}x{height}")
                                             continue
-                                    
-                                    images.append({
-                                        'url': original_url,
-                                        'title': f'Image {len(images)+1} for {keyword}',
-                                        'thumbnail': original_url,
-                                        'alt': alt,
-                                        'is_google_thumbnail': False,
-                                        'source': f'bing_{method}',
-                                        'width': width,
-                                        'height': height
-                                    })
-                                    
-                                    print(f"[DEBUG] Added image {len(images)}: {original_url[:100]}... ({width}x{height})")
-                                    
+                                        
+                                        # フィルタリング：人物画像・YouTube風サムネイル・スクリーンショットを除外
+                                        if is_likely_person_image(original_url, alt, width, height):
+                                            print(f"[DEBUG] Skipping potential person image: {original_url[:50]}...")
+                                            continue
+                                        if is_youtube_style_thumbnail(original_url, alt, width, height):
+                                            
                                     if len(images) >= max_results:
                                         break
                                 else:
@@ -3442,8 +3679,11 @@ async def build_video_with_subtitles(
         # 数珠つなぎロジック：画像もtitle_durationから開始
         current_image_time = title_duration + 1.0  # オープニング動画の後、1.0秒後に画像を開始
         
-        # modulation開始時間を計算
-        modulation_start_time = title_duration + title_audio_duration
+        # title_audio_durationを定義
+        title_audio_duration = part_durations[0] if part_durations else title_duration
+        
+        # modulation開始時間を計算（Title音声はメインコンテンツに含まれるため、Title動画の終了から）
+        modulation_start_time = title_duration
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             part_type = part.get("part", "")
             if part_type != "title" and part_type != "owner_comment":
