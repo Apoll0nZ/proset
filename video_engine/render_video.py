@@ -413,11 +413,17 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # CompositeVideoClipにクリップを追加する際、startを直接指定
         composite_clips = []
 
-        # 10a. 背景
+        # 10a. 背景（メイン＋まとめの時間のみ）
         for item in all_clips_by_layer['background']:
             clip = item['clip']
             start = item['start']
-            composite_clips.append(clip.with_start(start).with_duration(total_duration))
+            # 背景はメイン＋まとめの時間のみ表示（modulation.mp4期間は除外）
+            background_end_time = title_duration + title_audio_duration
+            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+                part_type = part.get("part", "")
+                if part_type != "title":
+                    background_end_time += duration
+            composite_clips.append(clip.with_start(start).with_duration(background_end_time))
 
         # 10b. 画像
         for item in all_clips_by_layer['images']:
@@ -1342,12 +1348,35 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
         else:
             print("[BACKGROUND] Background has no audio track")
 
-        # 動画をトリムして総動画長に合わせる
+        # 動画をループして総動画長に合わせる
         try:
-            bg_clip = bg_clip.subclipped(0, total_duration)
-            print(f"[BACKGROUND] Video trimmed/looped to {total_duration:.2f}s")
+            original_duration = bg_clip.duration
+            print(f"[BACKGROUND] Original background duration: {original_duration:.2f}s")
+            print(f"[BACKGROUND] Target duration: {total_duration:.2f}s")
+            
+            if original_duration < total_duration:
+                # 背景動画が短い場合はループ
+                print(f"[BACKGROUND] Background is shorter than target, creating loop...")
+                
+                # 必要なループ回数を計算（端数切り上げでちょうど合わせる）
+                num_loops = math.ceil(total_duration / original_duration)
+                print(f"[BACKGROUND] Creating {num_loops} loops to cover {total_duration:.2f}s")
+                
+                # ループを作成
+                loop_clips = [bg_clip] * num_loops
+                from moviepy.video.compositing.concatenate import concatenate_videoclips
+                bg_clip = concatenate_videoclips(loop_clips)
+                
+                # 最終的な長さにぴったりトリミング
+                bg_clip = bg_clip.subclipped(0, total_duration)
+                print(f"[BACKGROUND] Background looped to exactly {total_duration:.2f}s")
+            else:
+                # 背景動画が十分長い場合はトリミングのみ
+                bg_clip = bg_clip.subclipped(0, total_duration)
+                print(f"[BACKGROUND] Background trimmed to {total_duration:.2f}s")
+                
         except Exception as trim_error:
-            print(f"[BACKGROUND] WARNING: Failed to trim video: {trim_error}")
+            print(f"[BACKGROUND] WARNING: Failed to loop/trim video: {trim_error}")
             print(f"[BACKGROUND] Using original duration: {bg_clip.duration:.2f}s")
 
         # 中央配置設定（1920x1080キャンバスの中央に）
@@ -1458,7 +1487,7 @@ def is_duplicate_image(image_path: str) -> bool:
     return False
 
 
-async def search_images_with_playwright(keyword: str, max_results: int = 5) -> List[Dict[str, str]]:
+async def search_images_with_playwright(keyword: str, max_results: int = 10) -> List[Dict[str, str]]:
     """Bing Image SearchからJSONメタデータで画像URLを取得（固有名詞のみ・直接抽出）"""
     
     import time
@@ -1487,6 +1516,7 @@ async def search_images_with_playwright(keyword: str, max_results: int = 5) -> L
 
             # 検索キーワード：Geminiが抽出したキーワードをそのまま使用
             search_keyword = keyword
+            print(f"[SEARCH] Using keyword: {search_keyword}")
 
             # フォールバック検索（2回目以降）
             if attempt > 0:
@@ -2039,6 +2069,130 @@ def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List
 
 
 
+def evaluate_images_batch_with_gemini(images_list: List[Dict], keyword: str, script_text: str) -> List[Dict]:
+    """Geminiで複数の画像を一括評価（APIコール削減）"""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("[ERROR] GEMINI_API_KEY not found for batch image evaluation")
+        return []
+    
+    try:
+        # 一括評価プロンプト
+        images_info_text = ""
+        for i, image_info in enumerate(images_list):
+            images_info_text += f"""
+画像{i+1}:
+- タイトル：{image_info.get('title', 'N/A')}
+- URL：{image_info.get('url', 'N/A')}
+"""
+        
+        prompt = f"""
+以下の複数の画像情報を基に、動画に適している画像を選択してください。
+
+検索キーワード：{keyword}
+動画の内容：{script_text[:200]}...
+
+{images_info_text}
+
+評価基準：
+1. 製品・企業・サービスを象徴する公式画像やロゴである（高評価）
+2. 第三者が作成した記事の画像やスクリーンショットである（低評価）
+3. 検索キーワードと直接的な関係がある（高評価）
+4. 一般的なストックフォトや無関係な画像である（低評価）
+
+回答形式：
+適切な画像番号のみをカンマ区切りで回答してください（例：1,3）。
+適切な画像がない場合は「なし」と回答してください。
+"""
+        
+        print(f"[DEBUG] Batch evaluating {len(images_list)} images with Gemini")
+        
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=prompt
+        )
+        
+        raw_response = response.text.strip()
+        print(f"[DEBUG] Gemini batch evaluation result: {raw_response}")
+        
+        # レスポンスを解析
+        if "なし" in raw_response or "none" in raw_response.lower():
+            return []
+        
+        # 画像番号を抽出
+        import re
+        numbers = re.findall(r'\d+', raw_response)
+        suitable_indices = [int(n) - 1 for n in numbers if 1 <= int(n) <= len(images_list)]
+        
+        # 適切な画像のリストを返す
+        suitable_images = [images_list[i] for i in suitable_indices]
+        print(f"[DEBUG] Selected {len(suitable_images)} suitable images: {[i+1 for i in suitable_indices]}")
+        
+        return suitable_images
+        
+    except Exception as e:
+        print(f"[ERROR] Batch image evaluation failed: {e}")
+        return []
+
+
+def evaluate_image_with_gemini(image_info: Dict, keyword: str, script_text: str) -> Dict:
+    """Geminiで画像の適切性を評価（第三者作成画像や関係性を判断）"""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("[ERROR] GEMINI_API_KEY not found for image evaluation")
+        return {"suitable": False, "reason": "API key not found"}
+    
+    try:
+        # 画像評価プロンプト
+        prompt = f"""
+以下の情報を基に、この画像が動画に適しているかを評価してください。
+
+検索キーワード：{keyword}
+動画の内容：{script_text[:200]}...
+
+画像情報：
+- タイトル：{image_info.get('title', 'N/A')}
+- URL：{image_info.get('url', 'N/A')}
+
+評価基準：
+1. 製品・企業・サービスを象徴する公式画像やロゴである（高評価）
+2. 第三者が作成した記事の画像やスクリーンショットである（低評価）
+3. 検索キーワードと直接的な関係がある（高評価）
+4. 一般的なストックフォトや無関係な画像である（低評価）
+
+回答形式：
+JSON形式で{"suitable": true/false, "reason": "評価理由"} のみを回答してください。
+"""
+        
+        print(f"[DEBUG] Evaluating image with Gemini: {image_info.get('title', 'N/A')}")
+        
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=prompt
+        )
+        
+        raw_response = response.text.strip()
+        print(f"[DEBUG] Gemini evaluation: {raw_response}")
+        
+        # JSONレスポンスを解析
+        try:
+            import json
+            result = json.loads(raw_response)
+            return result
+        except json.JSONDecodeError:
+            # JSON解析失敗時は手動解析
+            if "true" in raw_response.lower():
+                return {"suitable": True, "reason": raw_response}
+            else:
+                return {"suitable": False, "reason": raw_response}
+        
+    except Exception as e:
+        print(f"[ERROR] Image evaluation failed: {e}")
+        return {"suitable": False, "reason": f"Evaluation error: {e}"}
+
+
 def is_blocked_domain(image_url: str) -> bool:
     """ストックフォトドメインをブロック"""
     blocked_domains = [
@@ -2300,15 +2454,37 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
                 if images:
                     print(f"[DEBUG] Found {len(images)} images with keyword '{keyword}'")
                     
-                    # 最初の画像（最も関連性が高い）をダウンロード
-                    best_image = images[0]
-                    image_path = download_image_from_url(best_image['url'])
+                    # ブロックドメインの画像をフィルタリング
+                    filtered_images = []
+                    for image_info in images:
+                        if not is_blocked_domain(image_info.get('url', '')):
+                            filtered_images.append(image_info)
+                        else:
+                            print(f"[SKIP] Blocked domain: {image_info.get('url', '')}")
                     
-                    if image_path:
-                        print(f"Successfully selected and downloaded image with keyword '{keyword}': {best_image['title']}")
-                        return image_path
+                    if not filtered_images:
+                        print(f"[DEBUG] No unblocked images for keyword '{keyword}', trying next")
+                        continue
+                    
+                    # Geminiで一括評価（APIコール削減）
+                    script_text = script_data.get("content", {}).get("topic_summary", "")
+                    suitable_images = evaluate_images_batch_with_gemini(filtered_images[:10], keyword, script_text)
+                    
+                    if suitable_images:
+                        # 適切な画像のうち最初のものをダウンロード
+                        selected_image = suitable_images[0]
+                        print(f"[SELECT] Batch evaluation approved image: {selected_image.get('title', 'N/A')}")
+                        
+                        image_path = download_image_from_url(selected_image['url'])
+                        
+                        if image_path:
+                            print(f"Successfully downloaded approved image: {selected_image['title']}")
+                            return image_path
+                        else:
+                            print(f"[DEBUG] Failed to download approved image, trying next keyword")
+                            continue
                     else:
-                        print(f"[DEBUG] Failed to download image with keyword '{keyword}', trying next keyword")
+                        print(f"[DEBUG] No suitable images found for keyword '{keyword}', trying next keyword")
                         continue
                 else:
                     print(f"[DEBUG] No images found with keyword '{keyword}', trying next keyword")
@@ -3181,7 +3357,15 @@ async def build_video_with_subtitles(
         
         if bg_video_path and os.path.exists(bg_video_path):
             print("Using random background video from S3")
-            bg_clip = process_background_video_for_hd(bg_video_path, total_duration)
+            
+            # 背景動画の長さをメイン音声＋まとめパートの合計時間に設定
+            # modulation.mp4を除外した実際のコンテンツ時間
+            background_duration = total_duration  # メイン音声の長さ（まとめパートを含む）
+            
+            print(f"[BACKGROUND] Background will loop for main+summary duration: {background_duration:.2f}s")
+            print(f"[BACKGROUND] Modulation.mp4 ({modulation_duration:.2f}s) will be excluded from background loop")
+            
+            bg_clip = process_background_video_for_hd(bg_video_path, background_duration)
             
             # 成功フラグのログ出力
             video_processing_successful = True
