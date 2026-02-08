@@ -1606,101 +1606,6 @@ def is_duplicate_image(image_path: str) -> bool:
     return False
 
 
-def is_likely_person_image(url: str, alt: str, width: int, height: int) -> bool:
-    """人物画像を検出して除外"""
-    url_lower = url.lower()
-    alt_lower = alt.lower()
-    
-    # 人物関連のキーワードを検出
-    person_keywords = [
-        'person', 'people', 'human', 'face', 'portrait', 'headshot',
-        'man', 'woman', 'people', 'crowd', 'group', 'team',
-        'celebrity', 'influencer', 'model', 'actor', 'actress',
-        'speaker', 'presenter', 'host', 'interview', 'talking'
-    ]
-    
-    # 画像URLやaltテキストに人物関連キーワードが含まれるか
-    for keyword in person_keywords:
-        if keyword in url_lower or keyword in alt_lower:
-            return True
-    
-    # 画像サイズから人物画像を推定（縦長い画像は人物写真が多い）
-    if width > 0 and height > 0:
-        aspect_ratio = height / width
-        # 人物写真は縦長い傾向がある（ポートレート）
-        if aspect_ratio > 1.2:  # 縦が横より20%以上長い
-            print(f"[PERSON] Portrait aspect ratio detected: {aspect_ratio:.2f}")
-            return True
-    
-    # YouTubeのプロフィール画像URLパターンを検出
-    if any(pattern in url_lower for pattern in [
-        'profile', 'avatar', 'user', 'channel', 'youtuber', 'influencer'
-    ]):
-        return True
-    
-    return False
-
-def is_youtube_style_thumbnail(url: str, alt: str, width: int, height: int) -> bool:
-    """YouTube風サムネイルを検出して除外"""
-    url_lower = url.lower()
-    alt_lower = alt.lower()
-    
-    # YouTubeサムネイルの特徴を検出
-    youtube_patterns = [
-        # YouTubeのURLパターン
-        'youtube.com', 'youtu.be', 'ytimg.com',
-        # サムネイル関連のキーワード
-        'thumbnail', 'thumb', 'preview', 'cover',
-        # 動画プレイヤー関連
-        'video', 'player', 'play', 'pause', 'stop'
-    ]
-    
-    # 画像URLやaltテキストにYouTube関連キーワードが含まれるか
-    for pattern in youtube_patterns:
-        if pattern in url_lower or pattern in alt_lower:
-            return True
-    
-    # 画像サイズからYouTubeサムネイルを推定
-    if width > 0 and height > 0:
-        # YouTubeサムネイルは16:9の比率が多い
-        aspect_ratio = width / height
-        if 0.8 < aspect_ratio < 1.2:  # 16:9 = 1.777, 4:3 = 1.333
-            print(f"[YOUTUBE] YouTube-like aspect ratio detected: {aspect_ratio:.2f}")
-            return True
-    
-    # 文字が多く含まれるaltテキストはYouTube風サムネイルの可能性
-    if alt_lower:
-        text_indicators = ['subscribe', 'like', 'comment', 'share', 'watch', 'click', 'link']
-        if any(indicator in alt_lower for indicator in text_indicators):
-            return True
-    
-    return True  # YouTube風サムネイルは積極的に使用するため除外しない
-
-def is_screenshot(url: str, alt: str) -> bool:
-    """スクリーンショットを検出して除外"""
-    url_lower = url.lower()
-    alt_lower = alt.lower()
-    
-    # スクリーンショット関連のキーワード
-    screenshot_keywords = [
-        'screenshot', 'screen', 'capture', 'snap', 'shot',
-        'display', 'monitor', 'interface', 'ui', 'gui',
-        'desktop', 'mobile', 'app', 'application', 'software'
-    ]
-    
-    # 画像URLやaltテキストにスクリーンショット関連キーワードが含まれるか
-    for keyword in screenshot_keywords:
-        if keyword in url_lower or keyword in alt_lower:
-            return True
-    
-    # 画像ファイル名パターン
-    if any(pattern in url_lower for pattern in [
-        'screenshot', 'screen', 'capture', 'snap', 'ss_'
-    ]):
-        return True
-    
-    return True  # スクリーンショットは積極的に使用するため除外しない
-
 def is_corporate_logo_or_icon(url: str, alt: str, width: int, height: int) -> bool:
     """企業ロゴやアプリアイコンを検出して積極的に使用"""
     url_lower = url.lower()
@@ -1779,6 +1684,10 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
             # 検索キーワード：Geminiが抽出したキーワードをそのまま使用
             search_keyword = keyword
             print(f"[SEARCH] Using keyword: {search_keyword}")
+            
+            # ストックフォトを除外するために-shutterstockを付与
+            if '-shutterstock' not in search_keyword.lower():
+                search_keyword = f"{search_keyword} -shutterstock"
 
             # フォールバック検索（2回目以降）
             if attempt > 0:
@@ -1930,12 +1839,7 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                             print(f"[DEBUG] Skipping small image: {width}x{height}")
                                             continue
                                         
-                                        # フィルタリング：人物画像・YouTube風サムネイル・スクリーンショットを除外
-                                        if is_likely_person_image(original_url, alt, width, height):
-                                            print(f"[DEBUG] Skipping potential person image: {original_url[:50]}...")
-                                            continue
-                                        if is_youtube_style_thumbnail(original_url, alt, width, height):
-                                            
+                                        # フィルタリング：人物画像はプロンプトで除外するため、ここではフィルタリングしない
                                     if len(images) >= max_results:
                                         break
                                 else:
@@ -2354,6 +2258,8 @@ def evaluate_images_batch_with_gemini(images_list: List[Dict], keyword: str, scr
 2. 第三者が作成した記事の画像やスクリーンショットである（低評価）
 3. 検索キーワードと直接的な関係がある（高評価）
 4. 一般的なストックフォトや無関係な画像である（低評価）
+5. 人物画像・顔写真・ポートレートは除外する（低評価）
+6. スクリーンショット・UI画像・アプリ画面は除外する（低評価）
 
 回答形式：
 適切な画像番号のみをカンマ区切りで回答してください（例：1,3）。
@@ -2415,6 +2321,8 @@ def evaluate_image_with_gemini(image_info: Dict, keyword: str, script_text: str)
 2. 第三者が作成した記事の画像やスクリーンショットである（低評価）
 3. 検索キーワードと直接的な関係がある（高評価）
 4. 一般的なストックフォトや無関係な画像である（低評価）
+5. 人物画像・顔写真・ポートレートは除外する（低評価）
+6. スクリーンショット・UI画像・アプリ画面は除外する（低評価）
 
 回答形式：
 JSON形式で{"suitable": true/false, "reason": "評価理由"} のみを回答してください。
