@@ -11,6 +11,7 @@ import os
 import random
 import re
 import time
+import email.utils
 from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -65,6 +66,48 @@ s3_client = boto3.client("s3", region_name=AWS_REGION)
 # -----------------------------------------------------------------------------
 def _ensure_trailing_slash(value: str) -> str:
     return value if value.endswith("/") else value + "/"
+
+
+def _parse_rss_datetime(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    if isinstance(value, time.struct_time):
+        dt = datetime(*value[:6], tzinfo=timezone.utc)
+        return dt
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+
+        try:
+            dt = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            pass
+
+        try:
+            dt = email.utils.parsedate_to_datetime(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+
+def _to_utc_isoformat(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
 
 
 def _iso_now() -> str:
@@ -211,19 +254,15 @@ def fetch_multiple_entries(feed_url: str, max_entries: int = 15) -> List[feedpar
                 break
         
         if published:
-            try:
-                if isinstance(published, str):
-                    published_dt = datetime.fromisoformat(published.replace('Z', '+00:00'))
-                else:
-                    published_dt = published
-                
-                if published_dt >= freshness_cutoff:
-                    fresh_entries.append(entry)
-                else:
-                    print(f"Skipping old RSS entry: {entry.get('title', 'Untitled')} (published: {published})")
-            except Exception as e:
-                print(f"Date parsing error for RSS entry: {e}")
+            published_dt = _parse_rss_datetime(published)
+            if not published_dt:
+                print(f"Date parsing error for RSS entry: could not parse date: {published}")
                 continue
+
+            if published_dt >= freshness_cutoff:
+                fresh_entries.append(entry)
+            else:
+                print(f"Skipping old RSS entry: {entry.get('title', 'Untitled')} (published: {published})")
         else:
             # 日付がない記事は除外
             print(f"Skipping RSS entry without date: {entry.get('title', 'Untitled')}")
@@ -407,7 +446,6 @@ def fetch_reaction_summary(group_b_sources: List[str]) -> Dict[str, str]:
 BASE_SCORE_THRESHOLD = 65.0  # 基準点
 STOCK_DAYS = 7  # 過去何日間のストック記事を対象にするか
 MAX_EVALUATION_ATTEMPTS = 3  # 最大評価試行回数
-MIN_CANDIDATES_THRESHOLD = 3  # 最低候補数
 
 def evaluate_article_with_gemini(article: Dict[str, Any]) -> Optional[float]:
     """Geminiを使って記事を評価し、スコアを返す（0-100点）"""
@@ -463,6 +501,8 @@ def evaluate_article_with_gemini(article: Dict[str, Any]) -> Optional[float]:
 
     print(f"Could not extract valid score from response: {response}")
     return None
+
+
 def filter_and_collect_candidates(all_articles: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """重複フィルタリングと候補収集"""
     new_articles = []  # 初めて取得したURL
@@ -495,7 +535,7 @@ def filter_and_collect_candidates(all_articles: List[Dict[str, Any]]) -> tuple[L
             # 7日以内の記事かチェック
             try:
                 if processed_at:
-                    processed_dt = datetime.fromisoformat(processed_at.replace('Z', '+00:00'))
+                    processed_dt = _parse_rss_datetime(processed_at)
                     if processed_dt >= cutoff_date:
                         # 過去7日間の基準点以上の記事 -> ストック候補に追加
                         article["score"] = score  # DBのスコアを設定
@@ -720,23 +760,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     qualified_new = [article for article in evaluated_new_articles if article.get("score", 0.0) >= BASE_SCORE_THRESHOLD]
     print(f"Qualified new articles: {len(qualified_new)}件")
     
-    # 基準点未満の記事もバックアップ候補として保持
-    backup_candidates = [article for article in evaluated_new_articles if article.get("score", 0.0) < BASE_SCORE_THRESHOLD]
-    print(f"Backup candidates (low score): {len(backup_candidates)}件")
-    
-    # すべての候補を結合（優先度：基準点以上 > ストック > バックアップ）
+    # 基準点以上の候補のみを使用
     all_candidates = qualified_new + stock_candidates
     
-    # 基準点以上の候補が不足する場合はバックアップ候補を追加
-    if len(all_candidates) < MIN_CANDIDATES_THRESHOLD and backup_candidates:
-        print(f"Adding {min(MIN_CANDIDATES_THRESHOLD - len(all_candidates), len(backup_candidates))} backup candidates")
-        # スコア順にソートして上位を追加
-        backup_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-        additional_needed = min(MIN_CANDIDATES_THRESHOLD - len(all_candidates), len(backup_candidates))
-        all_candidates.extend(backup_candidates[:additional_needed])
-    
     if not all_candidates:
-        print("No qualified candidates available (even with backup)")
+        print("No qualified candidates available")
         return {"status": "no_qualified_candidates"}
     
     print(f"Step 4: Selecting best article from {len(all_candidates)} candidates...")
@@ -759,15 +787,21 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "score": selected_article.get("score", 0.0),
         "new_articles_count": len(new_articles),
         "stock_candidates_count": len(stock_candidates),
-        "backup_candidates_count": len(backup_candidates),
         "total_candidates": len(all_candidates)
     }
 
 
 def _extract_published(entry: feedparser.FeedParserDict) -> str:
-    if "published_parsed" in entry and entry.published_parsed:
-        dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-        return dt.isoformat()
-    if entry.get("published"):
-        return str(entry["published"])
+    for key in ("published_parsed", "updated_parsed", "created_parsed"):
+        parsed = entry.get(key)
+        dt = _parse_rss_datetime(parsed)
+        if dt:
+            return _to_utc_isoformat(dt)
+
+    for key in ("published", "updated", "created"):
+        raw = entry.get(key)
+        dt = _parse_rss_datetime(raw)
+        if dt:
+            return _to_utc_isoformat(dt)
+
     return ""
