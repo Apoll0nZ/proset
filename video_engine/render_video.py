@@ -1035,8 +1035,16 @@ def get_images_for_time_range(image_clips: List, start_time: float, end_time: fl
 
 # 字幕スライドイン・拡大アニメーション関数
 def subtitle_slide_scale_animation(clip):
-    """字幕をスライドインしながら90%→100%に拡大"""
-    base_y = VIDEO_HEIGHT - 400  # 長文対応でマージンを増加
+    """字幕をスライドインしながら90%→100%に拡大（Y軸ランダム配置）"""
+    import random
+    
+    # Y軸をランダムに決定（画面外にはみ出ない範囲）
+    # 字幕の高さを推定（font_size=48の場合、約60-80px）
+    estimated_subtitle_height = 100
+    min_y = 100  # 上部マージン
+    max_y = VIDEO_HEIGHT - estimated_subtitle_height - 50  # 下部マージン
+    
+    base_y = random.randint(min_y, max_y)  # ランダムなY座標
     
     def animate(t):
         duration = 0.5  # 0.5秒でアニメーション完了
@@ -1048,9 +1056,9 @@ def subtitle_slide_scale_animation(clip):
         # Y座標：base_y - 50px → base_y へスライド（絶対ピクセル値）
         y_pos = base_y - 50 + 50 * progress
         
-        # 絶対ピクセル値のタプルを返す（箱ごとスライド）
-        safe_y_pos = min(y_pos, VIDEO_HEIGHT - 100)  # 画面外防止
-        return ("center", safe_y_pos)
+        # 画面外防止（念のため再チェック）
+        safe_y_pos = max(min_y, min(y_pos, max_y))
+        return ("center", safe_y_pos)  # X軸は中央固定
     
     def scale_animate(t):
         duration = 0.5  # 0.5秒でアニメーション完了
@@ -1071,9 +1079,8 @@ def subtitle_slide_scale_animation(clip):
         ]).with_position(animate)
     except Exception as e:
         print(f"[DEBUG] Animation error: {e}")
-        # フォールバック：静止状態で配置（中央揃え、画面外防止）
-        safe_base_y = min(base_y, VIDEO_HEIGHT - 100)  # 画面外防止
-        return clip.with_position(("center", safe_base_y))
+        # フォールバック：ランダムなY座標で静止
+        return clip.with_position(("center", base_y))
 
 # loop関数の安全なインポート（MoviePy 2.0対応）
 try:
