@@ -246,9 +246,6 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 return part_durations[idx]
             return 0.0
 
-        def sum_valid_durations_before(idx: int) -> float:
-            return sum(get_part_duration(i) for i in valid_voice_parts if i < idx)
-        
         # owner_commentのvoice_indexを特定（script_partsは参照のみ）
         owner_comment_voice_index = None
         for i, part in enumerate(script_parts):
@@ -256,12 +253,19 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 owner_comment_voice_index = i
                 break
         
-        # 音声基準でmodulation開始時間を計算（有効パートのみ）
+        # ★★★ 修正: owner_comment「直前」までの時間を計算 ★★★
         if owner_comment_voice_index is not None and owner_comment_voice_index in VOICE_PARTS:
-            modulation_start_time = title_duration + sum_valid_durations_before(owner_comment_voice_index)
+            modulation_start_time = title_duration + sum(
+                get_part_duration(i) for i in valid_voice_parts if i < owner_comment_voice_index
+            )
         else:
+            # owner_commentがない場合は全パート終了後
             modulation_start_time = title_duration + sum(get_part_duration(i) for i in valid_voice_parts)
+
         owner_comment_start_time = modulation_start_time + modulation_duration
+
+        print(f"[TIMELINE] Modulation starts at: {modulation_start_time:.2f}s")
+        print(f"[TIMELINE] Owner comment starts at: {owner_comment_start_time:.2f}s")
 
         part_start_times: Dict[int, float] = {}
         
@@ -438,20 +442,6 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 'duration': 0.0
             })
 
-        # ========== STAGE 8: Closing画面を追加 ==========
-        closing_start = owner_comment_start_time
-        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-            if part.get("part") == "owner_comment":
-                closing_start = owner_comment_start_time + duration
-                break
-        print(f"[TIMELINE] Adding black closing screen at {closing_start:.2f}s")
-        closing_clip = ColorClip(size=(VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0), duration=3.0)
-        all_clips_by_layer['videos'].append({
-            'clip': closing_clip,
-            'start': closing_start,
-            'duration': 3.0
-        })
-
         # ========== STAGE 10: 全レイヤーを組み立てて最終動画を作成 ==========
         print("[TIMELINE] Compositing all layers...")
 
@@ -516,16 +506,25 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             composite_clips.append(clip.with_start(start))
 
         # 10d. 字幕（最上レイヤーに配置）
+        last_subtitle_end = 0.0  # 最後の字幕の終了時刻を追跡
         for item in all_clips_by_layer['subtitles']:
             clip = item['clip']
             # 字幕はすでに適切なstartを持っている
             composite_clips.append(clip)
+            clip_end = (getattr(clip, 'start', 0.0) or 0.0) + clip.duration
+            last_subtitle_end = max(last_subtitle_end, clip_end)
 
-        # total_duration を確定（手計算しない）
-        if composite_clips:
-            total_duration = max((getattr(c, 'start', 0.0) or 0.0) + c.duration for c in composite_clips)
+        # ★★★ 修正: total_durationを最後の字幕終了時刻に設定 ★★★
+        if last_subtitle_end > 0:
+            total_duration = last_subtitle_end
+            print(f"[TIMELINE] Video duration set to last subtitle end: {total_duration:.2f}s")
         else:
-            total_duration = 0.0
+            # フォールバック: 既存のクリップから計算
+            if composite_clips:
+                total_duration = max((getattr(c, 'start', 0.0) or 0.0) + c.duration for c in composite_clips)
+            else:
+                total_duration = 0.0
+            print(f"[TIMELINE] Video duration (fallback): {total_duration:.2f}s")
 
         # 10e. ヘッディング（最上に重ねる、全期間表示）
         for item in all_clips_by_layer['heading']:
@@ -3690,16 +3689,10 @@ async def build_video_with_subtitles(
         
         # modulation開始時間を計算（Title音声はメインコンテンツに含まれるため、Title動画の終了から）
         modulation_start_time = title_duration
-        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+        for part, duration in zip(script_parts, part_durations):
             part_type = part.get("part", "")
             if part_type != "title" and part_type != "owner_comment":
                 modulation_start_time += duration
-                # 次のパートがowner_commentならそこでmodulation開始
-                next_part_idx = i + 1
-                if next_part_idx < len(script_parts):
-                    next_part = script_parts[next_part_idx]
-                    if next_part.get("part") == "owner_comment":
-                        break
 
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
