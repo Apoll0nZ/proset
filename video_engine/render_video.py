@@ -3037,6 +3037,15 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tup
         (音声ファイルパス, query_data_list（タイミング情報）, text_parts)
     """
     import time
+
+    def is_retryable_error(err: Exception) -> bool:
+        msg = str(err).lower()
+        return any(key in msg for key in ["timeout", "timed out", "connection", "503", "429", "502", "504"])
+
+    def backoff_sleep(attempt: int) -> None:
+        # 2s, 4s, 8s ...
+        sleep_s = 2 ** attempt
+        time.sleep(sleep_s)
     
     # テキストを分割
     text_parts = split_text_for_voicevox(text)
@@ -3075,12 +3084,12 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tup
                     break  # 成功したらループを抜ける
                     
                 except Exception as e:
-                    if attempt < 3:
+                    if attempt < 3 and is_retryable_error(e):
                         print(f"Attempt {attempt} failed for audio query (part {i}), retrying... Error: {str(e)}")
-                        time.sleep(2)  # 2秒待機
+                        backoff_sleep(attempt)
                     else:
-                        print(f"Critical error: All 3 attempts failed for audio query (part {i}). Error: {str(e)}")
-                        raise RuntimeError(f"Failed to generate audio query after 3 attempts for part {i}: {str(e)}")
+                        print(f"Critical error: Audio query failed for part {i}. Error: {str(e)}")
+                        raise RuntimeError(f"Failed to generate audio query for part {i}: {str(e)}")
             
             # 音声合成のリトライロジック
             synthesis_content = None
@@ -3104,12 +3113,12 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tup
                     break  # 成功したらループを抜ける
                     
                 except Exception as e:
-                    if attempt < 3:
+                    if attempt < 3 and is_retryable_error(e):
                         print(f"Attempt {attempt} failed for audio synthesis (part {i}), retrying... Error: {str(e)}")
-                        time.sleep(2)  # 2秒待機
+                        backoff_sleep(attempt)
                     else:
-                        print(f"Critical error: All 3 attempts failed for audio synthesis (part {i}). Error: {str(e)}")
-                        raise RuntimeError(f"Failed to synthesize audio after 3 attempts for part {i}: {str(e)}")
+                        print(f"Critical error: Audio synthesis failed for part {i}. Error: {str(e)}")
+                        raise RuntimeError(f"Failed to synthesize audio for part {i}: {str(e)}")
             
             # 一時音声ファイルとして保存
             temp_audio_path = os.path.join(temp_dir, f"temp_audio_{i}.wav")
@@ -3157,6 +3166,14 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
     """
     import time
 
+    def is_retryable_error(err: Exception) -> bool:
+        msg = str(err).lower()
+        return any(key in msg for key in ["timeout", "timed out", "connection", "503", "429", "502", "504"])
+
+    def backoff_sleep(attempt: int) -> None:
+        sleep_s = 2 ** attempt
+        time.sleep(sleep_s)
+
     if not text_parts or len(text_parts) == 0:
         raise RuntimeError("テキストパーツが空です")
 
@@ -3192,11 +3209,11 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
                     break  # 成功
 
                 except Exception as e:
-                    if attempt < 3:
+                    if attempt < 3 and is_retryable_error(e):
                         print(f"[PRECUT] Attempt {attempt} failed, retrying...")
-                        time.sleep(2)
+                        backoff_sleep(attempt)
                     else:
-                        raise RuntimeError(f"Failed query generation after 3 attempts: {str(e)}")
+                        raise RuntimeError(f"Failed query generation for part {i}: {str(e)}")
 
             # 音声合成のリトライロジック
             synthesis_content = None
@@ -3218,11 +3235,11 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
                     break  # 成功
 
                 except Exception as e:
-                    if attempt < 3:
+                    if attempt < 3 and is_retryable_error(e):
                         print(f"[PRECUT] Synthesis attempt {attempt} failed, retrying...")
-                        time.sleep(2)
+                        backoff_sleep(attempt)
                     else:
-                        raise RuntimeError(f"Failed synthesis after 3 attempts: {str(e)}")
+                        raise RuntimeError(f"Failed synthesis for part {i}: {str(e)}")
 
             # 一時音声ファイルとして保存
             temp_audio_path = os.path.join(temp_dir, f"temp_audio_{i}.wav")
