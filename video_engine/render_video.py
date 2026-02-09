@@ -486,7 +486,6 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     return base_clip.subclipped(0, needed_duration)
                 # ループで埋める
                 num_loops = math.ceil(needed_duration / base_clip.duration)
-                from moviepy.video.compositing.concatenate import concatenate_videoclips
                 looped = concatenate_videoclips([base_clip] * num_loops)
                 return looped.subclipped(0, needed_duration)
 
