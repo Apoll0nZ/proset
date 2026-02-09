@@ -231,6 +231,23 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             if p.get("part") not in ("title_video", "modulation", "closing")
         }
         print(f"[TIMELINE] VOICE_PARTS defined: {sorted(VOICE_PARTS)}")
+
+        # 字幕と音声の両方が揃っているパートだけを対象にする
+        duration_list_all = duration_list_all or {}
+        text_parts_list_all = text_parts_list_all or {}
+        valid_part_indices = sorted(set(duration_list_all.keys()) & set(text_parts_list_all.keys()))
+        valid_voice_parts = [i for i in valid_part_indices if i in VOICE_PARTS]
+        print(f"[TIMELINE] Valid parts (audio+subtitle): {valid_voice_parts}")
+
+        def get_part_duration(idx: int) -> float:
+            if idx in duration_list_all:
+                return sum(duration_list_all[idx])
+            if idx < len(part_durations):
+                return part_durations[idx]
+            return 0.0
+
+        def sum_valid_durations_before(idx: int) -> float:
+            return sum(get_part_duration(i) for i in valid_voice_parts if i < idx)
         
         # owner_commentのvoice_indexを特定（script_partsは参照のみ）
         owner_comment_voice_index = None
@@ -239,11 +256,11 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 owner_comment_voice_index = i
                 break
         
-        # 音声基準でmodulation開始時間を計算
-        if owner_comment_voice_index is not None:
-            modulation_start_time = title_duration + sum(part_durations[:owner_comment_voice_index])
+        # 音声基準でmodulation開始時間を計算（有効パートのみ）
+        if owner_comment_voice_index is not None and owner_comment_voice_index in VOICE_PARTS:
+            modulation_start_time = title_duration + sum_valid_durations_before(owner_comment_voice_index)
         else:
-            modulation_start_time = title_duration + sum(part_durations)
+            modulation_start_time = title_duration + sum(get_part_duration(i) for i in valid_voice_parts)
         owner_comment_start_time = modulation_start_time + modulation_duration
 
         part_start_times: Dict[int, float] = {}
@@ -251,11 +268,12 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # 音声基準：音声が存在するPartだけを世界の基準にする
         # 時間は part_durations の累積和で計算（自分で足さない）
         # start_time計算は累積durationのみを使用
-        for voice_index, duration in enumerate(part_durations):
-            start_time = sum(part_durations[:voice_index])  # title_durationは含まない純粋な音声累積
-            
+        current_audio_time = 0.0
+        for voice_index in valid_voice_parts:
+            duration = get_part_duration(voice_index)
+            start_time = current_audio_time  # title_durationは含まない純粋な音声累積
             part_start_times[voice_index] = start_time
-            
+            current_audio_time += duration
             print(f"[TIMELINE] Voice {voice_index}: start={start_time:.2f}s, duration={duration:.2f}s, end={start_time + duration:.2f}s")
 
         # グローバルタイムラインの開始時刻を追跡
@@ -326,7 +344,9 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # ========== STAGE 5: 字幕生成（絶対時間のみ） ==========
         # 音声基準：duration_list_allを回して字幕生成（part_durationsは集計用のみ）
         # 音声基準に完全一致：sorted keysでループ
-        for part_index in sorted(duration_list_all.keys()):
+        last_subtitle_end = None
+
+        for part_index in valid_voice_parts:
             # 音声がないパートはtimelineから除外
             if part_index not in VOICE_PARTS:
                 print(f"[SUBTITLE] Skip part {part_index}: not in VOICE_PARTS")
@@ -337,7 +357,11 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 continue
                 
             # このパートの絶対開始時間を取得
-            absolute_start_time = title_duration + part_start_times.get(part_index, 0.0)
+            # modulation挿入分を反映（owner_comment以降の音声・字幕は後ろにずらす）
+            modulation_gap = 0.0
+            if owner_comment_voice_index is not None and part_index >= owner_comment_voice_index:
+                modulation_gap = modulation_duration
+            absolute_start_time = title_duration + part_start_times.get(part_index, 0.0) + modulation_gap
             
             # chunksを取得
             chunks = text_parts_list_all[part_index]
@@ -361,7 +385,14 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     
                 chunk_text = chunks[chunk_index]
                 chunk_start = absolute_start_time + sum(chunk_durations[:chunk_index])
-                
+                intended_end = absolute_start_time + sum(chunk_durations[:chunk_index + 1])
+
+                # 予定終了時刻からdurationを再計算（音声終了に合わせる）
+                chunk_duration = max(0.0, intended_end - chunk_start)
+                if chunk_duration <= 0.01:
+                    print(f"[SUBTITLE] Skipped subtitle due to non-positive duration: {chunk_duration:.3f}s")
+                    continue
+
                 # 字幕クリップを作成
                 try:
                     txt_clip = TextClip(
@@ -387,6 +418,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     # 絶対時間で配置
                     txt_clip = txt_clip.with_start(chunk_start).with_duration(chunk_duration).with_opacity(1.0).with_fps(FPS)
                     all_clips_by_layer['subtitles'].append({'clip': txt_clip})
+                    last_subtitle_end = chunk_start + chunk_duration
                     
                     print(f"[SUBTITLE] Part {part_index}, Chunk {chunk_index}: {chunk_start:.2f}s - {chunk_start + chunk_duration:.2f}s")
                     
@@ -521,14 +553,25 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # modulation/titleは音声とは別レイヤーとして処理
         if audio_clip:
             audio_src_cursor = 0.0  # VOICEVOX音声のみを前提
-            
-            # 音声基準：音声が存在するPartだけを世界の基準にする
-            for voice_index, duration in enumerate(part_durations):
+
+            # 実際に合成された音声（duration_list_all）を順に消費
+            for part_index in sorted(duration_list_all.keys()):
+                duration = get_part_duration(part_index)
+                if duration <= 0:
+                    continue
                 if audio_src_cursor + duration > audio_clip.duration:
                     break
-                    
+
                 part_audio = audio_clip.subclipped(audio_src_cursor, audio_src_cursor + duration)
-                audio_elements.append(part_audio.with_start(part_start_times.get(voice_index, title_duration)))
+
+                if part_index in valid_voice_parts:
+                    modulation_gap = 0.0
+                    if owner_comment_voice_index is not None and part_index >= owner_comment_voice_index:
+                        modulation_gap = modulation_duration
+                    audio_start = part_start_times.get(part_index, 0.0) + title_duration + modulation_gap
+                    audio_elements.append(part_audio.with_start(audio_start))
+
+                # 字幕と両方揃っていないパートは音声もスキップ（時間を詰める）
                 audio_src_cursor += duration
 
         # BGM（main_titleから開始）
@@ -3609,8 +3652,8 @@ async def build_video_with_subtitles(
         topic_summary = content.get("topic_summary", "")
         image_schedule = []
         total_images_collected = 0
-        # 数珠つなぎロジック：画像もtitle_durationから開始
-        current_image_time = title_duration + 1.0  # オープニング動画の後、1.0秒後に画像を開始
+        # 数珠つなぎロジック：画像もtitle_durationから開始（title終了→main_title開始に合わせる）
+        current_image_time = title_duration  # オープニング動画終了直後から画像を開始
         
         # title_audio_durationを定義
         title_audio_duration = part_durations[0] if part_durations else title_duration
@@ -3631,6 +3674,7 @@ async def build_video_with_subtitles(
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
                 continue
+            part_type = part.get("part", "")
             part_text = part.get("text", "")
             keywords = get_segment_keywords(part_text, title, topic_summary)
             part_images = []
@@ -3728,9 +3772,20 @@ async def build_video_with_subtitles(
                     part_images.append(selected_image)
                     print(f"[INFO] Reusing image for segment {i}: {os.path.basename(selected_image)}")
                 else:
-                    print(f"[ERROR] No images found for segment {i} and no existing images to reuse. Skipping segment.")
-                    current_image_time += duration
-                    continue
+                    # まとめパートは最後の画像を再利用（なければプレースホルダーを生成）
+                    if part_type == "owner_comment":
+                        last_path = None
+                        for prev_item in reversed(image_schedule):
+                            if prev_item.get("path"):
+                                last_path = prev_item["path"]
+                                break
+                        if last_path and os.path.exists(last_path):
+                            part_images.append(last_path)
+                            print(f"[INFO] Reusing last image for summary segment {i}: {os.path.basename(last_path)}")
+                        else:
+                            raise RuntimeError(f"No images available for summary segment {i}")
+                    if not part_images:
+                        raise RuntimeError(f"No images found for segment {i} and no existing images to reuse")
 
             # 画像が1枚でも取得できた場合は続行
             print(f"[DEBUG] Found {len(part_images)} images for segment {i}")
