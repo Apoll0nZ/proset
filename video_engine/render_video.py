@@ -4164,8 +4164,7 @@ async def build_video_with_subtitles(
             )
 
             if video is None:
-                print("[ERROR] build_unified_timeline returned None")
-                return None
+                raise RuntimeError("build_unified_timeline returned None")
 
             print(f"[SUCCESS] Unified timeline video created: {video.duration:.2f}s")
 
@@ -4173,7 +4172,7 @@ async def build_video_with_subtitles(
             print(f"[ERROR] Failed to build unified timeline: {e}")
             import traceback
             print(traceback.format_exc())
-            return None
+            raise
         
         # 動画出力処理に進む
         print("=== VIDEO OUTPUT ===")
@@ -4215,6 +4214,10 @@ async def build_video_with_subtitles(
         )
         
         print("Video generation completed successfully")
+
+        # 出力ファイルの存在確認（無生成を検知）
+        if not os.path.exists(out_video_path):
+            raise FileNotFoundError(f"Video file not created: {out_video_path}")
         
         # tempディレクトリ削除タイミング対策：動画書き出し完了後にのみ削除
         try:
@@ -4470,6 +4473,9 @@ async def main() -> None:
             text_parts_list_all=text_parts_list_all,
             duration_list_all=duration_list_all,
         )
+        # 動画ファイルの存在確認（生成失敗を早期検知）
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video file not found after generation: {video_path}")
 
         # 4. サムネイル生成
         print("Generating thumbnail...")
