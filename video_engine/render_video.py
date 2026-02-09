@@ -610,7 +610,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
 
                 # 絶対時間で配置
                 txt_clip = txt_clip.with_start(absolute_chunk_start).with_duration(chunk_duration)
-                txt_clip = txt_clip.with_position(('center', 'bottom-100'))
+                txt_clip = txt_clip.with_position(('center', VIDEO_HEIGHT - 100))
 
                 subtitle_clips.append(txt_clip)
                 
