@@ -10,12 +10,10 @@ from typing import Any, Dict, List
 import random
 import google.genai as genai
 
-# GitHub Actions (Linux) 環境向けに ImageMagick のパスを明示
+# GitHub Actions (Linux) 環境向けに ImageMagick を完全に無効化
 if os.name != 'nt':
-    os.environ["IMAGEMAGICK_BINARY"] = "/usr/bin/convert"
-    # ImageMagickセキュリティポリシーの自動更新は無効化
-    # 理由: sudoコマンドによるパスワード入力要求を回避するため
-    # 必要な場合は手動で設定してください:
+    os.environ["IMAGEMAGICK_BINARY"] = ""  # 空文字列で無効化
+    print("[INFO] ImageMagick disabled (sudo requirement avoided)")
     # sudo sed -i 's/rights="none" pattern="@\\*"/rights="read|write" pattern="@*"/g' /etc/ImageMagick-6/policy.xml
     print("[INFO] ImageMagick policy auto-update disabled (sudo requirement avoided)")
 
@@ -179,14 +177,17 @@ def split_title_part(script_parts: List[Dict], part_durations: List[float],
     new_part_durations.append(title_duration)  # 動画の長さ
     
     # 2. main_titleパート（音声部分のみ）
-    if title_audio_duration > title_duration:
+    # 常にmain_titleパートを作成し、durationを正しく設定
+    audio_only_duration = max(0, title_audio_duration - title_duration)
+    if audio_only_duration > 0 or title_audio_duration <= title_duration:
         title_audio_part = {
             "part": "main_title", 
             "text": original_title_part.get("text", ""),
             "original_type": "title"
         }
         new_script_parts.append(title_audio_part)
-        new_part_durations.append(title_audio_duration - title_duration)  # 音声のみの長さ
+        # 音声のみの長さを設定（動画より短い場合は0になる）
+        new_part_durations.append(audio_only_duration)
     
     # 残りのパートを追加
     new_script_parts.extend(script_parts[1:])
@@ -220,41 +221,42 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # ========== STAGE 1: マスタータイムラインの構築 ==========
         print(f"[TIMELINE] Building master timeline with title_duration={title_duration:.2f}s, title_audio_duration={title_audio_duration:.2f}s")
 
-        modulation_start_time = title_duration + sum(
-            d for i, (p, d) in enumerate(zip(script_parts, part_durations))
-            if p.get("part") not in ["title_video", "main_title", "owner_comment"] and p.get("text", "")
-        )
+        # voice_index = VOICEVOX index（音声が存在するPartのみ）
+        # script_partsはインデックス決定のみに使用、時間計算はpart_durationsのみ
+        # modulation/titleは音声とは別レイヤーとして固定処理
+        
+        # 音声がないパートを明示的に定義
+        VOICE_PARTS = {
+            i for i, p in enumerate(script_parts)
+            if p.get("part") not in ("title_video", "modulation", "closing")
+        }
+        print(f"[TIMELINE] VOICE_PARTS defined: {sorted(VOICE_PARTS)}")
+        
+        # owner_commentのvoice_indexを特定（script_partsは参照のみ）
+        owner_comment_voice_index = None
+        for i, part in enumerate(script_parts):
+            if part.get("part") == "owner_comment":
+                owner_comment_voice_index = i
+                break
+        
+        # 音声基準でmodulation開始時間を計算
+        if owner_comment_voice_index is not None:
+            modulation_start_time = title_duration + sum(part_durations[:owner_comment_voice_index])
+        else:
+            modulation_start_time = title_duration + sum(part_durations)
         owner_comment_start_time = modulation_start_time + modulation_duration
 
         part_start_times: Dict[int, float] = {}
-        time_cursor = title_duration
-        voice_index = 0  # 音声が存在するPartのインデックス
         
-        for part in script_parts:
-            part_type = part.get("part")
-            text = part.get("text", "")
+        # 音声基準：音声が存在するPartだけを世界の基準にする
+        # 時間は part_durations の累積和で計算（自分で足さない）
+        # start_time計算は累積durationのみを使用
+        for voice_index, duration in enumerate(part_durations):
+            start_time = sum(part_durations[:voice_index])  # title_durationは含まない純粋な音声累積
             
-            if part_type == "title_video":
-                part_start_times[voice_index] = 0.0
-                continue
-                
-            if not text:
-                continue
-                
-            # 音声が存在するか確認
-            if voice_index >= len(part_durations):
-                print(f"[TIMELINE] Skipping start time calculation - no audio available (voice_index: {voice_index})")
-                break
-                
-            duration = part_durations[voice_index]
+            part_start_times[voice_index] = start_time
             
-            if part_type == "owner_comment":
-                part_start_times[voice_index] = owner_comment_start_time
-            else:
-                part_start_times[voice_index] = time_cursor
-            
-            time_cursor += duration
-            voice_index += 1
+            print(f"[TIMELINE] Voice {voice_index}: start={start_time:.2f}s, duration={duration:.2f}s, end={start_time + duration:.2f}s")
 
         # グローバルタイムラインの開始時刻を追跡
         current_video_time = 0.0
@@ -322,36 +324,75 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             })
 
         # ========== STAGE 5: 字幕生成（絶対時間のみ） ==========
-        voice_index = 0  # 音声が存在するPartのインデックス
-        
-        for part in script_parts:
-            if part.get("part") in ["title_video"]:
+        # 音声基準：duration_list_allを回して字幕生成（part_durationsは集計用のみ）
+        # 音声基準に完全一致：sorted keysでループ
+        for part_index in sorted(duration_list_all.keys()):
+            # 音声がないパートはtimelineから除外
+            if part_index not in VOICE_PARTS:
+                print(f"[SUBTITLE] Skip part {part_index}: not in VOICE_PARTS")
                 continue
                 
-            text = part.get("text", "")
-            if not text:
+            if part_index not in text_parts_list_all:
+                print(f"[SUBTITLE] Skip part {part_index}: no text")
+                continue
+                
+            # このパートの絶対開始時間を取得
+            absolute_start_time = title_duration + part_start_times.get(part_index, 0.0)
+            
+            # chunksを取得
+            chunks = text_parts_list_all[part_index]
+            if not chunks:
+                print(f"[SUBTITLE] Skip part {part_index}: no chunks")
                 continue
             
-            # 音声が存在するか確認
-            if voice_index >= len(part_durations):
-                print(f"[TIMELINE] Skipping subtitle for part - no audio available (voice_index: {voice_index})")
+            # chunk_durationsを取得
+            chunk_durations = duration_list_all[part_index]
+            if not chunk_durations:
+                print(f"[SUBTITLE] Skip part {part_index}: no chunk_durations")
                 continue
             
-            duration = part_durations[voice_index]
+            # 完全なテキスト（表示用）
+            full_text = "".join(chunks)
             
-            subs = create_subtitles_with_absolute_timing(
-                text=text,
-                duration=duration,
-                absolute_start_time=part_start_times.get(voice_index, title_duration),
-                font_path=font_path,
-                query_data_list=query_data_list_all.get(voice_index),
-                text_parts_list=text_parts_list_all.get(voice_index),
-                duration_list=duration_list_all.get(voice_index),
-            )
-            for sc in subs:
-                all_clips_by_layer['subtitles'].append({'clip': sc})
-            
-            voice_index += 1
+            # 各チャンクの字幕を生成
+            for chunk_index, chunk_duration in enumerate(chunk_durations):
+                if chunk_index >= len(chunks):
+                    break
+                    
+                chunk_text = chunks[chunk_index]
+                chunk_start = absolute_start_time + sum(chunk_durations[:chunk_index])
+                
+                # 字幕クリップを作成
+                try:
+                    txt_clip = TextClip(
+                        text=f" {chunk_text} ",
+                        font_size=48,
+                        color="black",
+                        method="caption",
+                        size=(1600, None),
+                        bg_color="white",
+                        text_align="left",
+                        stroke_color="black",
+                        stroke_width=1,
+                        font=font_path
+                    )
+                    
+                    # アニメーションを適用
+                    try:
+                        txt_clip = subtitle_slide_scale_animation(txt_clip)
+                    except Exception as anim_error:
+                        print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
+                        txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
+                    
+                    # 絶対時間で配置
+                    txt_clip = txt_clip.with_start(chunk_start).with_duration(chunk_duration).with_opacity(1.0).with_fps(FPS)
+                    all_clips_by_layer['subtitles'].append({'clip': txt_clip})
+                    
+                    print(f"[SUBTITLE] Part {part_index}, Chunk {chunk_index}: {chunk_start:.2f}s - {chunk_start + chunk_duration:.2f}s")
+                    
+                except Exception as e:
+                    print(f"[ERROR] Failed to create subtitle for part {part_index}, chunk {chunk_index}: {e}")
+                    continue
 
         total_duration = 0.0
 
@@ -385,76 +426,37 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # CompositeVideoClipにクリップを追加する際、startを直接指定
         composite_clips = []
 
-        # 10a. 背景（main_title開始からメイン動画終了まで、owner_comment開始から終了まで）
+        # 10a. 背景（表示区間だけを決定）
         for item in all_clips_by_layer['background']:
             clip = item['clip']
-            start = item['start']
             
-            # main_titleの開始時間を計算
-            main_title_start_time = title_duration
-            main_title_duration = 0.0
-            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-                if script_parts[i].get("part") == "main_title":
-                    main_title_duration = duration
+            # 背景は表示区間だけ決定（時間再計算は不要）
+            main_bg_start = title_duration
+            main_bg_end = modulation_start_time
+            
+            owner_bg_start = owner_comment_start_time
+            # owner_commentのdurationはpart_durationsから取得
+            owner_comment_voice_index = None
+            for i, part in enumerate(script_parts):
+                if part.get("part") == "owner_comment":
+                    owner_comment_voice_index = i
                     break
             
-            # メインパートの時間を計算（main_titleを含む、title_videoとowner_commentを除く）
-            main_duration = main_title_duration
-            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-                part_type = part.get("part", "")
-                if part_type not in ["title_video", "owner_comment", "main_title"]:
-                    main_duration += duration
+            owner_bg_end = owner_bg_start + (part_durations[owner_comment_voice_index] if owner_comment_voice_index is not None and owner_comment_voice_index < len(part_durations) else 0.0)
             
-            # owner_commentの開始時間は STAGE 1 で確定した値を使う（再計算禁止）
-            owner_comment_duration = 0.0
-            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-                if script_parts[i].get("part") == "owner_comment":
-                    owner_comment_duration += duration
-            
-            # main_titleからメインパート終了までの背景
-            if main_duration > 0:
-                if clip.duration < main_duration:
-                    # メインパート用にシームレスループ
-                    num_loops = math.ceil(main_duration / clip.duration)
-                    print(f"[BACKGROUND] Main part seamless loops: {num_loops} loops for {main_duration:.2f}s")
-                    
-                    loop_clips = []
-                    for i in range(num_loops):
-                        loop_clips.append(clip)
-                    
-                    from moviepy import concatenate_videoclips
-                    main_bg = concatenate_videoclips(loop_clips, method="compose")
-                    main_bg = main_bg.subclipped(0, main_duration)
-                    print(f"[BACKGROUND] Seamless loop created: no frozen frames, no gaps")
-                else:
-                    main_bg = clip.subclipped(0, main_duration)
-                    print(f"[BACKGROUND] Main part single clip: {main_duration:.2f}s")
-                
-                composite_clips.append(main_bg.with_start(main_title_start_time))
-                print(f"[BACKGROUND] Main background: {main_duration:.2f}s starting at {main_title_start_time:.2f}s (from main_title to main part end)")
+            # メインパート用背景
+            main_bg_duration = main_bg_end - main_bg_start
+            if main_bg_duration > 0:
+                main_bg = clip.subclipped(0, main_bg_duration)
+                composite_clips.append(main_bg.with_start(main_bg_start))
+                print(f"[BACKGROUND] Main background: {main_bg_duration:.2f}s from {main_bg_start:.2f}s to {main_bg_end:.2f}s")
             
             # owner_commentパート用背景
-            if owner_comment_duration > 0:
-                if clip.duration < owner_comment_duration:
-                    # owner_comment用にシームレスループ
-                    num_loops = math.ceil(owner_comment_duration / clip.duration)
-                    print(f"[BACKGROUND] Owner comment seamless loops: {num_loops} loops for {owner_comment_duration:.2f}s")
-                    
-                    loop_clips = []
-                    for i in range(num_loops):
-                        loop_clips.append(clip)
-                    
-                    owner_bg = concatenate_videoclips(loop_clips, method="compose")
-                    owner_bg = owner_bg.subclipped(0, owner_comment_duration)
-                    print(f"[BACKGROUND] Owner comment seamless loop created: no frozen frames, no gaps")
-                else:
-                    owner_bg = clip.subclipped(0, owner_comment_duration)
-                    print(f"[BACKGROUND] Owner comment single clip: {owner_comment_duration:.2f}s")
-                
-                composite_clips.append(owner_bg.with_start(owner_comment_start_time))
-                print(f"[BACKGROUND] Owner comment background: {owner_comment_duration:.2f}s starting at {owner_comment_start_time:.2f}s")
-            
-            print(f"[BACKGROUND] title_video period ({title_duration:.2f}s) and Modulation period ({modulation_duration:.2f}s) have no background")
+            owner_bg_duration = owner_bg_end - owner_bg_start
+            if owner_bg_duration > 0:
+                owner_bg = clip.subclipped(0, owner_bg_duration)
+                composite_clips.append(owner_bg.with_start(owner_bg_start))
+                print(f"[BACKGROUND] Owner background: {owner_bg_duration:.2f}s from {owner_bg_start:.2f}s to {owner_bg_end:.2f}s")
 
         # 10b. ビデオ（背景の上に配置）
         for item in all_clips_by_layer['videos']:
@@ -514,35 +516,20 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             audio_elements.append(mod_audio)
             print(f"[TIMELINE] Added modulation audio at {modulation_start_time:.2f}s")
 
-        # ナレーション音声（audio_clip）はパートごとに絶対時間で配置
+        # ナレーション音声（audio_clip）は音声基準で配置
+        # part_durations = VOICEVOX音声のみ、audio_src_cursor = 0.0始まり
+        # modulation/titleは音声とは別レイヤーとして処理
         if audio_clip:
-            audio_src_cursor = title_audio_duration
-            voice_index = 0  # 音声が存在するPartのインデックス
+            audio_src_cursor = 0.0  # VOICEVOX音声のみを前提
             
-            for part in script_parts:
-                part_type = part.get("part", "")
-                text = part.get("text", "")
-                
-                if part_type in ["title_video"]:
-                    continue
-                    
-                if not text:
-                    continue
-                
-                # 音声が存在するか確認
-                if voice_index >= len(part_durations):
-                    print(f"[TIMELINE] Skipping audio placement - no audio available (voice_index: {voice_index})")
-                    break
-                    
-                duration = part_durations[voice_index]
-                
+            # 音声基準：音声が存在するPartだけを世界の基準にする
+            for voice_index, duration in enumerate(part_durations):
                 if audio_src_cursor + duration > audio_clip.duration:
                     break
                     
                 part_audio = audio_clip.subclipped(audio_src_cursor, audio_src_cursor + duration)
                 audio_elements.append(part_audio.with_start(part_start_times.get(voice_index, title_duration)))
                 audio_src_cursor += duration
-                voice_index += 1
 
         # BGM（main_titleから開始）
         if bgm_clip:
@@ -590,7 +577,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
 def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_start_time: float, font_path: str, 
                                        query_data_list: List[Dict] = None, text_parts_list: List[str] = None, 
-                                       duration_list: List[float] = None) -> List[TextClip]:
+                                       duration_list: List[float] = None, chunks: List[str] = None) -> List[TextClip]:
     """
     絶対時間で字幕クリップを作成（実態に基づいた同期対応）
 
@@ -611,9 +598,16 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
     subtitle_clips = []
 
     try:
-        # 字幕テキストを分割
-        chunks = split_subtitle_text(text, max_chars=100)
-        chunk_count = len(chunks)
+        # chunksが渡されない場合は字幕生成をスキップ（fallback split廃止）
+        if chunks is None:
+            print("[SUBTITLE] No VOICEVOX chunks provided, skipping subtitle generation")
+            return []
+        
+        # Unified設計：VOICEVOXで分割済みのchunksを信頼する
+        subtitle_chunks = chunks
+        print(f"[SUBTITLE] Using pre-calculated chunks: {len(subtitle_chunks)} chunks")
+        
+        chunk_count = len(subtitle_chunks)
 
         if chunk_count == 0:
             print(f"[SUBTITLE] No chunks created for text")
@@ -621,7 +615,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
 
         # 実態に基づいたチャンク時間を計算
         chunk_durations = []
-        if query_data_list and text_parts_list:
+        if query_data_list and text_parts_list and duration_list:
             # 実際の音声時間情報を使用
             measured_durations = calculate_measured_chunk_durations(query_data_list, text_parts_list, duration_list)
             if measured_durations and len(measured_durations) >= chunk_count:
@@ -631,11 +625,11 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                 print(f"[SUBTITLE] Insufficient measured data, using equal division")
                 chunk_durations = [duration / chunk_count] * chunk_count
         else:
-            # フォールバック：均等分割
+            # 均等割り付け
             chunk_durations = [duration / chunk_count] * chunk_count
             print(f"[SUBTITLE] Using equal division: {chunk_durations}")
 
-        for i, chunk in enumerate(chunks):
+        for i, chunk in enumerate(subtitle_chunks):
             # 実際のチャンク時間を使用
             chunk_duration = chunk_durations[i] if i < len(chunk_durations) else (duration / chunk_count)
             
@@ -865,46 +859,8 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
         part_audio = audio_clip.subclipped(audio_extract_start, end_time)
         print(f"[MAIN SEGMENT DEBUG] Part audio extracted: {part_audio.duration:.2f}s")
 
-        # 字幕を生成（このセグメント内での相対時間）
-        subtitle_clips = []
-
-        # このセグメントがmain_titleパートの場合
-        if part_type == "main_title" and title_text:
-            print(f"[MAIN SEGMENT DEBUG] Processing main_title subtitles...")
-            
-            # 実態に基づいた字幕同期を使用
-            query_data_list = query_data_list_all.get(main_title_idx, []) if query_data_list_all else []
-            text_parts = text_parts_list_all.get(main_title_idx, []) if text_parts_list_all else []
-            duration_list = duration_list_all.get(main_title_idx, []) if duration_list_all else []
-            
-            main_title_subtitle_clips = create_subtitles_with_absolute_timing(
-                title_text, duration, start_time, font_path,
-                query_data_list, text_parts, duration_list
-            )
-            print(f"[MAIN SEGMENT DEBUG] Main title subtitles created: {len(main_title_subtitle_clips)} clips for {duration:.2f}s")
-            
-            # main_title字幕をsubtitle_clipsに追加
-            subtitle_clips.extend(main_title_subtitle_clips)
-
-        # メイン内容の字幕を生成（main_titleパート以外）
-        if part_type != "main_title":
-            # 実態に基づいた字幕同期を使用
-            query_data_list = query_data_list_all.get(i, []) if query_data_list_all else []
-            text_parts = text_parts_list_all.get(i, []) if text_parts_list_all else []
-            duration_list = duration_list_all.get(i, []) if duration_list_all else []
-            
-            main_content_subtitle_clips = create_subtitles_with_absolute_timing(
-                text, duration, start_time, font_path,
-                query_data_list, text_parts, duration_list
-            )
-            subtitle_clips.extend(main_content_subtitle_clips)
-        else:
-            main_content_subtitle_clips = []  # main_titleパートは上で処理済み
-
-        print(f"[MAIN SEGMENT DEBUG] Subtitles created: {len(subtitle_clips)} clips (title: {len(subtitle_clips) - len(main_content_subtitle_clips)}, main: {len(main_content_subtitle_clips)})")
-        for i, txt in enumerate(subtitle_clips[:3]):  # 最初の3つだけ表示
-            if hasattr(txt, 'start') and hasattr(txt, 'duration'):
-                print(f"[MAIN SEGMENT DEBUG] Subtitle {i}: start={txt.start:.2f}s, duration={txt.duration:.2f}s")
+        # 字幕生成はUnified timelineのStage5で一括処理するため、ここでは行わない
+        subtitle_clips = []  # Unified設計ではセグメント内字幕生成を廃止
 
         # 画像を配置
         segment_images = get_images_for_time_range(image_clips, start_time, start_time + duration)
@@ -1565,6 +1521,14 @@ def download_modulation_video() -> str:
 # グローバル変数
 _used_image_hashes = set()  # 動画全体で使用した画像のハッシュ値を記録
 _used_image_paths = []  # 動画全体で使用した画像のパスを記録（サムネイル用）
+_image_search_cache = {}  # 画像検索キャッシュ（マルチスレッド対応）
+
+def reset_image_cache():
+    """画像キャッシュをリセット（各動画生成の開始時に呼び出す）"""
+    global _used_image_hashes, _used_image_paths
+    _used_image_hashes = set()
+    _used_image_paths = []
+    print("[INFO] Image cache reset")
 
 def get_image_hash(image_path: str) -> str:
     """画像ファイルのハッシュ値を計算"""
@@ -1643,16 +1607,12 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
     import hashlib
     
     # グローバルキャッシュ（同一セッション内で再利用）
-    if not hasattr(search_images_with_playwright, '_cache'):
-        search_images_with_playwright._cache = {}
-    
-    cache = search_images_with_playwright._cache
+    global _image_search_cache
     cache_key = f"{keyword}_{max_results}"
     
-    # キャッシュをチェック
-    if cache_key in cache:
-        print(f"[CACHE] Using cached results for '{keyword}': {len(cache[cache_key])} images")
-        return cache[cache_key]
+    if cache_key in _image_search_cache:
+        print(f"[CACHE] Using cached results for '{keyword}'")
+        return _image_search_cache[cache_key]
     
     # Bingを使用
     max_retries = 2
@@ -1851,7 +1811,7 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                         if images:
                             print(f"Successfully found {len(images)} valid images for '{keyword}'")
                             # キャッシュに保存
-                            cache[cache_key] = images
+                            _image_search_cache[cache_key] = images
                             print(f"[CACHE] Saved {len(images)} images for '{keyword}' to cache")
                             await browser.close()
                             return images
@@ -1864,7 +1824,7 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                 await browser.close()
                 print(f"[WARNING] No images found for '{keyword}'")
                 # 空の結果もキャッシュに保存
-                cache[cache_key] = []
+                _image_search_cache[cache_key] = []
                 print(f"[CACHE] Saved empty result for '{keyword}' to cache")
                 return []
                     
@@ -1882,17 +1842,17 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                 else:
                     print(f"[ERROR] Max retries reached for '{keyword}'")
                     # エラー結果もキャッシュに保存
-                    cache[cache_key] = []
+                    _image_search_cache[cache_key] = []
                     return []
             else:
                 print(f"[ERROR] Error in image search: {e}")
                 # エラー結果もキャッシュに保存
-                cache[cache_key] = []
+                _image_search_cache[cache_key] = []
                 return []
     
     print(f"[WARNING] All attempts failed for '{keyword}'")
     # 全試行失敗もキャッシュに保存
-    cache[cache_key] = []
+    _image_search_cache[cache_key] = []
     return []
 
 
@@ -3277,9 +3237,8 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 text = part.get("text", "")
                 
                 if not text:
-                    print(f"Warning: Empty text for part {i}, skipping...")
-                    success = True  # 空テキストは成功とみなす
-                    break
+                    print(f"[REORDER] Part {i}: Empty text, skipping completely...")
+                    continue  # 空テキストは完全スキップ（success扱いしない）
                 
                 # part名に応じてspeaker_idを決定
                 if part_name.startswith("article_"):
@@ -3310,18 +3269,22 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 )
 
                 if os.path.exists(audio_path):
-                    # AudioFileClipを作成してリストに追加
-                    clip = AudioFileClip(audio_path)
-                    part_duration = clip.duration
-                    audio_clips.append(clip)
+                    # AudioFileClipを作成して実測durationを取得
+                    audio_clip = AudioFileClip(audio_path)
+                    actual_duration = audio_clip.duration
+                    
+                    # 成功順にappendする方式に変更
+                    audio_clips.append(audio_clip)
                     generated_audio_files.append(audio_path)
-                    part_durations.append(part_duration)
-
+                    part_durations.append(actual_duration)
+                    
                     # query_data、text_parts、duration_list を保存（完全1対1対応を確保）
                     query_data_list_all[i] = query_data_list
                     text_parts_list_all[i] = text_parts_from_synthesis
                     # ★ファイルベースのduration_listも保存
                     duration_list_all[i] = duration_list
+                    
+                    print(f"[REORDER] Part {i}: actual_duration={actual_duration:.2f}s, chunks={len(text_parts_from_synthesis)}")
 
                     # 同期確認ログ
                     print(f"[REORDER] Part {i}: ✓ Chunks={len(text_parts_from_synthesis)}, Query_data={len(query_data_list)}, Duration_list={len(duration_list)}")
@@ -4077,98 +4040,6 @@ async def build_video_with_subtitles(
             print("Continuing without heading...")
             heading_clip = None
 
-        # Layer 4: 下部字幕 - 1920x1080用に調整
-        # 数珠つなぎロジック：current_timeの初期値をtitle_durationに設定
-        current_time = title_duration
-        
-        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
-            try:
-                part_type = part.get("part", "")
-                text = part.get("text", "")
-                if not text:
-                    continue
-
-                print(f"[DEBUG] Processing part {i}: {part_type} at time {current_time:.2f}")
-                print(f"[SYNC DEBUG] Part {i} - Audio duration: {duration:.2f}s, Current time: {current_time:.2f}s")
-                
-                # owner_commentの直前にブリッジ動画を挿入
-                if part_type == "owner_comment" and modulation_video_clip:
-                    print(f"[DEBUG] Inserting modulation video before owner_comment at time {current_time}")
-                    # ブリッジ動画をcurrent_timeの位置に配置
-                    modulation_video_clip = modulation_video_clip.with_start(current_time).with_duration(modulation_duration).with_position("center")
-                    # current_timeにmodulation_durationを加算
-                    current_time += modulation_duration
-                    print(f"[DEBUG] Adjusted owner_comment start time to: {current_time}")
-                
-                # 字幕クリップを作成（簡潔な均等分配方式）
-                try:
-                    chunks = split_subtitle_text(text, max_chars=100)
-                    chunk_count = len(chunks)
-                    
-                    if chunk_count > 0:
-                        # 音声の実測時間を均等に分配
-                        chunk_duration = duration / chunk_count
-                        print(f"[SUBTITLE] Part {i}: Audio {duration:.2f}s divided into {chunk_count} chunks = {chunk_duration:.2f}s each")
-                    else:
-                        chunk_duration = duration
-                    
-                    for chunk_idx, chunk in enumerate(chunks):
-                        # このパート内での相対時間
-                        chunk_start = chunk_idx * chunk_duration
-                        
-                        # テキストの先頭と末尾に余白を追加
-                        padded_chunk = f" {chunk} "
-                        
-                        txt_clip = TextClip(
-                            text=padded_chunk,
-                            font_size=48,
-                            color="black",
-                            method="caption",
-                            size=(1600, None),
-                            bg_color="white",
-                            text_align="left",
-                            stroke_color="black",
-                            stroke_width=1,
-                            font=font_path
-                        )
-                        
-                        # アニメーションを適用（フォールバック付き）
-                        try:
-                            txt_clip = subtitle_slide_scale_animation(txt_clip)
-                        except Exception as anim_error:
-                            print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
-                            txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
-                        
-                        # セグメント内の相対時間で配置
-                        txt_clip = txt_clip.with_start(chunk_start).with_duration(chunk_duration).with_opacity(1.0).with_fps(FPS)
-                        
-                        print(f"[SUBTITLE] Part {i}, Chunk {chunk_idx}: {chunk_start:.2f}s - {chunk_start + chunk_duration:.2f}s")
-                        
-                        # 生存確認ログ
-                        if hasattr(txt_clip, 'size') and txt_clip.size == (0, 0):
-                            print(f"[ERROR] Subtitle clip has invalid size (0,0), skipping")
-                            continue
-                        
-                        text_clips.append(txt_clip)
-                    
-                    # current_timeをこのパートの終了時間に更新
-                    current_time += duration
-                        
-                except Exception as e:
-                    print(f"[ERROR] Failed to create subtitle for part {i}: {e}")
-                    print(f"[DEBUG] Text: {text[:50]}...")
-                    print(f"[DEBUG] Font path: {font_path}")
-                    print(f"[DEBUG] Error type: {type(e).__name__}")
-                    print("Continuing without subtitle for this part...")
-                
-                # パート全体の時間をcurrent_timeに加算（字幕がない場合も）
-                if not text or len(text.strip()) == 0:
-                    current_time += duration
-                    print(f"[DEBUG] No text for part {i}, advancing time by {duration:.2f}s")
-                
-            except Exception as e:
-                print(f"Error creating subtitle for part {i}: {e}")
-                continue
 
         # 総合的な同期チェック
         print("=== FINAL SYNC ANALYSIS ===")
@@ -4266,44 +4137,6 @@ async def build_video_with_subtitles(
             # title_audio_durationを定義
             title_audio_duration = part_durations[0] if part_durations else title_duration
 
-            # 各パートの字幕チャンク情報を計算
-            # 新しい処理流れ：音声が存在するPartだけを処理
-            subtitle_chunks = {}
-            voice_index = 0  # 音声が存在するPartのインデックス
-            
-            for part in script_parts:
-                text = part.get("text", "")
-                if not text:
-                    continue
-                
-                # 音声が存在するか確認（part_durationsのインデックスと同期）
-                if voice_index >= len(part_durations):
-                    print(f"[SUBTITLE PREP] Skipping part - no audio available (voice_index: {voice_index}, part_durations: {len(part_durations)})")
-                    continue
-                
-                # text_parts_list_all[voice_index] は synthesize_precut_speech_voicevox() で
-                # 既に split_subtitle_text() と同じ分割になっている（完全1対1対応）
-                if text_parts_list_all and voice_index in text_parts_list_all:
-                    chunks = text_parts_list_all[voice_index]
-                    print(f"[SUBTITLE PREP] Voice {voice_index}: Using text_parts_list_all - {len(chunks)} chunks (synchronized with audio synthesis)")
-                else:
-                    # Fallback: 新しく分割を作成（通常は発生しない）
-                    print(f"[SUBTITLE PREP] Voice {voice_index}:WARNING - text_parts_list_all not found, using fallback split")
-                    chunks = split_subtitle_text(text, max_chars=120)
-                    print(f"[SUBTITLE PREP] Voice {voice_index}: Fallback split - {len(chunks)} chunks")
-
-                chunk_count = len(chunks)
-                chunk_duration = part_durations[voice_index] / chunk_count if chunk_count > 0 else part_durations[voice_index]
-
-                subtitle_chunks[voice_index] = {
-                    'chunks': chunks,
-                    'chunk_count': chunk_count,
-                    'chunk_duration': chunk_duration
-                }
-                print(f"[SUBTITLE PREP] Voice {voice_index}: {chunk_count} chunks × {chunk_duration:.2f}s each (audio duration: {part_durations[voice_index]:.2f}s)")
-                
-                voice_index += 1
-
             video = build_unified_timeline(
                 script_parts=script_parts,
                 part_durations=part_durations,
@@ -4318,10 +4151,9 @@ async def build_video_with_subtitles(
                 heading_clip=heading_clip,
                 font_path=font_path,
                 background_video=bg_clip,
-                subtitle_chunks=subtitle_chunks,
                 query_data_list_all=query_data_list_all,
                 text_parts_list_all=text_parts_list_all,
-                duration_list_all=duration_list_all  # ★ファイルベースdurationを追加
+                duration_list_all=duration_list_all
             )
 
             if video is None:
@@ -4424,6 +4256,13 @@ async def build_video_with_subtitles(
         for clip in text_clips:
             if clip:
                 clip.close()
+        # 既存のクリーンアップコード
+        for img_clip in image_clips:
+            if img_clip:
+                try:
+                    img_clip.close()
+                except:
+                    pass
         
         # 一時ファイルのクリーンアップ
         if 'bg_video_path' in locals() and bg_video_path and os.path.exists(bg_video_path):
@@ -4517,6 +4356,16 @@ def upload_to_youtube(
     return video_id
 
 
+def get_video_history_item(url: str) -> dict:
+    """DynamoDBから既存の動画履歴を取得"""
+    try:
+        table = dynamodb.Table(DDB_TABLE_NAME)
+        response = table.get_item(Key={"url": url})
+        return response.get("Item")
+    except Exception as e:
+        print(f"[WARNING] Failed to check existing video: {e}")
+        return None
+
 def put_video_history_item(item: Dict[str, Any]) -> None:
     """DynamoDB VideoHistory テーブルに put_item する。"""
     import decimal
@@ -4541,6 +4390,9 @@ def put_video_history_item(item: Dict[str, Any]) -> None:
 
 async def main() -> None:
     """ローカル/Actions 実行用エントリポイント。"""
+    # 画像キャッシュをリセット
+    reset_image_cache()  # 追加
+    
     # 一時ディレクトリを自動削除しないように変更
     tmpdir = tempfile.mkdtemp()
     print(f"[INFO] Using temporary directory: {tmpdir}")
@@ -4746,55 +4598,54 @@ async def main() -> None:
         raise
     
     finally:
-        # 一時フォルダ全体を強制的にクリーンアップ
-        import shutil
-        # DEBUG_MODEでもartifactsは保持するように変更
-        if DEBUG_MODE:
-            print("[DEBUG] DEBUG_MODE: Artifacts 転送のため一時ファイル削除をスキップします")
-        else:
-            # プロジェクトルートに生成された動画とサムネイルファイルを削除
-            try:
-                # クリップを明示的にクローズしてファイルハンドルを解放
-                if 'video' in locals() and hasattr(video, 'close'):
-                    try:
-                        video.close()
-                        print("[CLEANUP] Video clip closed")
-                    except:
-                        pass
-                    
-                if 'final_audio' in locals() and hasattr(final_audio, 'close'):
-                    try:
-                        final_audio.close()
-                        print("[CLEANUP] Final audio clip closed")
-                    except:
-                        pass
-                    
-                if 'bgm_clip' in locals() and hasattr(bgm_clip, 'close'):
-                    try:
-                        bgm_clip.close()
-                        print("[CLEANUP] BGM clip closed")
-                    except:
-                        pass
-                
-                video_file = "video.mp4"
-                thumbnail_file = "thumbnail.png"
-                
-                if os.path.exists(video_file):
-                    os.remove(video_file)
-                    print(f"[INFO] Removed video file: {video_file}")
-                
-                if os.path.exists(thumbnail_file):
-                    os.remove(thumbnail_file)
-                    print(f"[INFO] Removed thumbnail file: {thumbnail_file}")
-                        
-            except Exception as e:
-                print(f"[WARNING] Failed to remove project root files: {e}")
-        
         try:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-            print(f"[INFO] Cleaned up temporary directory: {tmpdir}")
+            if DEBUG_MODE:
+                print(f"[DEBUG] Preserving temp directory: {tmpdir}")
+                print(f"[DEBUG] Video: {video_path}")
+                print(f"[DEBUG] Thumbnail: {thumbnail_path}")
+            else:
+                # プロジェクトルートに生成された動画とサムネイルファイルを削除
+                try:
+                    # クリップを明示的にクローズしてファイルハンドルを解放
+                    if 'video' in locals() and hasattr(video, 'close'):
+                        try:
+                            video.close()
+                            print("[CLEANUP] Video clip closed")
+                        except:
+                            pass
+                    
+                    if 'final_audio' in locals() and hasattr(final_audio, 'close'):
+                        try:
+                            final_audio.close()
+                            print("[CLEANUP] Final audio clip closed")
+                        except:
+                            pass
+                    
+                    if 'bgm_clip' in locals() and hasattr(bgm_clip, 'close'):
+                        try:
+                            bgm_clip.close()
+                            print("[CLEANUP] BGM clip closed")
+                        except:
+                            pass
+                    
+                    video_file = "video.mp4"
+                    thumbnail_file = "thumbnail.png"
+                    
+                    if os.path.exists(video_file):
+                        os.remove(video_file)
+                        print(f"[INFO] Removed video file: {video_file}")
+                    
+                    if os.path.exists(thumbnail_file):
+                        os.remove(thumbnail_file)
+                        print(f"[INFO] Removed thumbnail file: {thumbnail_file}")
+                        
+                except Exception as e:
+                    print(f"[WARNING] Failed to remove project root files: {e}")
+                
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                print(f"[INFO] Cleaned up temporary directory: {tmpdir}")
         except Exception as e:
-            print(f"[WARNING] Failed to cleanup temp directory: {e}")
+            print(f"[WARNING] Failed to cleanup: {e}")
 
 
 if __name__ == "__main__":
