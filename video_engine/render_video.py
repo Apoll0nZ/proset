@@ -454,7 +454,9 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             start = item['start']
             composite_clips.append(clip.with_start(start))
 
-        # 最終的なCompositeVideoClipを作成
+        # 最終的なCompositeVideoClipを作成（durationチェック）
+        for c in composite_clips:
+            assert c.duration is not None, f"Clip without duration: {c}"
         final_video = CompositeVideoClip(composite_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
         final_video = final_video.with_duration(total_duration)
         print(f"[TIMELINE] Composite video created: {total_duration:.2f}s")
@@ -608,9 +610,10 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                 # アニメーション効果を追加
                 txt_clip = subtitle_slide_scale_animation(txt_clip)
 
-                # 絶対時間で配置
+                # 絶対時間で配置（y座標が負にならない対策）
+                y_pos = max(0, VIDEO_HEIGHT - 100)
                 txt_clip = txt_clip.with_start(absolute_chunk_start).with_duration(chunk_duration)
-                txt_clip = txt_clip.with_position(('center', VIDEO_HEIGHT - 100))
+                txt_clip = txt_clip.with_position(('center', y_pos))
 
                 subtitle_clips.append(txt_clip)
                 
@@ -4296,7 +4299,10 @@ async def build_video_with_subtitles(
         # DEBUG_MODE時も8Mbpsを強制する
         ffmpeg_params = ['-crf', '23', '-b:v', '8000k'] if not DEBUG_MODE else ['-crf', '28', '-preset', 'ultrafast', '-b:v', '8000k']
 
-        video.write_videofile(
+        # asyncio×moviepy相性対策：write_videofileをasyncio.to_threadで実行
+        import asyncio
+        await asyncio.to_thread(
+            video.write_videofile,
             out_video_path,
             fps=30,  # 30fps固定
             codec='libx264',
@@ -4312,6 +4318,18 @@ async def build_video_with_subtitles(
         )
         
         print("Video generation completed successfully")
+        
+        # tempディレクトリ削除タイミング対策：動画書き出し完了後にのみ削除
+        try:
+            if os.path.exists(LOCAL_TEMP_DIR):
+                files = [os.path.join(LOCAL_TEMP_DIR, name) for name in os.listdir(LOCAL_TEMP_DIR)]
+                if files:
+                    print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
+                shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
+                print(f"[INFO] Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
+                print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
+        except Exception as e:
+            print(f"Failed to cleanup image temp directory: {e}")
         
         # 最終フレームの書き出し
         try:
@@ -4719,17 +4737,6 @@ async def main() -> None:
             print(f"[INFO] Cleaned up temporary directory: {tmpdir}")
         except Exception as e:
             print(f"[WARNING] Failed to cleanup temp directory: {e}")
-        
-        try:
-            if os.path.exists(LOCAL_TEMP_DIR):
-                files = [os.path.join(LOCAL_TEMP_DIR, name) for name in os.listdir(LOCAL_TEMP_DIR)]
-                if files:
-                    print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
-                shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
-                print(f"[INFO] Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
-                print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
-        except Exception as e:
-            print(f"Failed to cleanup image temp directory: {e}")
 
 
 if __name__ == "__main__":
