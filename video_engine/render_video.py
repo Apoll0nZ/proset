@@ -221,23 +221,40 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         print(f"[TIMELINE] Building master timeline with title_duration={title_duration:.2f}s, title_audio_duration={title_audio_duration:.2f}s")
 
         modulation_start_time = title_duration + sum(
-            d for p, d in zip(script_parts, part_durations)
-            if p.get("part") not in ["title_video", "main_title", "owner_comment"]
+            d for i, (p, d) in enumerate(zip(script_parts, part_durations))
+            if p.get("part") not in ["title_video", "main_title", "owner_comment"] and p.get("text", "")
         )
         owner_comment_start_time = modulation_start_time + modulation_duration
 
         part_start_times: Dict[int, float] = {}
         time_cursor = title_duration
-        for idx, (part, duration) in enumerate(zip(script_parts, part_durations)):
+        voice_index = 0  # 音声が存在するPartのインデックス
+        
+        for part in script_parts:
             part_type = part.get("part")
+            text = part.get("text", "")
+            
             if part_type == "title_video":
-                part_start_times[idx] = 0.0
+                part_start_times[voice_index] = 0.0
                 continue
+                
+            if not text:
+                continue
+                
+            # 音声が存在するか確認
+            if voice_index >= len(part_durations):
+                print(f"[TIMELINE] Skipping start time calculation - no audio available (voice_index: {voice_index})")
+                break
+                
+            duration = part_durations[voice_index]
+            
             if part_type == "owner_comment":
-                part_start_times[idx] = owner_comment_start_time
+                part_start_times[voice_index] = owner_comment_start_time
             else:
-                part_start_times[idx] = time_cursor
+                part_start_times[voice_index] = time_cursor
+            
             time_cursor += duration
+            voice_index += 1
 
         # グローバルタイムラインの開始時刻を追跡
         current_video_time = 0.0
@@ -305,21 +322,36 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             })
 
         # ========== STAGE 5: 字幕生成（絶対時間のみ） ==========
-        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+        voice_index = 0  # 音声が存在するPartのインデックス
+        
+        for part in script_parts:
             if part.get("part") in ["title_video"]:
                 continue
-
+                
+            text = part.get("text", "")
+            if not text:
+                continue
+            
+            # 音声が存在するか確認
+            if voice_index >= len(part_durations):
+                print(f"[TIMELINE] Skipping subtitle for part - no audio available (voice_index: {voice_index})")
+                continue
+            
+            duration = part_durations[voice_index]
+            
             subs = create_subtitles_with_absolute_timing(
-                text=part.get("text", ""),
+                text=text,
                 duration=duration,
-                absolute_start_time=part_start_times.get(i, title_duration),
+                absolute_start_time=part_start_times.get(voice_index, title_duration),
                 font_path=font_path,
-                query_data_list=query_data_list_all.get(i),
-                text_parts_list=text_parts_list_all.get(i),
-                duration_list=duration_list_all.get(i),
+                query_data_list=query_data_list_all.get(voice_index),
+                text_parts_list=text_parts_list_all.get(voice_index),
+                duration_list=duration_list_all.get(voice_index),
             )
             for sc in subs:
                 all_clips_by_layer['subtitles'].append({'clip': sc})
+            
+            voice_index += 1
 
         total_duration = 0.0
 
@@ -485,15 +517,32 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # ナレーション音声（audio_clip）はパートごとに絶対時間で配置
         if audio_clip:
             audio_src_cursor = title_audio_duration
-            for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+            voice_index = 0  # 音声が存在するPartのインデックス
+            
+            for part in script_parts:
                 part_type = part.get("part", "")
+                text = part.get("text", "")
+                
                 if part_type in ["title_video"]:
                     continue
+                    
+                if not text:
+                    continue
+                
+                # 音声が存在するか確認
+                if voice_index >= len(part_durations):
+                    print(f"[TIMELINE] Skipping audio placement - no audio available (voice_index: {voice_index})")
+                    break
+                    
+                duration = part_durations[voice_index]
+                
                 if audio_src_cursor + duration > audio_clip.duration:
                     break
+                    
                 part_audio = audio_clip.subclipped(audio_src_cursor, audio_src_cursor + duration)
-                audio_elements.append(part_audio.with_start(part_start_times.get(i, title_duration)))
+                audio_elements.append(part_audio.with_start(part_start_times.get(voice_index, title_duration)))
                 audio_src_cursor += duration
+                voice_index += 1
 
         # BGM（main_titleから開始）
         if bgm_clip:
@@ -4218,33 +4267,42 @@ async def build_video_with_subtitles(
             title_audio_duration = part_durations[0] if part_durations else title_duration
 
             # 各パートの字幕チャンク情報を計算
-            # 新しい処理流れ：text_parts_list_all[i]は既に字幕チャンクと完全に同期
+            # 新しい処理流れ：音声が存在するPartだけを処理
             subtitle_chunks = {}
-            for i, part in enumerate(script_parts):
+            voice_index = 0  # 音声が存在するPartのインデックス
+            
+            for part in script_parts:
                 text = part.get("text", "")
                 if not text:
                     continue
-
-                # text_parts_list_all[i] は synthesize_precut_speech_voicevox() で
+                
+                # 音声が存在するか確認（part_durationsのインデックスと同期）
+                if voice_index >= len(part_durations):
+                    print(f"[SUBTITLE PREP] Skipping part - no audio available (voice_index: {voice_index}, part_durations: {len(part_durations)})")
+                    continue
+                
+                # text_parts_list_all[voice_index] は synthesize_precut_speech_voicevox() で
                 # 既に split_subtitle_text() と同じ分割になっている（完全1対1対応）
-                if text_parts_list_all and i in text_parts_list_all:
-                    chunks = text_parts_list_all[i]
-                    print(f"[SUBTITLE PREP] Part {i}: Using text_parts_list_all - {len(chunks)} chunks (synchronized with audio synthesis)")
+                if text_parts_list_all and voice_index in text_parts_list_all:
+                    chunks = text_parts_list_all[voice_index]
+                    print(f"[SUBTITLE PREP] Voice {voice_index}: Using text_parts_list_all - {len(chunks)} chunks (synchronized with audio synthesis)")
                 else:
                     # Fallback: 新しく分割を作成（通常は発生しない）
-                    print(f"[SUBTITLE PREP] Part {i}:WARNING - text_parts_list_all not found, using fallback split")
+                    print(f"[SUBTITLE PREP] Voice {voice_index}:WARNING - text_parts_list_all not found, using fallback split")
                     chunks = split_subtitle_text(text, max_chars=120)
-                    print(f"[SUBTITLE PREP] Part {i}: Fallback split - {len(chunks)} chunks")
+                    print(f"[SUBTITLE PREP] Voice {voice_index}: Fallback split - {len(chunks)} chunks")
 
                 chunk_count = len(chunks)
-                chunk_duration = part_durations[i] / chunk_count if chunk_count > 0 else part_durations[i]
+                chunk_duration = part_durations[voice_index] / chunk_count if chunk_count > 0 else part_durations[voice_index]
 
-                subtitle_chunks[i] = {
+                subtitle_chunks[voice_index] = {
                     'chunks': chunks,
                     'chunk_count': chunk_count,
                     'chunk_duration': chunk_duration
                 }
-                print(f"[SUBTITLE PREP] Part {i}: {chunk_count} chunks × {chunk_duration:.2f}s each (audio duration: {part_durations[i]:.2f}s)")
+                print(f"[SUBTITLE PREP] Voice {voice_index}: {chunk_count} chunks × {chunk_duration:.2f}s each (audio duration: {part_durations[voice_index]:.2f}s)")
+                
+                voice_index += 1
 
             video = build_unified_timeline(
                 script_parts=script_parts,
