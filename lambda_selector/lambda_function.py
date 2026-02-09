@@ -279,12 +279,39 @@ def build_topic_summary(entry: feedparser.FeedParserDict) -> str:
     return combined[:800]
 
 
-def normalize_url(entry: feedparser.FeedParserDict, fallback: str) -> str:
+def normalize_url(entry: feedparser.FeedParserDict, fallback: str) -> Optional[str]:
+    """
+    RSSエントリから記事URLを抽出する。フィードURLやRSSパスは除外し、有効なhttp(s)のみ返す。
+    Returns:
+        str: 正常な記事URL
+        None: 有効なURLが見つからない場合
+    """
     for key in ("link", "id", "guid"):
         value = entry.get(key)
-        if value:
-            return str(value)
-    return fallback
+        if not value:
+            continue
+
+        url = str(value).strip()
+
+        # フィードURLそのものは無効
+        if url == fallback:
+            print(f"[NORMALIZE] Skipping feed URL itself: {url}")
+            continue
+
+        # RSS/Atom/フィード系のパスを除外
+        invalid_patterns = ['.rss', '.xml', '/feed', '/rss', '/atom']
+        if any(pattern in url.lower() for pattern in invalid_patterns):
+            print(f"[NORMALIZE] Skipping feed-like URL: {url}")
+            continue
+
+        # http/https のみ許可
+        if url.startswith(("http://", "https://")):
+            return url
+
+        print(f"[NORMALIZE] Invalid URL scheme: {url}")
+
+    print(f"[NORMALIZE] No valid URL found for entry: {entry.get('title', 'Untitled')}")
+    return None
 
 
 def hash_text(value: str) -> str:
@@ -713,6 +740,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         entries = fetch_multiple_entries(feed_url, max_entries=15)
         for entry in entries:
             url = normalize_url(entry, feed_url)
+            
+            # 無効なURLはスキップ
+            if not url:
+                print(f"[SKIP] RSS entry without valid URL: {entry.get('title', 'Untitled')} (feed: {feed_url})")
+                continue
+
             topic_summary = build_topic_summary(entry)
             published_date = _extract_published(entry)
             
