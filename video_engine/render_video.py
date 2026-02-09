@@ -1099,7 +1099,7 @@ def subtitle_slide_scale_animation(clip):
     # 字幕の高さを推定（font_size=48の場合、約60-80px）
     estimated_subtitle_height = 100
     min_y = 100  # 上部マージン
-    max_y = VIDEO_HEIGHT - estimated_subtitle_height - 50  # 下部マージン
+    max_y = (VIDEO_HEIGHT // 2) - estimated_subtitle_height  # 画面中央までに制限
     
     base_y = random.randint(min_y, max_y)  # ランダムなY座標
     
