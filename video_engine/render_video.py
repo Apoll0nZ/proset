@@ -476,17 +476,31 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             
             owner_bg_end = owner_bg_start + (part_durations[owner_comment_voice_index] if owner_comment_voice_index is not None and owner_comment_voice_index < len(part_durations) else 0.0)
             
+            def ensure_bg_duration(base_clip, needed_duration: float):
+                """背景動画を必要時間までループして切り出す"""
+                if needed_duration <= 0:
+                    return None
+                if base_clip.duration is None or base_clip.duration <= 0:
+                    raise RuntimeError("Background clip has invalid duration")
+                if base_clip.duration >= needed_duration:
+                    return base_clip.subclipped(0, needed_duration)
+                # ループで埋める
+                num_loops = math.ceil(needed_duration / base_clip.duration)
+                from moviepy.video.compositing.concatenate import concatenate_videoclips
+                looped = concatenate_videoclips([base_clip] * num_loops)
+                return looped.subclipped(0, needed_duration)
+
             # メインパート用背景
             main_bg_duration = main_bg_end - main_bg_start
             if main_bg_duration > 0:
-                main_bg = clip.subclipped(0, main_bg_duration)
+                main_bg = ensure_bg_duration(clip, main_bg_duration)
                 composite_clips.append(main_bg.with_start(main_bg_start))
                 print(f"[BACKGROUND] Main background: {main_bg_duration:.2f}s from {main_bg_start:.2f}s to {main_bg_end:.2f}s")
             
             # owner_commentパート用背景
             owner_bg_duration = owner_bg_end - owner_bg_start
             if owner_bg_duration > 0:
-                owner_bg = clip.subclipped(0, owner_bg_duration)
+                owner_bg = ensure_bg_duration(clip, owner_bg_duration)
                 composite_clips.append(owner_bg.with_start(owner_bg_start))
                 print(f"[BACKGROUND] Owner background: {owner_bg_duration:.2f}s from {owner_bg_start:.2f}s to {owner_bg_end:.2f}s")
 
