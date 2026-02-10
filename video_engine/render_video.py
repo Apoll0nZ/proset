@@ -5,6 +5,7 @@ import tempfile
 import math
 import time
 import hashlib
+import shutil
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 import random
@@ -4391,7 +4392,9 @@ async def build_video_with_subtitles(
         if 'bg_video_path' in locals() and bg_video_path and os.path.exists(bg_video_path):
             try:
                 os.remove(bg_video_path)
-                os.rmdir(os.path.dirname(bg_video_path))
+                bg_dir = os.path.dirname(bg_video_path)
+                if bg_dir and os.path.isdir(bg_dir) and not os.listdir(bg_dir):
+                    os.rmdir(bg_dir)
                 print("Cleaned up temporary background video file")
             except Exception as e:
                 print(f"Failed to cleanup temporary file: {e}")
@@ -4399,7 +4402,9 @@ async def build_video_with_subtitles(
         if 'bgm_path' in locals() and bgm_path and os.path.exists(bgm_path):
             try:
                 os.remove(bgm_path)
-                os.rmdir(os.path.dirname(bgm_path))
+                bgm_dir = os.path.dirname(bgm_path)
+                if bgm_dir and os.path.isdir(bgm_dir) and not os.listdir(bgm_dir):
+                    os.rmdir(bgm_dir)
                 print("Cleaned up temporary BGM file")
             except Exception as e:
                 print(f"Failed to cleanup temporary BGM file: {e}")

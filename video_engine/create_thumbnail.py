@@ -178,8 +178,23 @@ def get_article_images(topic_summary: str, meta: Optional[Dict] = None, used_ima
             
             return None, None
         
-        # 非同期関数を実行
-        img1, img2 = asyncio.run(search_thumbnail_images())
+        # 非同期関数を実行（既存のイベントループがある場合は別スレッドで実行）
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop and running_loop.is_running():
+            import concurrent.futures
+
+            def _run_in_thread():
+                return asyncio.run(search_thumbnail_images())
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_in_thread)
+                img1, img2 = future.result()
+        else:
+            img1, img2 = asyncio.run(search_thumbnail_images())
         
     except Exception as e:
         print(f"[THUMBNAIL] Error in independent image search: {e}")
