@@ -7,10 +7,10 @@ sys.path.append(os.path.join(current_dir, "package"))
 
 import json
 import os
-import re
 import time
+import math
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import boto3
 import requests
@@ -288,16 +288,32 @@ def load_prompt_template() -> str:
 """
 
 
-def _build_prompt(template: str, article: Dict[str, Any]) -> str:
-    """プロンプトを構築 - replace方式でJSONの波括弧と衝突を回避"""
-    result = template
-    
-    # 記事情報を置換
-    result = result.replace("{{TITLE}}", article.get("title", ""))
-    result = result.replace("{{URL}}", article.get("url", ""))
-    result = result.replace("{{SUMMARY}}", article.get("summary", ""))
-    
-    return result
+def split_prompt_into_three(prompt_text: str) -> List[str]:
+    """
+    gemini_script_prompt.txt を意味解釈せず、順序保持で機械的に3分割する。
+    Gemini の負荷分散と暴走防止が目的。
+    """
+    length = len(prompt_text)
+    if length == 0:
+        return ["", "", ""]
+    chunk = math.ceil(length / 3)
+    return [
+        prompt_text[0:chunk],
+        prompt_text[chunk : 2 * chunk],
+        prompt_text[2 * chunk :],
+    ]
+
+
+def build_article_info_block(article: Dict[str, Any]) -> str:
+    """Gemini入力用の記事情報ブロック（URLを含めない）"""
+    title = article.get("title", "")
+    summary = article.get("summary", "")
+    body = article.get("body", "")
+    return "\n\n[記事情報]\nTITLE: {title}\nSUMMARY: {summary}\nBODY: {body}".format(
+        title=title,
+        summary=summary,
+        body=body,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -354,22 +370,41 @@ def lambda_handler(event, context):
     # プロンプトテンプレートを読み込み
     print("Loading prompt template...")
     prompt_template = load_prompt_template()
-    
-    # プロンプトを構築
-    print("Building prompt...")
-    prompt = _build_prompt(prompt_template, pending_article)
-    
-    # Geminiで台本を生成
-    print("Generating script with Gemini...")
-    response_text = call_gemini_generate_content(prompt)
-    if response_text is None:
-        raise RuntimeError("Gemini API から有効なレスポンスが得られませんでした")
 
-    # JSONを抽出
-    print("Extracting JSON from response...")
-    json_text = extract_json_text(response_text)
+    print("Splitting prompt into 3 parts (mechanical, no edits)...")
+    prompt_parts = split_prompt_into_three(prompt_template)
+
+    # 記事情報ブロックを作成（URLは含めない）
+    article_info_block = build_article_info_block(pending_article)
+
+    # Geminiを3回直列実行（独立・非共有）
+    step_outputs: List[str] = []
+    for idx, part in enumerate(prompt_parts, start=1):
+        print(f"[Gemini] STEP{idx}/3 - calling with isolated prompt part")
+        step_prompt = part + article_info_block
+        response_text = call_gemini_generate_content(step_prompt)
+        if response_text is None:
+            raise RuntimeError(f"Gemini STEP{idx} で有効なレスポンスが得られませんでした")
+        if len(response_text.strip()) < 200:
+            raise RuntimeError(f"Gemini STEP{idx} の出力が短すぎます")
+        step_outputs.append(response_text)
+
+    # 全STEP結果の検証
+    if len(step_outputs) != 3 or any(not txt for txt in step_outputs):
+        raise RuntimeError("STEP1〜3 のいずれかが空です")
+
+    # 連結（解析せず結合のみ）
+    combined_text = "".join(step_outputs)
+
+    # 安全チェック
+    if "example.com" in combined_text.lower():
+        raise RuntimeError("生成テキストに example.com が含まれています")
+
+    # JSONを抽出（生成結果を再解釈せず、存在しない場合は即失敗）
+    print("Extracting JSON from concatenated response...")
+    json_text = extract_json_text(combined_text)
     if json_text is None:
-        raise RuntimeError("Gemini レスポンスから JSON ブロックを抽出できませんでした")
+        raise RuntimeError("Gemini 連結結果から JSON ブロックを抽出できませんでした")
 
     # JSONをパース
     print("Parsing generated script...")
@@ -378,13 +413,22 @@ def lambda_handler(event, context):
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"生成された JSON の解析に失敗しました: {exc}") from exc
 
-    # メタ情報を追加
-    script_payload.setdefault("meta", {})
-    script_payload["meta"].update({
-        "source_url": pending_article.get("url"),
+    # メタ情報を上書き（Gemini出力は使用しない）
+    script_payload["meta"] = {
+        "url": pending_article.get("url"),
+        "source": pending_article.get("source", ""),
         "selected_at": pending_article.get("selected_at"),
         "written_at": _iso_now(),
-    })
+    }
+
+    if not script_payload["meta"]["url"]:
+        raise RuntimeError("meta.url が空です（pending記事から取得できませんでした）")
+
+    # topic_summary が欠落している場合はpending記事のsummaryで補完
+    content_obj = script_payload.get("content", {}) or {}
+    if not content_obj.get("topic_summary"):
+        content_obj["topic_summary"] = pending_article.get("summary", "")
+        script_payload["content"] = content_obj
 
     # 台本を保存
     filename = f"script_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{pending_article.get('content_hash', 'unknown')[:8]}.json"
