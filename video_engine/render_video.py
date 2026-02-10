@@ -308,33 +308,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 print(f"[TIMELINE] Found owner_comment at script_parts index: {i} (voice_index={owner_comment_voice_index})")
                 break
 
-        # メインコンテンツのパートを特定（reaction/owner_commentの直前まで）
-        main_content_parts: List[int] = []
-        reaction_start_voice_index = None
-        for voice_idx in valid_voice_parts:
-            part_type = part_type_for_voice_index(voice_idx)
-            if not part_type:
-                print(f"[TIMELINE] Unknown part_type for voice_index={voice_idx}, skipping")
-                continue
-            if part_type == "reaction":
-                reaction_start_voice_index = voice_idx
-                print(f"[TIMELINE] Reaction starts at voice_index={voice_idx}")
-                break
-            if part_type == "owner_comment":
-                print(f"[TIMELINE] Owner comment reached at voice_index={voice_idx}")
-                break
-            main_content_parts.append(voice_idx)
-
-        # modulation開始時間 = title終了 + メインコンテンツ（reaction/owner_comment直前まで）
-        if main_content_parts:
-            modulation_start_time = title_duration + sum(
-                get_part_duration(voice_idx) for voice_idx in main_content_parts
-            )
-            print("[DEBUG] Modulation calculation:")
-            print(f"  - Main content parts (voice indices): {main_content_parts}")
-            print(f"  - Main content part types: {[part_type_for_voice_index(i) for i in main_content_parts]}")
-            print(f"  - Modulation starts at: {modulation_start_time:.2f}s")
-        elif owner_comment_voice_index is not None:
+        # modulation開始時間 = title終了 + owner_comment直前まで（reaction含む）
+        if owner_comment_voice_index is not None:
             # フォールバック: owner_commentの直前まで
             modulation_start_time = title_duration + sum(
                 get_part_duration(voice_idx)
@@ -1639,7 +1614,6 @@ def process_background_video_for_hd(bg_path: str, total_duration: float):
                 
                 # ループを作成
                 loop_clips = [bg_clip] * num_loops
-                from moviepy.video.compositing.concatenate import concatenate_videoclips
                 bg_clip = concatenate_videoclips(loop_clips)
                 
                 # 最終的な長さにぴったりトリミング
@@ -1750,6 +1724,19 @@ def reset_image_cache():
     _used_image_paths = []
     _latest_image_schedule = []
     print("[INFO] Image cache reset")
+
+def cleanup_local_temp_dir() -> None:
+    """LOCAL_TEMP_DIRを削除（サムネイル生成後に実行）"""
+    try:
+        if os.path.exists(LOCAL_TEMP_DIR):
+            files = [os.path.join(LOCAL_TEMP_DIR, name) for name in os.listdir(LOCAL_TEMP_DIR)]
+            if files:
+                print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
+            shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
+            print(f"[INFO] Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
+            print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
+    except Exception as e:
+        print(f"Failed to cleanup image temp directory: {e}")
 
 def get_image_hash(image_path: str) -> str:
     """画像ファイルのハッシュ値を計算"""
@@ -4051,7 +4038,7 @@ async def build_video_with_subtitles(
                     "segment_end": seg_end,
                 })
                 images_scheduled += 1
-                print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={actual_image_duration + 0.5}s")
+                print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={actual_image_duration + FADE_BUFFER}s")
             
             print(f"[DEBUG] Scheduled {images_scheduled} images for segment {i}")
             
@@ -4083,16 +4070,11 @@ async def build_video_with_subtitles(
             # セグメント開始時刻を更新（次セグメント用）
             segment_start_time += duration
 
-            # 60枚に達した場合は残りのセグメント処理をスキップして動画合成へ
+            # 60枚に達した場合でも、以降のセグメントは既存プールで回す（スケジュールは継続）
             if total_images_collected >= 60:
                 remaining_segments = len(script_parts) - i - 1
                 if remaining_segments > 0:
-                    print(f"[INFO] 画像収集完了（60枚）。残り{remaining_segments}セグメントの処理をスキップして動画合成を開始します")
-                    # 残りのセグメントの時間分をcurrent_image_timeに加算して時間の飛びを防ぐ
-                    for j in range(i + 1, len(script_parts)):
-                        if j < len(part_durations):
-                            current_image_time += part_durations[j]
-                    break
+                    print(f"[INFO] 画像収集完了（60枚）。残り{remaining_segments}セグメントは既存プールでスケジュールを継続します")
 
         if not image_schedule:
             print("[WARNING] No images were scheduled for any segment")
@@ -4482,17 +4464,8 @@ async def build_video_with_subtitles(
         if not os.path.exists(out_video_path):
             raise FileNotFoundError(f"Video file not created: {out_video_path}")
         
-        # tempディレクトリ削除タイミング対策：動画書き出し完了後にのみ削除
-        try:
-            if os.path.exists(LOCAL_TEMP_DIR):
-                files = [os.path.join(LOCAL_TEMP_DIR, name) for name in os.listdir(LOCAL_TEMP_DIR)]
-                if files:
-                    print(f"[DEBUG] 今からファイルを削除します: {', '.join(files)}")
-                shutil.rmtree(LOCAL_TEMP_DIR, ignore_errors=True)
-                print(f"[INFO] Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
-                print(f"Cleaned up image temp directory: {LOCAL_TEMP_DIR}")
-        except Exception as e:
-            print(f"Failed to cleanup image temp directory: {e}")
+        # NOTE: サムネイル生成に画像を再利用するため、ここではtemp削除しない
+        print("[INFO] Temp cleanup deferred until after thumbnail generation")
         
         # 最終フレームの書き出し
         try:
@@ -4748,24 +4721,45 @@ async def main() -> None:
         print("Generating thumbnail...")
         workspace_root = os.environ.get('GITHUB_WORKSPACE', '.')
         thumbnail_path = os.path.join(workspace_root, "thumbnail.png")
-        try:
-            selected_images = select_images_from_video(_latest_image_schedule, S3_BUCKET)
-            if len(selected_images) < 2:
-                print("[WARNING] 動画から十分な画像を取得できませんでした。Bing検索にフォールバックします。")
-            create_thumbnail(
-                title=title,
-                topic_summary=topic_summary,
-                thumbnail_data=thumbnail_data,
-                output_path=thumbnail_path,
-                meta=meta,
-                used_image_paths=selected_images,
-            )
-            print(f"[SUCCESS] サムネイル生成完了: {thumbnail_path}")
-        except Exception as e:
-            import traceback
-            print(f"[ERROR] サムネイル生成中に致命的なエラーが発生しました:")
-            print(traceback.format_exc())
-            thumbnail_path = None
+        thumbnail_success = False
+        thumbnail_error = None
+        max_thumbnail_retries = 3
+
+        for attempt in range(1, max_thumbnail_retries + 1):
+            try:
+                print(f"[THUMBNAIL] Attempt {attempt}/{max_thumbnail_retries}")
+                selected_images = select_images_from_video(_latest_image_schedule, S3_BUCKET)
+                if len(selected_images) < 2:
+                    print("[WARNING] 動画から十分な画像を取得できませんでした。Bing検索にフォールバックします。")
+
+                create_thumbnail(
+                    title=title,
+                    topic_summary=topic_summary,
+                    thumbnail_data=thumbnail_data,
+                    output_path=thumbnail_path,
+                    meta=meta,
+                    used_image_paths=selected_images,
+                    require_images=True,
+                    max_image_retries=3,
+                )
+
+                if not os.path.exists(thumbnail_path):
+                    raise FileNotFoundError(f"Thumbnail not created: {thumbnail_path}")
+
+                print(f"[SUCCESS] サムネイル生成完了: {thumbnail_path}")
+                thumbnail_success = True
+                break
+            except Exception as e:
+                thumbnail_error = e
+                print(f"[ERROR] サムネイル生成失敗 (attempt {attempt}/{max_thumbnail_retries}): {e}")
+
+        # サムネイル生成に失敗した場合は処理を中断
+        if not thumbnail_success:
+            cleanup_local_temp_dir()
+            raise RuntimeError("Thumbnail generation failed after retries") from thumbnail_error
+
+        # サムネイル生成後にtempを削除
+        cleanup_local_temp_dir()
 
             # 4.5. 成果物をカレントディレクトリにコピー（GitHub Actions用）
         print("Copying artifacts to current directory for GitHub Actions...")
