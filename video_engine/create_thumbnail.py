@@ -86,6 +86,106 @@ def download_image(url: str, max_size: tuple = (640, 480)) -> Optional[Image.Ima
         return None
 
 
+def calculate_image_score(image_path: str) -> int:
+    """画像のスコアを計算（サムネイル優先度の簡易判定）"""
+    score = 0
+    basename = os.path.basename(image_path).lower()
+
+    # キーワードスコア
+    if 'iphone' in basename or 'apple' in basename:
+        score += 5
+    if any(kw in basename for kw in ['product', 'official', 'device', 'pro']):
+        score += 3
+
+    # ファイルサイズスコア
+    try:
+        file_size = os.path.getsize(image_path)
+        if file_size > 200_000:
+            score += 3
+        elif file_size > 100_000:
+            score += 2
+    except Exception:
+        pass
+
+    return score
+
+
+def select_images_from_video(image_schedule: List[Dict], s3_bucket: str = None) -> List[str]:
+    """
+    動画で使用した画像から上位2枚を選択
+
+    優先順位:
+    1. ローカルに存在する画像
+    2. S3から画像をダウンロード
+    3. 空リストを返す（フォールバックへ）
+    """
+    if not image_schedule:
+        return []
+
+    temp_dir = os.path.join(os.path.dirname(__file__), "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # ステップ1: ローカルファイルをチェック
+    scored_images = []
+    for item in image_schedule:
+        path = item.get('path', '')
+        if not path:
+            continue
+
+        local_path = path if os.path.isabs(path) else os.path.join(temp_dir, os.path.basename(path))
+        if os.path.exists(local_path):
+            score = calculate_image_score(local_path)
+            scored_images.append((score, local_path))
+
+    # スコア順にソート
+    scored_images.sort(reverse=True, key=lambda x: x[0])
+    local_images = [img[1] for img in scored_images[:2]]
+
+    if len(local_images) >= 2:
+        print(f"[SUCCESS] Found {len(local_images)} local images for thumbnail")
+        return local_images
+
+    # ステップ2: S3から画像をダウンロード
+    if s3_bucket:
+        print(f"[INFO] Downloading images from S3 (need {2 - len(local_images)} more)...")
+        try:
+            import boto3
+            s3_client = boto3.client('s3')
+
+            for item in image_schedule[:10]:  # 上位10件を試行
+                if len(local_images) >= 2:
+                    break
+
+                path = item.get('path', '')
+                if not path:
+                    continue
+
+                filename = os.path.basename(path)
+                s3_key = f"temp/{filename}"
+                local_path = os.path.join(temp_dir, f"thumbnail_{filename}")
+
+                # 既にローカルにある場合はスキップ
+                if os.path.exists(local_path):
+                    local_images.append(local_path)
+                    continue
+
+                try:
+                    s3_client.download_file(s3_bucket, s3_key, local_path)
+                    if os.path.exists(local_path):
+                        local_images.append(local_path)
+                        print(f"[S3] Downloaded: {s3_key}")
+                except Exception as e:
+                    print(f"[S3] Download failed for {s3_key}: {e}")
+                    continue
+        except Exception as e:
+            print(f"[ERROR] S3 client initialization failed: {e}")
+
+    if local_images:
+        print(f"[SUCCESS] Using {len(local_images)} images for thumbnail")
+
+    return local_images[:2]
+
+
 def create_dark_blue_background(width: int, height: int) -> Image.Image:
     """ダークブルー (#1a1a2e) の背景画像を生成"""
     color = (26, 26, 46)  # #1a1a2e in RGB
@@ -256,6 +356,11 @@ def get_article_images(topic_summary: str, meta: Optional[Dict] = None, used_ima
         for path in image_paths:
             if path in used_paths:
                 continue  # 既に使用済みのパスはスキップ
+
+            # 画像が削除済みの場合は除外
+            if not os.path.exists(path):
+                print(f"[WARNING] Image file does not exist (already deleted): {path}")
+                continue
             
             score = get_domain_score(path)
             # 同点の場合はランダム性を加える
