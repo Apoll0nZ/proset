@@ -7,6 +7,7 @@ sys.path.append(os.path.join(current_dir, "package"))
 
 import json
 import os
+import re
 import time
 import math
 from datetime import datetime, timezone
@@ -33,6 +34,42 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_EVENT_TYPE = os.environ.get("GITHUB_EVENT_TYPE", "generate_video")
 
 # -----------------------------------------------------------------------------
+# バリデーション（30行目付近に追加）
+# -----------------------------------------------------------------------------
+def is_valid_article_url(url: str) -> bool:
+    """
+    記事URLの妥当性を検証
+
+    Returns:
+        True: 有効な記事URL
+        False: 無効なURL（プレースホルダー、フィードURLなど）
+    """
+    if not url:
+        print("[VALIDATION] URL is empty")
+        return False
+
+    url_lower = url.lower()
+
+    # プレースホルダーURLを除外
+    if "example.com" in url_lower or "placeholder" in url_lower:
+        print(f"[VALIDATION] Rejected placeholder URL: {url}")
+        return False
+
+    # フィードURLパターンを除外
+    invalid_patterns = [".rss", ".xml", "/feed/", "/rss/", "/atom/"]
+    if any(pattern in url_lower for pattern in invalid_patterns):
+        print(f"[VALIDATION] Rejected feed-like URL: {url}")
+        return False
+
+    # 有効なHTTP(S) URLのみ許可
+    if not url.startswith(("http://", "https://")):
+        print(f"[VALIDATION] Rejected non-HTTP URL: {url}")
+        return False
+
+    print(f"[VALIDATION] URL is valid: {url}")
+    return True
+
+# -----------------------------------------------------------------------------
 # AWS クライアント
 # -----------------------------------------------------------------------------
 s3_client = boto3.client("s3", region_name=AWS_REGION)
@@ -48,31 +85,120 @@ def _ensure_trailing_slash(value: str) -> str:
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+# -----------------------------------------------------------------------------
+# プロンプト分割（Gemini負荷軽減）
+# -----------------------------------------------------------------------------
+def _split_prompt_with_roles(template: str, article: Dict[str, Any]) -> List[Dict[str, str]]:
+    """
+    プロンプトを3つの役割に分割し、Geminiの負荷を軽減
+    
+    各ステップは独立したJSONを生成し、最後にマージする
+    
+    Returns:
+        [
+            {"role": "metadata", "prompt": "..."},
+            {"role": "script", "prompt": "..."},
+            {"role": "thumbnail", "prompt": "..."}
+        ]
+    """
+    # 記事情報を整形
+    title = article.get("title", "タイトル不明")
+    url = article.get("url", "")
+    summary = article.get("summary", "要約なし")
 
-def is_valid_article_url(url: str) -> bool:
-    """記事URLの妥当性を検証"""
-    if not url:
-        return False
+    # 共通の記事情報
+    base_info = f"""
+【記事情報】
+- タイトル: {title}
+- URL: {url}
+- 要約: {summary}
 
-    url_lower = url.lower()
+【重要な禁止事項】
+- example.com のようなプレースホルダーURLは絶対に使用しないでください
+- 架空の情報を含めないでください
+- 記事の内容に基づいた事実のみを記述してください
+"""
 
-    # プレースホルダーURLを除外
-    if "example.com" in url_lower or "placeholder" in url_lower:
-        print(f"[VALIDATION] Rejected placeholder URL: {url}")
-        return False
+    return [
+        # STEP 1: メタデータ生成
+        {
+            "role": "metadata",
+            "prompt": f"""{base_info}
 
-    # RSS/フィード系のURLパターンを除外
-    invalid_patterns = [".rss", ".xml", "/feed", "/rss", "/atom"]
-    if any(pat in url_lower for pat in invalid_patterns):
-        print(f"[VALIDATION] Rejected feed-like URL: {url}")
-        return False
+【STEP 1/3: メタデータ生成】
+YouTube動画のタイトルと説明文を生成してください。
 
-    # http(s) のみ許可
-    if not url.startswith(("http://", "https://")):
-        print(f"[VALIDATION] Rejected non-HTTP URL: {url}")
-        return False
+以下のJSON形式**のみ**で出力してください（説明文は不要）：
 
-    return True
+{{
+  "title": "YouTube動画タイトル（50-60文字、記事の核心を端的に）",
+  "description": "動画説明文（150-200文字、記事の要点を簡潔に）"
+}}
+
+重要: 
+- タイトルは視聴者の興味を引く具体的な内容にする
+- 説明文は記事の主要なポイントを3つ程度含める
+- JSONのみを出力し、前後に説明を付けない
+"""
+        },
+
+        # STEP 2: スクリプト生成（最も重要）
+        {
+            "role": "script",
+            "prompt": f"""{base_info}
+
+【STEP 2/3: 台本コンテンツ生成】
+動画の本編となるナレーション台本を生成してください。
+
+以下のJSON形式**のみ**で出力してください：
+
+{{
+  "content": {{
+    "topic_summary": "トピックの要約（100文字程度、記事の核心を1文で）",
+    "script_parts": [
+      {{"part": "article_1", "text": "導入部分（100-150文字）", "speaker_id": 1}},
+      {{"part": "article_2", "text": "本題解説1（200-300文字）", "speaker_id": 1}},
+      {{"part": "article_3", "text": "本題解説2（200-300文字）", "speaker_id": 1}},
+      {{"part": "article_4", "text": "詳細解説（200-300文字）", "speaker_id": 1}},
+      {{"part": "reaction", "text": "ネットの反応・コメント（150-200文字）", "speaker_id": 2}},
+      {{"part": "owner_comment", "text": "まとめコメント（100-150文字）", "speaker_id": 3}}
+    ]
+  }}
+}}
+
+重要なルール:
+1. script_partsは**必ず6つ以上8つ以下**のパートを含めてください
+2. 各パートは具体的な情報を含み、単なる繋ぎの文は避けてください
+3. article_1から順に論理的な流れを作ってください
+4. speaker_id: 1=メインナレーター, 2=サブ解説, 3=まとめ
+5. JSONのみを出力し、前後に説明を付けない
+"""
+        },
+
+        # STEP 3: サムネイル情報
+        {
+            "role": "thumbnail",
+            "prompt": f"""{base_info}
+
+【STEP 3/3: サムネイル情報生成】
+YouTube動画のサムネイル用テキストを生成してください。
+
+以下のJSON形式**のみ**で出力してください：
+
+{{
+  "thumbnail": {{
+    "title": "サムネイルタイトル（15-20文字、インパクト重視）",
+    "subtitle": "サブタイトル（20-30文字、補足情報）"
+  }}
+}}
+
+重要:
+- titleは視聴者の目を引く短いフレーズ
+- subtitleは製品名や具体的な数値を含める
+- JSONのみを出力し、前後に説明を付けない
+"""
+        }
+    ]
 
 
 # -----------------------------------------------------------------------------
@@ -143,14 +269,37 @@ def call_gemini_generate_content(prompt: str) -> Optional[str]:
 
 
 def extract_json_text(response_text: str) -> Optional[str]:
-    """GeminiのレスポンスからJSON部分を抽出"""
+    """GeminiのレスポンスからJSON部分を抽出（改良版）"""
+    import re
+
+    # Markdownコードブロックを除去
+    if "```json" in response_text:
+        match = re.search(r'```json\s*\n(.*?)\n```', response_text, re.DOTALL)
+        if match:
+            response_text = match.group(1)
+    elif "```" in response_text:
+        match = re.search(r'```\s*\n(.*?)\n```', response_text, re.DOTALL)
+        if match:
+            response_text = match.group(1)
+
+    # 最初の { から最後の } までを抽出
     start = response_text.find("{")
     end = response_text.rfind("}")
-    
-    if start != -1 and end != -1 and end > start:
-        return response_text[start : end + 1].strip()
 
-    print("Failed to locate JSON block in Gemini response")
+    if start != -1 and end != -1 and end > start:
+        json_text = response_text[start : end + 1].strip()
+
+        # バリデーション: パース可能かテスト
+        try:
+            json.loads(json_text)
+            return json_text
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] Extracted text is not valid JSON: {e}")
+            print(f"[DEBUG] First 500 chars: {json_text[:500]}")
+            return None
+
+    print("[ERROR] Could not find valid JSON structure in response")
+    print(f"[DEBUG] Response (first 500 chars): {response_text[:500]}")
     return None
 
 
@@ -316,6 +465,16 @@ def build_article_info_block(article: Dict[str, Any]) -> str:
     )
 
 
+def contains_example_dot_com(value: Any) -> bool:
+    if isinstance(value, str):
+        return "example.com" in value.lower()
+    if isinstance(value, dict):
+        return any(contains_example_dot_com(v) for v in value.values())
+    if isinstance(value, list):
+        return any(contains_example_dot_com(v) for v in value)
+    return False
+
+
 # -----------------------------------------------------------------------------
 # メイン処理
 # -----------------------------------------------------------------------------
@@ -378,7 +537,13 @@ def lambda_handler(event, context):
     article_info_block = build_article_info_block(pending_article)
 
     # Geminiを3回直列実行（独立・非共有）
-    step_outputs: List[str] = []
+    merged_script: Dict[str, Any] = {}
+    step_key_whitelist = {
+        1: ["title", "description"],
+        2: ["content"],
+        3: ["thumbnail"],
+    }
+
     for idx, part in enumerate(prompt_parts, start=1):
         print(f"[Gemini] STEP{idx}/3 - calling with isolated prompt part")
         step_prompt = part + article_info_block
@@ -387,31 +552,40 @@ def lambda_handler(event, context):
             raise RuntimeError(f"Gemini STEP{idx} で有効なレスポンスが得られませんでした")
         if len(response_text.strip()) < 200:
             raise RuntimeError(f"Gemini STEP{idx} の出力が短すぎます")
-        step_outputs.append(response_text)
+        if "example.com" in response_text.lower():
+            raise RuntimeError(f"Gemini STEP{idx} の出力に example.com が含まれています")
 
-    # 全STEP結果の検証
-    if len(step_outputs) != 3 or any(not txt for txt in step_outputs):
-        raise RuntimeError("STEP1〜3 のいずれかが空です")
+        # JSONを抽出
+        print(f"[Gemini] STEP{idx}/3 - extracting JSON")
+        json_text = extract_json_text(response_text)
+        if json_text is None:
+            raise RuntimeError(f"STEP{idx} のレスポンスから JSON を抽出できませんでした")
 
-    # 連結（解析せず結合のみ）
-    combined_text = "".join(step_outputs)
+        # JSONをパース
+        try:
+            part_data = json.loads(json_text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"STEP{idx} の JSON 解析に失敗しました: {exc}") from exc
 
-    # 安全チェック
-    if "example.com" in combined_text.lower():
-        raise RuntimeError("生成テキストに example.com が含まれています")
+        # ステップごとの役割に合わせて必要キーのみ採用
+        allowed_keys = step_key_whitelist.get(idx, [])
+        filtered = {k: part_data.get(k) for k in allowed_keys if k in part_data}
+        if len(filtered) != len(allowed_keys):
+            missing = [k for k in allowed_keys if k not in filtered]
+            raise RuntimeError(f"STEP{idx} で必要なキーが不足しています: {missing}")
 
-    # JSONを抽出（生成結果を再解釈せず、存在しない場合は即失敗）
-    print("Extracting JSON from concatenated response...")
-    json_text = extract_json_text(combined_text)
-    if json_text is None:
-        raise RuntimeError("Gemini 連結結果から JSON ブロックを抽出できませんでした")
+        merged_script.update(filtered)
 
-    # JSONをパース
-    print("Parsing generated script...")
-    try:
-        script_payload = json.loads(json_text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"生成された JSON の解析に失敗しました: {exc}") from exc
+    # マージ結果の検証
+    required_keys = ["title", "description", "content", "thumbnail"]
+    missing_keys = [key for key in required_keys if key not in merged_script]
+    if missing_keys:
+        raise RuntimeError(f"台本に必須項目が不足しています: {missing_keys}")
+
+    if contains_example_dot_com(merged_script):
+        raise RuntimeError("生成結果に example.com が含まれています")
+
+    script_payload = merged_script
 
     # メタ情報を上書き（Gemini出力は使用しない）
     script_payload["meta"] = {
