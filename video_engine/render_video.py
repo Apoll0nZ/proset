@@ -3858,7 +3858,10 @@ async def build_video_with_subtitles(
             
             # 実際の1枚あたり表示時間を計算（最低7秒を保証）
             if num_images_to_use > 0:
-                actual_image_duration = max(available_time / num_images_to_use, min_duration)
+                actual_image_duration = max(
+                    available_time / num_images_to_use,
+                    min_duration
+                )
             else:
                 actual_image_duration = min_duration
             
