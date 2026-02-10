@@ -35,29 +35,41 @@
 - 【独自表現】ソースのコピペ厳禁。独自の論評を加え再利用コンテンツポリシーを回避せよ。
 - 【分量】トータル3,000文字〜4,500文字以上の圧倒的ボリュームを必ず確保せよ。
 
-### 🚨 出力フォーマット (JSON形式厳守)
+### 🚨 メタ情報に関する絶対ルール（重要）
+- meta.url は必須項目である
+- meta.url には、必ず [事実ソース] として与えられた記事のURLをそのまま記載せよ
+- source_url / article_url など、url 以外のキー名を絶対に使用してはならない
+- meta.url が存在しない JSON は不正な出力とみなされる
+
+### 🚨 出力フォーマット（JSON形式厳守）
 {
-  "title": "（IT・テクノロジーニュースとして視聴者の知的好奇心を刺激するタイトル。『【速報】』は全体の20%以下に抑え、『【企業名/製品名】詳細レビュー』『【技術解説】〜の仕組み』『【衝撃】Appleの次なる一手』など固有名詞を必ず含むバリエーションで）",
-  "description": "■関連商品リンク\n動画で紹介した関連商品はこちらからご購入いただけます：\nhttps://amzn.to/3O0LpGl ・iPhone17\nhttps://amzn.to/4kxYu67 ・MacBook Pro\nhttps://amzn.to/3MbSqUe ・MacBook Air\nhttps://amzn.to/45OmGv2 ・Pixel 10\nhttps://amzn.to/4rCskZy ・RTX 5090\n\n（技術的意義を凝縮した概要文）\n\nIT・ガジェット系のニュースをお届けします。\n■動画の内容について\n動画のシナリオ内容は分かりやすくするために再構成・改変を行い、独自コンテンツになるように工夫しております。なお、誹謗中傷並びに著作権侵害を目的としておりません。\n\n■YouTube のチャンネル収益化ポリシーについて\nこの動画は掲示板スレッドをモチーフとし、再構成・改変を行ったオリジナルコンテンツです。BGMや効果音で演出を加え、繰り返しの多いコンテンツにならないように制作しております。動画内で使用しているイラスト・BGM等は、フリー素材も含まれるため他チャンネルでも使用されていますが、再利用ではありません。\n\n当チャンネルはアフィリエイトプログラムによる収益を得ています。\n当チャンネルはAmazon.co.jpを宣伝しリンクすることによって紹介料を獲得できる手段を提供することを目的に設定されたアフィリエイトプログラムである、Amazonアソシエイト・プログラムの参加者です。",
-  "thumbnail": { "main_text": "（10字以上で内容の分かる強いフレーズ）", "sub_texts": ["（煽り1個）"] },
+  "title": "（固有名詞を含む、知的好奇心を刺激するタイトル）",
+  "description": "■関連商品リンク\n動画で紹介した関連商品はこちらからご購入いただけます：\nhttps://amzn.to/3O0LpGl ・iPhone17\nhttps://amzn.to/4kxYu67 ・MacBook Pro\nhttps://amzn.to/3MbSqUe ・MacBook Air\nhttps://amzn.to/45OmGv2 ・Pixel 10\nhttps://amzn.to/4rCskZy ・RTX 5090\n\n（技術的意義を凝縮した概要文）\n\nIT・ガジェット系のニュースをお届けします。\n■動画の内容について\n動画のシナリオ内容は分かりやすくするために再構成・改変を行い、独自コンテンツになるように工夫しております。なお、誹謗中傷並びに著作権侵害を目的としておりません。\n\n■YouTube のチャンネル収益化ポリシーについて\n（以下略・原文維持）",
+  "thumbnail": {
+    "main_text": "（10字以上の強いフレーズ）",
+    "sub_texts": ["（煽り文言1つ）"]
+  },
   "content": {
     "topic_summary": "（事実・分析・本音の要約）",
     "script_parts": [
-      { "part": "article_fact", "speaker_id": 3, "text": "（①事実報道）" },
-      { "part": "article_analysis_1", "speaker_id": 3, "text": "（②分析：400文字以上）" },
-      { "part": "article_analysis_2", "speaker_id": 3, "text": "（②分析：400文字以上）" },
-      /* 反応パート：20個以上連続生成 */
-      { "part": "reaction", "speaker_id": 3を除いた2,8,10,12,13,14の内ランダムに選んだ数, "text": "（技術的指摘等：30-80文字）" }
-      /* 投稿者の本音感想パート:最後に必ず1つだけ追加 */
-      { "part": "owner_comment", "speaker_id": 3, "text": "（今回の件について、ガジェ丸はこう考えている。……で始まる400〜700文字の総括）" }
+      { "part": "article_fact", "speaker_id": 3, "text": "（事実報道）" },
+      { "part": "article_analysis_1", "speaker_id": 3, "text": "（分析：400文字以上）" },
+      { "part": "article_analysis_2", "speaker_id": 3, "text": "（分析：400文字以上）" },
+      { "part": "reaction", "speaker_id": 2|8|10|12|13|14, "text": "（反応）" },
+      { "part": "owner_comment", "speaker_id": 3, "text": "（今回の件について、ガジェ丸はこう考えている。…で始まる総括）" }
     ]
+  },
+  "meta": {
+    "url": "（必ず事実ソースの記事URLをそのまま記載）",
+    "source": "（媒体名）",
+    "selected_at": "（ISO8601形式）",
+    "written_at": "（ISO8601形式）"
   }
 }
 
 ### 入力データ
-[事実ソース] {title_A} / {summary_A}
+[事実ソース] {title_A} / {summary_A} / {url_A}
 [反応ソース] {summary_B}
-(※不足時は予測で30個以上生成)
 
 JSON output start:
 {
