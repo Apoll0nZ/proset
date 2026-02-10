@@ -246,21 +246,24 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 return part_durations[idx]
             return 0.0
 
-        # owner_commentのvoice_indexを特定（script_partsは参照のみ）
+        # owner_commentのvoice_indexを特定
         owner_comment_voice_index = None
         for i, part in enumerate(script_parts):
             if part.get("part") == "owner_comment":
                 owner_comment_voice_index = i
                 break
-        
-        # ★★★ 修正: owner_comment「直前」までの時間を計算 ★★★
-        if owner_comment_voice_index is not None and owner_comment_voice_index in VOICE_PARTS:
+
+        # modulation開始時間 = title終了 + owner_comment以外の全パート
+        if owner_comment_voice_index is not None:
             modulation_start_time = title_duration + sum(
-                get_part_duration(i) for i in valid_voice_parts if i < owner_comment_voice_index
+                get_part_duration(i) for i in valid_voice_parts
+                if i < owner_comment_voice_index and i in VOICE_PARTS
             )
         else:
             # owner_commentがない場合は全パート終了後
-            modulation_start_time = title_duration + sum(get_part_duration(i) for i in valid_voice_parts)
+            modulation_start_time = title_duration + sum(
+                get_part_duration(i) for i in valid_voice_parts if i in VOICE_PARTS
+            )
 
         owner_comment_start_time = modulation_start_time + modulation_duration
 
@@ -315,9 +318,15 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # ========== STAGE 3.5: Modulation動画を配置 ==========
         if modulation_video_clip and modulation_duration > 0:
             print(f"[TIMELINE] Positioning modulation video ({modulation_duration:.2f}s) at {modulation_start_time:.2f}s...")
-            modulation_video_with_audio = modulation_video_clip.with_duration(modulation_duration).without_audio()
-            # 元のサイズを維持し、中央に配置
-            modulation_video_positioned = modulation_video_with_audio.with_position("center")
+            # 音声を保持したまま配置
+            modulation_video_with_audio = modulation_video_clip.with_duration(modulation_duration)
+            # 中央に配置し、開始時刻とFPSを明示
+            modulation_video_positioned = (
+                modulation_video_with_audio
+                .with_position("center")
+                .with_start(modulation_start_time)
+                .with_fps(FPS)
+            )
             all_clips_by_layer['videos'].append({
                 'clip': modulation_video_positioned,
                 'start': modulation_start_time,
@@ -333,16 +342,24 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             img_start = getattr(img_clip, 'start', 0.0)
             img_end = img_start + img_clip.duration
             
-            # Modulation期間と重複する場合はスキップ
-            if not (img_start >= modulation_end_time or img_end <= modulation_start_time):
-                print(f"[TIMELINE] Skipping image that overlaps with modulation: {img_start:.2f}s - {img_end:.2f}s")
+            # Modulation期間に完全に含まれる画像はスキップ
+            if img_start >= modulation_start_time and img_end <= modulation_end_time:
+                print(f"[TIMELINE] Skipping image completely within modulation: {img_start:.2f}s - {img_end:.2f}s")
                 continue
             
-            # image_clipsは既にwith_start()とwith_duration()が適用されたImageClipオブジェクト
+            # 部分的に重複する場合はmodulation後にシフトして表示
+            actual_start = img_start
+            actual_duration = img_clip.duration
+            if img_start < modulation_end_time and img_end > modulation_end_time:
+                actual_start = modulation_end_time
+                actual_duration = img_end - modulation_end_time
+                print(f"[TIMELINE] Adjusted image start to avoid modulation: {img_start:.2f}s -> {actual_start:.2f}s")
+            
+            adjusted_clip = img_clip.with_start(actual_start).with_duration(actual_duration)
             all_clips_by_layer['images'].append({
-                'clip': img_clip,
-                'start': img_start,
-                'duration': img_clip.duration
+                'clip': adjusted_clip,
+                'start': actual_start,
+                'duration': actual_duration
             })
 
         # ========== STAGE 5: 字幕生成（絶対時間のみ） ==========
@@ -452,19 +469,19 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         for item in all_clips_by_layer['background']:
             clip = item['clip']
             
-            # 背景は表示区間だけ決定（時間再計算は不要）
+            # メインパート：title終了〜modulation開始前
             main_bg_start = title_duration
             main_bg_end = modulation_start_time
             
-            owner_bg_start = owner_comment_start_time
-            # owner_commentのdurationはpart_durationsから取得
-            owner_comment_voice_index = None
+            # owner_commentパート：modulation終了〜まとめ終了
+            owner_bg_start = modulation_start_time + modulation_duration
+            owner_comment_duration = 0.0
             for i, part in enumerate(script_parts):
                 if part.get("part") == "owner_comment":
-                    owner_comment_voice_index = i
+                    if i < len(part_durations):
+                        owner_comment_duration = part_durations[i]
                     break
-            
-            owner_bg_end = owner_bg_start + (part_durations[owner_comment_voice_index] if owner_comment_voice_index is not None and owner_comment_voice_index < len(part_durations) else 0.0)
+            owner_bg_end = owner_bg_start + owner_comment_duration
             
             def ensure_bg_duration(base_clip, needed_duration: float):
                 """背景動画を必要時間までループして切り出す"""
@@ -586,7 +603,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 # 字幕と両方揃っていないパートは音声もスキップ（時間を詰める）
                 audio_src_cursor += duration
 
-        # BGM（main_titleから開始）
+        # BGM（main_titleから開始、owner_comment終了まで）
         if bgm_clip:
             # メイン（title後〜modulation前）
             main_bgm_start = title_duration
@@ -603,14 +620,20 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     owner_comment_duration = duration
                     break
             if owner_comment_duration > 0:
-                bgm_summary = bgm_clip.subclipped(0, owner_comment_duration)
-                audio_elements.append(bgm_summary.with_start(owner_comment_start_time))
+                bgm_duration_for_summary = min(owner_comment_duration, bgm_clip.duration)
+                bgm_summary = bgm_clip.subclipped(0, bgm_duration_for_summary)
+                # owner_comment終了時刻でBGMも終了
+                audio_elements.append(
+                    bgm_summary.with_start(owner_comment_start_time).with_duration(owner_comment_duration)
+                )
                 print(f"[TIMELINE] Added BGM (summary): {owner_comment_duration:.2f}s starting at {owner_comment_start_time:.2f}s")
 
-        # 音声を合成
+        # 音声を合成（必要なら動画長に合わせて制限）
         if audio_elements:
             final_audio = CompositeAudioClip(audio_elements)
-            print(f"[TIMELINE] Audio composited: {len(audio_elements)} tracks")
+            if last_subtitle_end > 0:
+                final_audio = final_audio.with_duration(last_subtitle_end)
+            print(f"[TIMELINE] Audio composited: {len(audio_elements)} tracks, duration: {final_audio.duration:.2f}s")
         else:
             print("[TIMELINE] Warning: No audio elements found")
             final_audio = None
@@ -3811,7 +3834,7 @@ async def build_video_with_subtitles(
                         raise RuntimeError(f"No images found for segment {i} and no existing images to reuse")
 
             # 画像が1枚でも取得できた場合は続行
-            print(f"[DEBUG] Found {len(part_images)} images for segment {i}")
+            print(f"[DEBUG] Found {len(part_images)} images for segment {i} (part_type: {part_type})")
 
             # 1枚あたり最低7秒表示、切り替えに0.5秒のフェードアウト時間を確保
             min_duration = 14.0  # 最低表示時間
@@ -3819,13 +3842,20 @@ async def build_video_with_subtitles(
             seg_start = current_image_time
             seg_end = seg_start + duration  # セグメント終了時間
             available_time = seg_end - seg_start
-            
-            # modulation期間を考慮して画像表示時間を調整
-            if seg_start < modulation_start_time and seg_end > modulation_start_time:
-                # このセグメントがmodulation期間と重複する場合
+
+            # owner_commentパートはmodulation終了後から開始
+            if part_type == "owner_comment":
                 modulation_end_time = modulation_start_time + modulation_duration
                 if seg_start < modulation_end_time:
-                    # modulation前の時間のみを使用
+                    seg_start = modulation_end_time
+                    seg_end = seg_start + duration
+                    available_time = seg_end - seg_start
+                    print(f"[DEBUG] Owner_comment segment {i} adjusted to start after modulation: {seg_start:.2f}s")
+
+            # modulation期間と重複する場合の調整（owner_comment以外）
+            elif seg_start < modulation_start_time and seg_end > modulation_start_time:
+                modulation_end_time = modulation_start_time + modulation_duration
+                if seg_start < modulation_end_time:
                     available_time = modulation_start_time - seg_start
                     print(f"[DEBUG] Segment {i} overlaps with modulation, adjusted available_time: {available_time}s")
             
@@ -3895,14 +3925,19 @@ async def build_video_with_subtitles(
 
             # current_image_timeを厳密に管理（modulation期間を考慮）
             print(f"[DEBUG] Segment {i} completed. Current image time before update: {current_image_time:.2f}s")
-            
-            # modulation期間と重複する場合は、modulation終了後に時間をシフト
-            if seg_start < modulation_start_time and seg_end > modulation_start_time:
+
+            if part_type == "owner_comment":
+                modulation_end_time = modulation_start_time + modulation_duration
+                if current_image_time < modulation_end_time:
+                    current_image_time = modulation_end_time
+                current_image_time += duration
+                print(f"[DEBUG] Owner_comment segment {i} image time updated to: {current_image_time:.2f}s")
+            elif seg_start < modulation_start_time and seg_end > modulation_start_time:
                 current_image_time = modulation_start_time + modulation_duration
                 print(f"[DEBUG] Segment {i} overlaps with modulation, shifted image time to: {current_image_time:.2f}s")
             else:
                 current_image_time = seg_end  # セグメント終了時間に同期して隙間をなくす
-                
+            
             print(f"[DEBUG] Segment {i} completed. Current image time after update: {current_image_time:.2f}s")
 
             # メモリ解放：各セグメント処理後にクリーンアップ
