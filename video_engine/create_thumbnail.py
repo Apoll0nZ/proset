@@ -204,105 +204,141 @@ def create_placeholder_image(width: int, height: int, color: tuple = (200, 200, 
     return img
 
 
-def get_article_images(topic_summary: str, meta: Optional[Dict] = None, used_image_paths: List[str] = None) -> Tuple[Image.Image, Image.Image]:
+def get_article_images(
+    topic_summary: str,
+    meta: Optional[Dict] = None,
+    used_image_paths: List[str] = None,
+    require_images: bool = False,
+    max_retries: int = 3,
+) -> Tuple[Image.Image, Image.Image]:
     """
     記事関連画像を2枚取得（サムネイル生成時に独立して画像検索を行う）。
     """
     img1 = None
     img2 = None
+
+    # 先に動画で使用した画像を優先して再利用
+    image_paths = used_image_paths or []
+    if image_paths:
+        for path in image_paths:
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                loaded = Image.open(path).convert("RGBA")
+            except Exception as e:
+                print(f"[THUMBNAIL] Failed to load used image: {path} ({e})")
+                continue
+            if img1 is None:
+                img1 = loaded
+                print(f"[THUMBNAIL] Using video image for img1: {path}")
+            elif img2 is None:
+                img2 = loaded
+                print(f"[THUMBNAIL] Using video image for img2: {path}")
+            if img1 is not None and img2 is not None:
+                return img1, img2
     
-    # サムネイル生成時に独立して画像検索を行う
-    try:
-        import sys
-        import os
-        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-        from render_video import search_images_with_playwright, download_image_from_url
-        import asyncio
-        
-        async def search_thumbnail_images():
-            # トピック要約からキーワードを抽出して画像検索
-            keywords = []
-            if topic_summary:
-                # 簡単なキーワード抽出
-                words = topic_summary.split()[:3]  # 最初の3単語を使用
-                keywords = [word for word in words if len(word) > 2]
-            
-            # メタ情報からキーワードを抽出
-            if meta and 'source_url' in meta:
-                source_url = meta['source_url']
-                if 'apple' in source_url.lower():
-                    keywords.insert(0, 'Apple')
-                elif 'microsoft' in source_url.lower():
-                    keywords.insert(0, 'Microsoft')
-                elif 'google' in source_url.lower():
-                    keywords.insert(0, 'Google')
-            
-            # キーワードがなければデフォルトを使用
-            if not keywords:
-                keywords = ['technology', 'innovation']
-            
-            print(f"[THUMBNAIL] Searching images with keywords: {keywords}")
-            
-            # 画像検索
-            for keyword in keywords[:2]:  # 最大2つのキーワードで試行
-                try:
-                    images = await search_images_with_playwright(keyword, max_results=3)
-                    if images:
-                        print(f"[THUMBNAIL] Found {len(images)} images for keyword: {keyword}")
-                        
-                        # 最初の2枚をダウンロード
-                        downloaded_paths = []
-                        for img in images[:2]:
-                            try:
-                                path = download_image_from_url(img['url'])
-                                if path and os.path.exists(path):
-                                    downloaded_paths.append(path)
-                                    print(f"[THUMBNAIL] Downloaded image: {os.path.basename(path)}")
-                            except Exception as e:
-                                print(f"[THUMBNAIL] Failed to download image: {e}")
-                                continue
-                        
-                        # 画像を読み込んで返す
-                        if len(downloaded_paths) >= 2:
-                            img1 = Image.open(downloaded_paths[0]).convert("RGBA")
-                            img2 = Image.open(downloaded_paths[1]).convert("RGBA")
-                            print(f"[THUMBNAIL] Successfully loaded 2 images for thumbnail")
-                            return img1, img2
-                        elif len(downloaded_paths) == 1:
-                            img1 = Image.open(downloaded_paths[0]).convert("RGBA")
-                            print(f"[THUMBNAIL] Successfully loaded 1 image for thumbnail")
-                            break
-                except Exception as e:
-                    print(f"[THUMBNAIL] Failed to search with keyword '{keyword}': {e}")
-                    continue
-            
-            return None, None
-        
-        # 非同期関数を実行（既存のイベントループがある場合は別スレッドで実行）
+    # サムネイル生成時に独立して画像検索を行う（リトライあり）
+    for attempt in range(1, max_retries + 1):
         try:
-            running_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            running_loop = None
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+            from render_video import search_images_with_playwright, download_image_from_url
+            import asyncio
 
-        if running_loop and running_loop.is_running():
-            import concurrent.futures
+            async def search_thumbnail_images():
+                # トピック要約からキーワードを抽出して画像検索
+                keywords = []
+                if topic_summary:
+                    # 簡単なキーワード抽出
+                    words = topic_summary.split()[:3]  # 最初の3単語を使用
+                    keywords = [word for word in words if len(word) > 2]
 
-            def _run_in_thread():
-                return asyncio.run(search_thumbnail_images())
+                # メタ情報からキーワードを抽出
+                if meta and 'source_url' in meta:
+                    source_url = meta['source_url']
+                    if 'apple' in source_url.lower():
+                        keywords.insert(0, 'Apple')
+                    elif 'microsoft' in source_url.lower():
+                        keywords.insert(0, 'Microsoft')
+                    elif 'google' in source_url.lower():
+                        keywords.insert(0, 'Google')
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_run_in_thread)
-                img1, img2 = future.result()
-        else:
-            img1, img2 = asyncio.run(search_thumbnail_images())
-        
-    except Exception as e:
-        print(f"[THUMBNAIL] Error in independent image search: {e}")
-        print("[THUMBNAIL] Falling back to video images or default images")
+                # キーワードがなければデフォルトを使用
+                if not keywords:
+                    keywords = ['technology', 'innovation']
+
+                print(f"[THUMBNAIL] Searching images with keywords: {keywords}")
+
+                # 画像検索
+                for keyword in keywords[:2]:  # 最大2つのキーワードで試行
+                    try:
+                        images = await search_images_with_playwright(keyword, max_results=3)
+                        if images:
+                            print(f"[THUMBNAIL] Found {len(images)} images for keyword: {keyword}")
+
+                            # 最初の2枚をダウンロード
+                            downloaded_paths = []
+                            for img in images[:2]:
+                                try:
+                                    path = download_image_from_url(img['url'])
+                                    if path and os.path.exists(path):
+                                        downloaded_paths.append(path)
+                                        print(f"[THUMBNAIL] Downloaded image: {os.path.basename(path)}")
+                                except Exception as e:
+                                    print(f"[THUMBNAIL] Failed to download image: {e}")
+                                    continue
+
+                            # 画像を読み込んで返す
+                            if len(downloaded_paths) >= 2:
+                                found1 = Image.open(downloaded_paths[0]).convert("RGBA")
+                                found2 = Image.open(downloaded_paths[1]).convert("RGBA")
+                                print(f"[THUMBNAIL] Successfully loaded 2 images for thumbnail")
+                                return found1, found2
+                            elif len(downloaded_paths) == 1:
+                                found1 = Image.open(downloaded_paths[0]).convert("RGBA")
+                                print(f"[THUMBNAIL] Successfully loaded 1 image for thumbnail")
+                                return found1, None
+                    except Exception as e:
+                        print(f"[THUMBNAIL] Failed to search with keyword '{keyword}': {e}")
+                        continue
+
+                return None, None
+
+            # 非同期関数を実行（既存のイベントループがある場合は別スレッドで実行）
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            if running_loop and running_loop.is_running():
+                import concurrent.futures
+
+                def _run_in_thread():
+                    return asyncio.run(search_thumbnail_images())
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_run_in_thread)
+                    found1, found2 = future.result()
+            else:
+                found1, found2 = asyncio.run(search_thumbnail_images())
+
+            if found1 and img1 is None:
+                img1 = found1
+            elif found1 and img2 is None:
+                img2 = found1
+            if found2 and img2 is None:
+                img2 = found2
+
+            if img1 is not None and img2 is not None:
+                return img1, img2
+
+        except Exception as e:
+            print(f"[THUMBNAIL] Error in independent image search (attempt {attempt}/{max_retries}): {e}")
+            continue
     
     # 動画生成で使用した画像からフォールバック（従来通り）
-    image_paths = used_image_paths or []
-    if img1 is None and img2 is None and image_paths and len(image_paths) >= 2:
+    if image_paths and (img1 is None or img2 is None):
         import random
         
         def get_domain_score(image_path: str) -> int:
@@ -374,19 +410,21 @@ def get_article_images(topic_summary: str, meta: Optional[Dict] = None, used_ima
         
         print(f"[DEBUG] Selected {len(selected_paths)} images with scoring: {[(score, path) for score, path in scored_paths[:2]]}")
         
-        try:
-            img1 = Image.open(selected_paths[0]).convert("RGBA")
-            print(f"[DEBUG] Loaded video image 1: {selected_paths[0]}")
-        except Exception as e:
-            print(f"[DEBUG] Failed to load video image 1: {e}")
-        
-        if len(selected_paths) > 1:
+        for path in selected_paths:
             try:
-                img2 = Image.open(selected_paths[1]).convert("RGBA")
-                print(f"[DEBUG] Loaded video image 2: {selected_paths[1]}")
+                loaded = Image.open(path).convert("RGBA")
+                if img1 is None:
+                    img1 = loaded
+                    print(f"[DEBUG] Loaded video image 1: {path}")
+                elif img2 is None:
+                    img2 = loaded
+                    print(f"[DEBUG] Loaded video image 2: {path}")
             except Exception as e:
-                print(f"[DEBUG] Failed to load video image 2: {e}")
+                print(f"[DEBUG] Failed to load video image: {e}")
     
+    if require_images and (img1 is None or img2 is None):
+        raise RuntimeError("Failed to obtain required thumbnail images")
+
     # IT系汎用背景素材（チップ風）をフォールバックに使用
     fallback_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "background.png")
     fallback_image = None
@@ -465,6 +503,8 @@ def create_thumbnail(
     output_path: str,
     meta: Optional[Dict] = None,
     used_image_paths: List[str] = None,
+    require_images: bool = False,
+    max_image_retries: int = 3,
 ) -> None:
     """
     PC猫スタイル（2chスレタイ風）サムネイルを生成。
@@ -487,7 +527,13 @@ def create_thumbnail(
     left_width = int(THUMBNAIL_WIDTH * ratio)
     right_width = THUMBNAIL_WIDTH - left_width
     
-    img1, img2 = get_article_images(topic_summary, meta, used_image_paths)
+    img1, img2 = get_article_images(
+        topic_summary,
+        meta,
+        used_image_paths,
+        require_images=require_images,
+        max_retries=max_image_retries,
+    )
     
     # 画像をリサイズして配置
     img1_resized = img1.resize((left_width, TOP_AREA_HEIGHT), Image.Resampling.LANCZOS)
