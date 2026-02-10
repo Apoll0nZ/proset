@@ -4002,7 +4002,6 @@ async def build_video_with_subtitles(
             print(f"[DEBUG] Segment {i} completed. Current image time after update: {current_image_time:.2f}s")
 
             # メモリ解放：各セグメント処理後にクリーンアップ
-            del part_images
             gc.collect()
             print(f"[MEMORY] Cleaned up segment {i} data")
 
