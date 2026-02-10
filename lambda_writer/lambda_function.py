@@ -49,6 +49,32 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def is_valid_article_url(url: str) -> bool:
+    """記事URLの妥当性を検証"""
+    if not url:
+        return False
+
+    url_lower = url.lower()
+
+    # プレースホルダーURLを除外
+    if "example.com" in url_lower or "placeholder" in url_lower:
+        print(f"[VALIDATION] Rejected placeholder URL: {url}")
+        return False
+
+    # RSS/フィード系のURLパターンを除外
+    invalid_patterns = [".rss", ".xml", "/feed", "/rss", "/atom"]
+    if any(pat in url_lower for pat in invalid_patterns):
+        print(f"[VALIDATION] Rejected feed-like URL: {url}")
+        return False
+
+    # http(s) のみ許可
+    if not url.startswith(("http://", "https://")):
+        print(f"[VALIDATION] Rejected non-HTTP URL: {url}")
+        return False
+
+    return True
+
+
 # -----------------------------------------------------------------------------
 # Gemini API
 # -----------------------------------------------------------------------------
@@ -305,7 +331,25 @@ def lambda_handler(event, context):
     # pending記事を読み込み
     print("Loading pending article...")
     pending_article = load_pending_article(bucket, key)
-    print(f"Loaded article: {pending_article.get('title', 'Unknown')}")
+    article_title = pending_article.get("title", "Unknown")
+    article_url = pending_article.get("url", "")
+
+    print(f"Loaded article: {article_title}")
+    print(f"Article URL: {article_url}")
+
+    # URL妥当性チェック
+    if not is_valid_article_url(article_url):
+        print(f"[SKIP] Invalid article URL detected, deleting pending file: {article_url}")
+        delete_object(bucket, key)
+        print("Invalid pending file deleted")
+        return {
+            "status": "skipped",
+            "reason": "invalid_url",
+            "url": article_url,
+            "pending_key": key,
+        }
+
+    print(f"[VALIDATION] Article URL is valid: {article_url}")
 
     # プロンプトテンプレートを読み込み
     print("Loading prompt template...")
