@@ -146,6 +146,20 @@ def transition_scale_animation(clip, is_fade_out=False):
 
     return clip
 
+class ImagePool:
+    def __init__(self, image_paths: List[str]):
+        if not image_paths:
+            raise ValueError("image_paths is empty")
+        self.image_paths = image_paths
+        self.index = 0
+
+    def next(self) -> str:
+        path = self.image_paths[self.index]
+        self.index += 1
+        if self.index >= len(self.image_paths):
+            self.index = 0
+        return path
+
 # === Titleパート分割関数 ===
 def split_title_part(script_parts: List[Dict], part_durations: List[float], 
                      title_duration: float, title_audio_duration: float) -> tuple:
@@ -3703,8 +3717,93 @@ async def build_video_with_subtitles(
         title = script_data.get("title", "")
         content = script_data.get("content", {})
         topic_summary = content.get("topic_summary", "")
-        image_schedule = []
         total_images_collected = 0
+        downloaded_image_paths: List[str] = []
+
+        def is_explanation_part(part_type: str) -> bool:
+            return part_type.startswith("article_")
+
+        # 解説パートからのみ画像を取得してプールを作成
+        for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
+            if duration <= 0:
+                continue
+            part_type = part.get("part", "")
+            if not is_explanation_part(part_type):
+                continue
+
+            part_text = part.get("text", "")
+            keywords = get_segment_keywords(part_text, title, topic_summary)
+
+            for keyword in keywords:
+                if total_images_collected >= 60:
+                    print("[INFO] 画像収集が60枚に達したため、解説パートの検索を終了します")
+                    break
+
+                # Geminiが抽出したキーワードを完全に維持して使用
+                # 実体のある画像が出やすい接尾辞を付与して具体化
+                search_keyword = keyword
+
+                # 抽象的な概念を具体化する接尾辞を付与
+                concrete_suffixes = [
+                    "official image", "product photo", "technology", "device", "hardware"
+                ]
+
+                is_abstract = any(word in keyword.lower() for word in ['concept', 'idea', 'system', 'solution', 'platform'])
+
+                if is_abstract and len(keyword) <= 10:
+                    # 短い抽象的なキーワードには接尾辞を付与
+                    search_keyword = f"{keyword} {concrete_suffixes[0]}"
+                    print(f"[DEBUG] Abstract keyword detected, adding suffix: {keyword} -> {search_keyword}")
+                elif "logo" not in keyword.lower() and "screenshot" not in keyword.lower():
+                    # ロゴやスクリーンショットでない場合は画像用接尾辞を試行
+                    if len(keyword.split()) == 1:  # 単語の場合
+                        search_keyword = f"{keyword} official image"
+                        print(f"[DEBUG] Single word keyword, adding image suffix: {keyword} -> {search_keyword}")
+
+                # ストックフォトを除外するために-shutterstockを付与
+                if '-shutterstock' not in search_keyword.lower():
+                    search_keyword = f"{search_keyword} -shutterstock"
+
+                print(f"[DEBUG] Explanation search keyword: {search_keyword}")
+                print(f"[DEBUG] Original keyword: '{keyword}' (length: {len(keyword)})")
+
+                try:
+                    images = await search_images_with_playwright(search_keyword, max_results=10)
+                    print(f"[DEBUG] Found {len(images)} images for keyword: '{keyword}'")
+
+                    for image in images:
+                        image_url = image.get("url")
+                        if not image_url or image_url.lower().endswith(".svg"):
+                            continue
+                        image_path = download_image_from_url(image_url)
+                        if image_path and os.path.exists(image_path):
+                            # 重複チェック
+                            if is_duplicate_image(image_path):
+                                print(f"[SKIP] Duplicate image: {image_url}")
+                                continue
+                            # サムネイル用に画像パスを記録（重複でない場合のみ）
+                            _used_image_paths.append(image_path)
+                            downloaded_image_paths.append(image_path)
+                            total_images_collected += 1
+                            print(
+                                f"[DEBUG] Image pool updated: total={total_images_collected}, "
+                                f"keyword='{keyword}'"
+                            )
+                            if total_images_collected >= 60:
+                                print("[INFO] 画像収集上限（60枚）に達しました")
+                                break
+                except Exception as e:
+                    print(f"[WARNING] Failed to search images for keyword '{keyword}': {e}")
+                    continue
+
+                if total_images_collected >= 60:
+                    break
+
+        if not downloaded_image_paths:
+            raise RuntimeError("画像が1枚もダウンロードされていません")
+
+        image_pool = ImagePool(downloaded_image_paths)
+        image_schedule = []
         # 数珠つなぎロジック：画像もtitle_durationから開始（title終了→main_title開始に合わせる）
         current_image_time = title_duration  # オープニング動画終了直後から画像を開始
         
@@ -3722,120 +3821,7 @@ async def build_video_with_subtitles(
             if duration <= 0:
                 continue
             part_type = part.get("part", "")
-            part_text = part.get("text", "")
-            keywords = get_segment_keywords(part_text, title, topic_summary)
-            part_images = []
-
-            for keyword in keywords:
-                if total_images_collected >= 60 and part_images:
-                    print(f"[INFO] 画像収集が60枚に達したため、セグメント {i} の検索を終了します")
-                    break
-                
-                # Geminiが抽出したキーワードを完全に維持して使用
-                # 実体のある画像が出やすい接尾辞を付与して具体化
-                search_keyword = keyword
-                
-                # 抽象的な概念を具体化する接尾辞を付与
-                concrete_suffixes = [
-                    "official image", "product photo", "technology", "device", "hardware"
-                ]
-                
-                is_abstract = any(word in keyword.lower() for word in ['concept', 'idea', 'system', 'solution', 'platform'])
-                
-                if is_abstract and len(keyword) <= 10:
-                    # 短い抽象的なキーワードには接尾辞を付与
-                    search_keyword = f"{keyword} {concrete_suffixes[0]}"
-                    print(f"[DEBUG] Abstract keyword detected, adding suffix: {keyword} -> {search_keyword}")
-                elif "logo" not in keyword.lower() and "screenshot" not in keyword.lower():
-                    # ロゴやスクリーンショットでない場合は画像用接尾辞を試行
-                    if len(keyword.split()) == 1:  # 単語の場合
-                        search_keyword = f"{keyword} official image"
-                        print(f"[DEBUG] Single word keyword, adding image suffix: {keyword} -> {search_keyword}")
-                
-                # ストックフォトを除外するために-shutterstockを付与
-                if '-shutterstock' not in search_keyword.lower():
-                    search_keyword = f"{search_keyword} -shutterstock"
-                
-                print(f"[DEBUG] Segment {i} search keyword: {search_keyword}")
-                print(f"[DEBUG] Original keyword: '{keyword}' (length: {len(keyword)})")
-                
-                try:
-                    images = await search_images_with_playwright(search_keyword, max_results=10)
-                    print(f"[DEBUG] Found {len(images)} images for keyword: '{keyword}'")
-                    
-                    for image in images:
-                        image_url = image.get("url")
-                        if not image_url or image_url.lower().endswith(".svg"):
-                            continue
-                        image_path = download_image_from_url(image_url)
-                        if image_path and os.path.exists(image_path):
-                            # 重複チェック
-                            if is_duplicate_image(image_path):
-                                print(f"[SKIP] Duplicate image: {image_url}")
-                                continue
-                            else:
-                                # サムネイル用に画像パスを記録（重複でない場合のみ）
-                                _used_image_paths.append(image_path)
-                                part_images.append(image_path)
-                            total_images_collected += 1
-                            print(
-                                f"[DEBUG] Image list updated: total={total_images_collected}, "
-                                f"segment={i}, segment_images={len(part_images)}, keyword='{keyword}'"
-                            )
-                            print(f"現在、有効な画像リストには計{total_images_collected}枚の画像が格納されています")
-                            if total_images_collected >= 60 and len(part_images) >= 2:
-                                print(f"[INFO] 画像収集上限（60枚）に達しました")
-                                break
-                except Exception as e:
-                    print(f"[WARNING] Failed to search images for keyword '{keyword}': {e}")
-                    # 1つのキーワードで失敗しても次のキーワードを試す
-                    continue
-                    
-                if total_images_collected >= 60 and part_images:
-                    break
-
-            # 60枚に達した場合でも、既存画像を使い回す
-            if total_images_collected >= 60 and not part_images:
-                # 既にダウンロード済みの画像からランダムに選択
-                all_collected_images = []
-                for prev_item in image_schedule:
-                    if prev_item.get("path"):
-                        all_collected_images.append(prev_item["path"])
-                
-                if all_collected_images:
-                    selected_image = random.choice(all_collected_images)
-                    part_images.append(selected_image)
-                    print(f"[INFO] セグメント {i} に既存画像を再利用: {os.path.basename(selected_image)}")
-                else:
-                    print(f"[WARNING] セグメント {i} に画像を割り当てられません（スキップ）")
-                    current_image_time += duration
-                    continue
-
-            if not part_images:
-                print(f"[WARNING] No images found for segment {i}, attempting to reuse existing images.")
-                if _used_image_paths:
-                    # 既存の画像からランダムに選択して再利用
-                    selected_image = random.choice(_used_image_paths)
-                    part_images.append(selected_image)
-                    print(f"[INFO] Reusing image for segment {i}: {os.path.basename(selected_image)}")
-                else:
-                    # まとめパートは最後の画像を再利用（なければプレースホルダーを生成）
-                    if part_type == "owner_comment":
-                        last_path = None
-                        for prev_item in reversed(image_schedule):
-                            if prev_item.get("path"):
-                                last_path = prev_item["path"]
-                                break
-                        if last_path and os.path.exists(last_path):
-                            part_images.append(last_path)
-                            print(f"[INFO] Reusing last image for summary segment {i}: {os.path.basename(last_path)}")
-                        else:
-                            raise RuntimeError(f"No images available for summary segment {i}")
-                    if not part_images:
-                        raise RuntimeError(f"No images found for segment {i} and no existing images to reuse")
-
-            # 画像が1枚でも取得できた場合は続行
-            print(f"[DEBUG] Found {len(part_images)} images for segment {i} (part_type: {part_type})")
+            # 画像は解説パートで取得済みのプールから順番に使用
 
             # 1枚あたり最低7秒表示、切り替えに0.5秒のフェードアウト時間を確保
             min_duration = 14.0  # 最低表示時間
@@ -3863,7 +3849,7 @@ async def build_video_with_subtitles(
             # 画像1枚あたりの時間 = 表示時間 + フェードアウト時間
             time_per_image = min_duration + fade_out_duration
             max_images_possible = int(available_time / time_per_image)
-            num_images_to_use = min(len(part_images), max_images_possible)
+            num_images_to_use = max_images_possible
             
             if num_images_to_use == 0:
                 print(f"[WARNING] セグメント {i} は時間不足のため画像なし（スキップ）")
@@ -3895,8 +3881,8 @@ async def build_video_with_subtitles(
                     print(f"[DEBUG] Image {img_idx} skipped: start={img_start}s >= seg_end={seg_end}s")
                     break
                 
-                # 使用する画像を選択（循環利用）
-                selected_image = part_images[img_idx % len(part_images)]
+                # 使用する画像をプールから順番に取得（循環利用）
+                selected_image = image_pool.next()
                 
                 # 画像ファイルの有効性を再確認
                 try:
