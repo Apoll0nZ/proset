@@ -281,23 +281,72 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 return part_durations[idx]
             return 0.0
 
-        # owner_commentのvoice_indexを特定
+        # script_parts と VOICEVOX の index ずれ補正（title_video挿入時に+1ずれる）
+        voice_index_offset = 1 if script_parts and script_parts[0].get("part") == "title_video" else 0
+        if voice_index_offset:
+            print(f"[TIMELINE] Detected title split: voice index offset = {voice_index_offset}")
+
+        def script_index_for_voice_index(voice_idx: int) -> int:
+            return voice_idx + voice_index_offset
+
+        def voice_index_for_script_index(script_idx: int) -> int:
+            return script_idx - voice_index_offset
+
+        def part_type_for_voice_index(voice_idx: int) -> str:
+            script_idx = script_index_for_voice_index(voice_idx)
+            if 0 <= script_idx < len(script_parts):
+                return script_parts[script_idx].get("part", "")
+            return ""
+
+        # owner_commentのVOICE_PARTS内でのインデックスを特定
         owner_comment_voice_index = None
         for i, part in enumerate(script_parts):
             if part.get("part") == "owner_comment":
-                owner_comment_voice_index = i
+                owner_comment_voice_index = voice_index_for_script_index(i)
+                if owner_comment_voice_index < 0:
+                    owner_comment_voice_index = None
+                print(f"[TIMELINE] Found owner_comment at script_parts index: {i} (voice_index={owner_comment_voice_index})")
                 break
 
-        # modulation開始時間 = title終了 + owner_comment以外の全パート
-        if owner_comment_voice_index is not None:
+        # メインコンテンツのパートを特定（reaction/owner_commentの直前まで）
+        main_content_parts: List[int] = []
+        reaction_start_voice_index = None
+        for voice_idx in valid_voice_parts:
+            part_type = part_type_for_voice_index(voice_idx)
+            if not part_type:
+                print(f"[TIMELINE] Unknown part_type for voice_index={voice_idx}, skipping")
+                continue
+            if part_type == "reaction":
+                reaction_start_voice_index = voice_idx
+                print(f"[TIMELINE] Reaction starts at voice_index={voice_idx}")
+                break
+            if part_type == "owner_comment":
+                print(f"[TIMELINE] Owner comment reached at voice_index={voice_idx}")
+                break
+            main_content_parts.append(voice_idx)
+
+        # modulation開始時間 = title終了 + メインコンテンツ（reaction/owner_comment直前まで）
+        if main_content_parts:
             modulation_start_time = title_duration + sum(
-                get_part_duration(i) for i in valid_voice_parts
-                if i < owner_comment_voice_index and i in VOICE_PARTS
+                get_part_duration(voice_idx) for voice_idx in main_content_parts
             )
+            print("[DEBUG] Modulation calculation:")
+            print(f"  - Main content parts (voice indices): {main_content_parts}")
+            print(f"  - Main content part types: {[part_type_for_voice_index(i) for i in main_content_parts]}")
+            print(f"  - Modulation starts at: {modulation_start_time:.2f}s")
+        elif owner_comment_voice_index is not None:
+            # フォールバック: owner_commentの直前まで
+            modulation_start_time = title_duration + sum(
+                get_part_duration(voice_idx)
+                for voice_idx in valid_voice_parts
+                if voice_idx < owner_comment_voice_index
+            )
+            print("[DEBUG] Modulation calculation (fallback: owner_comment):")
+            print(f"  - Modulation starts at: {modulation_start_time:.2f}s")
         else:
             # owner_commentがない場合は全パート終了後
             modulation_start_time = title_duration + sum(
-                get_part_duration(i) for i in valid_voice_parts if i in VOICE_PARTS
+                get_part_duration(voice_idx) for voice_idx in valid_voice_parts
             )
 
         owner_comment_start_time = modulation_start_time + modulation_duration
@@ -446,6 +495,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             # 完全なテキスト（表示用）
             full_text = "".join(chunks)
             
+            part_type = part_type_for_voice_index(part_index)
+
             # 各チャンクの字幕を生成
             for chunk_index, chunk_duration in enumerate(chunk_durations):
                 if chunk_index >= len(chunks):
@@ -486,10 +537,10 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     # 絶対時間で配置
                     txt_clip = txt_clip.with_start(chunk_start).with_duration(chunk_duration).with_opacity(1.0).with_fps(FPS)
                     # ネットの反応 → Modulation：最後の字幕をフェードアウト
-                    if script_parts[part_index].get("part") == "reaction" and chunk_index == len(chunk_durations) - 1:
+                    if part_type == "reaction" and chunk_index == len(chunk_durations) - 1:
                         txt_clip = apply_fade(txt_clip, fade_out=0.4)
                     # Modulation → まとめ：最初の字幕をフェードイン
-                    if script_parts[part_index].get("part") == "owner_comment" and chunk_index == 0:
+                    if part_type == "owner_comment" and chunk_index == 0:
                         txt_clip = apply_fade(txt_clip, fade_in=0.4)
                     all_clips_by_layer['subtitles'].append({'clip': txt_clip})
                     last_subtitle_end = chunk_start + chunk_duration
@@ -1271,7 +1322,7 @@ except ImportError:
                 return clip  # エラー時はリサイズなしで返す
 import requests
 
-from create_thumbnail import create_thumbnail
+from create_thumbnail import create_thumbnail, select_images_from_video
 
 """
 動画レンダリング & YouTube アップロードスクリプト。
@@ -1689,13 +1740,15 @@ def download_modulation_video() -> str:
 # グローバル変数
 _used_image_hashes = set()  # 動画全体で使用した画像のハッシュ値を記録
 _used_image_paths = []  # 動画全体で使用した画像のパスを記録（サムネイル用）
+_latest_image_schedule = []  # 直近の画像スケジュール（サムネイル選定用）
 _image_search_cache = {}  # 画像検索キャッシュ（マルチスレッド対応）
 
 def reset_image_cache():
     """画像キャッシュをリセット（各動画生成の開始時に呼び出す）"""
-    global _used_image_hashes, _used_image_paths
+    global _used_image_hashes, _used_image_paths, _latest_image_schedule
     _used_image_hashes = set()
     _used_image_paths = []
+    _latest_image_schedule = []
     print("[INFO] Image cache reset")
 
 def get_image_hash(image_path: str) -> str:
@@ -3885,16 +3938,46 @@ async def build_video_with_subtitles(
             if part_type != "title" and part_type != "owner_comment":
                 modulation_start_time += duration
 
+        # 画像スケジューリングの設定
+        FADE_BUFFER = 0.5  # クロスフェード用バッファ
+        MIN_IMAGE_DURATION = 8.0
+        MAX_IMAGE_DURATION = 25.0
+
+        def calculate_images_for_segment(segment_duration: float) -> tuple:
+            """
+            セグメント時間に応じた画像枚数と表示時間を計算
+            Returns:
+                (images_to_use, duration_per_image_without_fade)
+            """
+            if segment_duration < MIN_IMAGE_DURATION:
+                # 短いセグメントでも1枚は表示
+                return 1, segment_duration
+
+            # フェード分を考慮して枚数を計算（表示時間に余裕を持たせる）
+            images_to_use = max(1, int(segment_duration / (MIN_IMAGE_DURATION + FADE_BUFFER)))
+            duration_per_image = segment_duration / images_to_use
+
+            # 1枚あたりが長すぎる場合は枚数を増やして調整
+            if duration_per_image > MAX_IMAGE_DURATION:
+                safe_max = max(0.1, MAX_IMAGE_DURATION - FADE_BUFFER)
+                images_to_use = max(1, int(segment_duration / safe_max))
+                duration_per_image = segment_duration / images_to_use
+
+            return images_to_use, duration_per_image
+
+        segment_start_time = title_duration  # 各セグメントの想定開始時刻（メインコンテンツ先頭と同期用）
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
                 continue
             part_type = part.get("part", "")
             # 画像は解説パートで取得済みのプールから順番に使用
 
-            # 1枚あたり最低7秒表示、切り替えに0.5秒のフェードアウト時間を確保
-            min_duration = 14.0  # 最低表示時間
-            fade_out_duration = 0.5  # フェードアウト時間
-            seg_start = current_image_time
+            # メインコンテンツ先頭（main_title, article_fact）はセグメント開始時刻と同期
+            if i in (0, 1):
+                seg_start = max(current_image_time, segment_start_time)
+                print(f"[DEBUG] Segment {i}: Synchronized image start to {seg_start:.2f}s")
+            else:
+                seg_start = current_image_time
             seg_end = seg_start + duration  # セグメント終了時間
             available_time = seg_end - seg_start
 
@@ -3914,35 +3997,27 @@ async def build_video_with_subtitles(
                     available_time = modulation_start_time - seg_start
                     print(f"[DEBUG] Segment {i} overlaps with modulation, adjusted available_time: {available_time}s")
             
-            # 画像1枚あたりの時間 = 表示時間 + フェードアウト時間
-            time_per_image = min_duration + fade_out_duration
-            max_images_possible = int(available_time / time_per_image)
-            num_images_to_use = max_images_possible
+            # 画像枚数と1枚あたりの表示時間を決定（フェード分を考慮）
+            num_images_to_use, actual_image_duration = calculate_images_for_segment(available_time)
+            if available_time < MIN_IMAGE_DURATION:
+                print(f"[INFO] セグメント {i}: 短いため1枚表示 (duration={available_time:.2f}s)")
+            elif actual_image_duration > MAX_IMAGE_DURATION:
+                print(f"[ADJUST] セグメント {i}: 画像枚数を増やして調整 (images={num_images_to_use})")
+
+            print(
+                f"[DEBUG] Segment {i}: available_time={available_time}s, "
+                f"images_to_use={num_images_to_use}, duration_per_image={actual_image_duration:.2f}s, "
+                f"fade_buffer={FADE_BUFFER:.2f}s"
+            )
             
-            if num_images_to_use == 0:
-                print(f"[WARNING] セグメント {i} は時間不足のため画像なし（スキップ）")
-                current_image_time += duration
-                continue
-            
-            # 実際の1枚あたり表示時間を計算（最低7秒を保証）
-            if num_images_to_use > 0:
-                actual_image_duration = max(
-                    available_time / num_images_to_use,
-                    min_duration
-                )
-            else:
-                actual_image_duration = min_duration
-            
-            print(f"[DEBUG] Segment {i}: available_time={available_time}s, images_to_use={num_images_to_use}, duration_per_image={actual_image_duration:.2f}s")
-            
-            # 各画像を配置（重複なしで順番に表示）
+            # 各画像を配置（開始は等間隔、表示はフェード分だけ延長）
             images_scheduled = 0
             for img_idx in range(num_images_to_use):
                 if img_idx == 0:
                     # 最初の画像はセグメント開始から
                     img_start = seg_start
                 else:
-                    # 2枚目以降は前画像の終了から開始（重複なし）
+                    # 2枚目以降は基準時間に合わせて開始
                     img_start = seg_start + img_idx * actual_image_duration
                 
                 img_end = img_start + actual_image_duration  # 重複なし
@@ -3969,7 +4044,7 @@ async def build_video_with_subtitles(
                 # 画像スケジュールに追加（0.5秒オーバーラップでクロスフェード）
                 image_schedule.append({
                     "start": img_start,
-                    "duration": actual_image_duration + 0.5,  # 0.5秒延長してオーバーラップ
+                    "duration": actual_image_duration + FADE_BUFFER,  # フェード用に延長してオーバーラップ
                     "path": selected_image,
                     "part_type": part_type,
                     "segment_start": seg_start,
@@ -4004,6 +4079,9 @@ async def build_video_with_subtitles(
             # メモリ解放：各セグメント処理後にクリーンアップ
             gc.collect()
             print(f"[MEMORY] Cleaned up segment {i} data")
+
+            # セグメント開始時刻を更新（次セグメント用）
+            segment_start_time += duration
 
             # 60枚に達した場合は残りのセグメント処理をスキップして動画合成へ
             if total_images_collected >= 60:
@@ -4056,6 +4134,11 @@ async def build_video_with_subtitles(
             print("[INFO] Video will proceed with background only")
         else:
             print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
+
+        # サムネイル選定用に最新のスケジュールを保存
+        global _latest_image_schedule
+        _latest_image_schedule = list(image_schedule)
+        print(f"[DEBUG] Stored image schedule for thumbnail: {len(_latest_image_schedule)} items")
 
         def make_pos_func(start_time: float, target_x: int, target_y: int, start_x: int):
             """画像ごとに独立した位置関数を生成するクロージャ"""
@@ -4666,13 +4749,16 @@ async def main() -> None:
         workspace_root = os.environ.get('GITHUB_WORKSPACE', '.')
         thumbnail_path = os.path.join(workspace_root, "thumbnail.png")
         try:
+            selected_images = select_images_from_video(_latest_image_schedule, S3_BUCKET)
+            if len(selected_images) < 2:
+                print("[WARNING] 動画から十分な画像を取得できませんでした。Bing検索にフォールバックします。")
             create_thumbnail(
                 title=title,
                 topic_summary=topic_summary,
                 thumbnail_data=thumbnail_data,
                 output_path=thumbnail_path,
                 meta=meta,
-                used_image_paths=_used_image_paths,
+                used_image_paths=selected_images,
             )
             print(f"[SUCCESS] サムネイル生成完了: {thumbnail_path}")
         except Exception as e:

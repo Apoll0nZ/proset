@@ -90,114 +90,130 @@ def _iso_now() -> str:
 # -----------------------------------------------------------------------------
 def _split_prompt_with_roles(template: str, article: Dict[str, Any]) -> List[Dict[str, str]]:
     """
-    プロンプトを3つの役割に分割し、Geminiの負荷を軽減
-    
-    各ステップは独立したJSONを生成し、最後にマージする
-    
-    Returns:
-        [
-            {"role": "metadata", "prompt": "..."},
-            {"role": "script", "prompt": "..."},
-            {"role": "thumbnail", "prompt": "..."}
-        ]
+    プロンプトを3つの役割に分割し、Geminiの負荷を軽減。
+    gemini_script_prompt.txt の指示・定型文を活かしたまま役割別に出力させる。
     """
-    # 記事情報を整形
-    title = article.get("title", "タイトル不明")
+    title = article.get("title", "")
+    summary = article.get("summary", "")
     url = article.get("url", "")
-    summary = article.get("summary", "要約なし")
+    reaction_summary = ""
+    reaction = article.get("reaction")
+    if isinstance(reaction, dict):
+        reaction_summary = reaction.get("summary", "")
+    elif isinstance(reaction, str):
+        reaction_summary = reaction
 
-    # 共通の記事情報
-    base_info = f"""
-【記事情報】
-- タイトル: {title}
-- URL: {url}
-- 要約: {summary}
+    filled = template
+    replacements = {
+        "{title_A}": title,
+        "{summary_A}": summary,
+        "{url_A}": url,
+        "{summary_B}": reaction_summary,
+    }
+    for key, value in replacements.items():
+        filled = filled.replace(key, value or "")
 
-【重要な禁止事項】
-- example.com のようなプレースホルダーURLは絶対に使用しないでください
-- 架空の情報を含めないでください
-- 記事の内容に基づいた事実のみを記述してください
-"""
+    format_marker = "### 🚨 出力フォーマット"
+    input_marker = "### 入力データ"
+    format_idx = filled.find(format_marker)
+    input_idx = filled.find(input_marker)
+
+    if format_idx != -1 and input_idx != -1 and input_idx > format_idx:
+        preamble = filled[:format_idx].strip()
+        format_block = filled[format_idx:input_idx].strip()
+        input_block = filled[input_idx:].strip()
+    else:
+        preamble = filled.strip()
+        format_block = ""
+        input_block = ""
+
+    json_start_marker = "JSON output start:"
+    if json_start_marker in input_block:
+        input_block = input_block.split(json_start_marker, 1)[0].strip()
+
+    description_template = ""
+    if format_block:
+        desc_match = re.search(
+            r'"description"\s*:\s*"(?P<desc>[\s\S]*?)"\s*,\s*\n\s*"thumbnail"',
+            format_block,
+            re.DOTALL,
+        )
+        if desc_match:
+            description_template = desc_match.group("desc").strip()
+
+    if not description_template:
+        description_template = "（技術的意義を凝縮した概要文）"
+
+    description_template = description_template.replace("\\", "\\\\").replace('"', '\\"')
+
+    metadata_output = (
+        "{\n"
+        '  "title": "（固有名詞を含む、知的好奇心を刺激するタイトル）",\n'
+        f'  "description": "{description_template}"\n'
+        "}"
+    )
+    script_output = (
+        "{\n"
+        '  "content": {\n'
+        '    "topic_summary": "（事実・分析・本音の要約）",\n'
+        '    "script_parts": [\n'
+        '      { "part": "article_fact", "speaker_id": 3, "text": "（事実報道）" },\n'
+        '      { "part": "article_analysis_1", "speaker_id": 3, "text": "（分析：400文字以上）" },\n'
+        '      { "part": "article_analysis_2", "speaker_id": 3, "text": "（分析：400文字以上）" },\n'
+        '      { "part": "reaction", "speaker_id": 2, "text": "（反応）" },\n'
+        '      { "part": "owner_comment", "speaker_id": 3, "text": "（今回の件について、ガジェ丸はこう考えている。…で始まる総括）" }\n'
+        "    ]\n"
+        "  }\n"
+        "}"
+    )
+    thumbnail_output = (
+        "{\n"
+        '  "thumbnail": {\n'
+        '    "main_text": "（10字以上の強いフレーズ）",\n'
+        '    "sub_texts": ["（煽り文言1つ）"]\n'
+        "  }\n"
+        "}"
+    )
+
+    def _build_prompt(step_label: str, step_note: str, output_format: str) -> str:
+        parts = [
+            preamble,
+            input_block,
+            f"### {step_label}",
+            step_note,
+            "### 出力フォーマット（JSON形式厳守）",
+            "以下のJSON構造をテンプレートとして使用し、構造は変更せず中身のみ指示に従って埋めて出力せよ。",
+            output_format,
+        ]
+        return "\n\n".join(p for p in parts if p).strip()
 
     return [
-        # STEP 1: メタデータ生成
         {
             "role": "metadata",
-            "prompt": f"""{base_info}
-
-【STEP 1/3: メタデータ生成】
-YouTube動画のタイトルと説明文を生成してください。
-
-以下のJSON形式**のみ**で出力してください（説明文は不要）：
-
-{{
-  "title": "YouTube動画タイトル（50-60文字、記事の核心を端的に）",
-  "description": "動画説明文（150-200文字、記事の要点を簡潔に）"
-}}
-
-重要: 
-- タイトルは視聴者の興味を引く具体的な内容にする
-- 説明文は記事の主要なポイントを3つ程度含める
-- JSONのみを出力し、前後に説明を付けない
-"""
+            "prompt": _build_prompt(
+                "STEP 1/3: メタデータ生成",
+                "template内のtitle/descriptionの指示とフォーマットを厳守し、"
+                "descriptionは以下の定型文を維持したまま冒頭の概要文のみ今回の記事に合わせて書き換え、"
+                "title/descriptionのみを出力せよ。",
+                metadata_output,
+            ),
         },
-
-        # STEP 2: スクリプト生成（最も重要）
         {
             "role": "script",
-            "prompt": f"""{base_info}
-
-【STEP 2/3: 台本コンテンツ生成】
-動画の本編となるナレーション台本を生成してください。
-
-以下のJSON形式**のみ**で出力してください：
-
-{{
-  "content": {{
-    "topic_summary": "トピックの要約（100文字程度、記事の核心を1文で）",
-    "script_parts": [
-      {{"part": "article_1", "text": "導入部分（100-150文字）", "speaker_id": 1}},
-      {{"part": "article_2", "text": "本題解説1（200-300文字）", "speaker_id": 1}},
-      {{"part": "article_3", "text": "本題解説2（200-300文字）", "speaker_id": 1}},
-      {{"part": "article_4", "text": "詳細解説（200-300文字）", "speaker_id": 1}},
-      {{"part": "reaction", "text": "ネットの反応・コメント（150-200文字）", "speaker_id": 2}},
-      {{"part": "owner_comment", "text": "まとめコメント（100-150文字）", "speaker_id": 3}}
-    ]
-  }}
-}}
-
-重要なルール:
-1. script_partsは**必ず6つ以上8つ以下**のパートを含めてください
-2. 各パートは具体的な情報を含み、単なる繋ぎの文は避けてください
-3. article_1から順に論理的な流れを作ってください
-4. speaker_id: 1=メインナレーター, 2=サブ解説, 3=まとめ
-5. JSONのみを出力し、前後に説明を付けない
-"""
+            "prompt": _build_prompt(
+                "STEP 2/3: 台本コンテンツ生成",
+                "template内のキャラクター設定・構成・文字数配分を厳守し、contentのみを出力せよ。",
+                script_output,
+            ),
         },
-
-        # STEP 3: サムネイル情報
         {
             "role": "thumbnail",
-            "prompt": f"""{base_info}
-
-【STEP 3/3: サムネイル情報生成】
-YouTube動画のサムネイル用テキストを生成してください。
-
-以下のJSON形式**のみ**で出力してください：
-
-{{
-  "thumbnail": {{
-    "title": "サムネイルタイトル（15-20文字、インパクト重視）",
-    "subtitle": "サブタイトル（20-30文字、補足情報）"
-  }}
-}}
-
-重要:
-- titleは視聴者の目を引く短いフレーズ
-- subtitleは製品名や具体的な数値を含める
-- JSONのみを出力し、前後に説明を付けない
-"""
-        }
+            "prompt": _build_prompt(
+                "STEP 3/3: サムネイル情報生成",
+                "template内のthumbnail指示を厳守し、thumbnailのみを出力せよ。",
+                thumbnail_output,
+            ),
+        },
     ]
 
 
@@ -430,8 +446,8 @@ def load_prompt_template() -> str:
     ]
   }},
   "thumbnail": {{
-    "title": "サムネイルタイトル",
-    "subtitle": "サブタイトル"
+    "main_text": "サムネイル主文",
+    "sub_texts": ["サブ文"]
   }}
 }}
 """
@@ -530,61 +546,84 @@ def lambda_handler(event, context):
     print("Loading prompt template...")
     prompt_template = load_prompt_template()
 
-    print("Splitting prompt into 3 parts (mechanical, no edits)...")
-    prompt_parts = split_prompt_into_three(prompt_template)
+    # ★★★ 修正: 新しい役割ベース分割を使用 ★★★
+    print("Splitting prompt into 3 role-based parts...")
+    prompt_parts = _split_prompt_with_roles(prompt_template, pending_article)
 
-    # 記事情報ブロックを作成（URLは含めない）
-    article_info_block = build_article_info_block(pending_article)
-
-    # Geminiを3回直列実行（独立・非共有）
+    # 各パートを処理してマージ
     merged_script: Dict[str, Any] = {}
-    step_key_whitelist = {
-        1: ["title", "description"],
-        2: ["content"],
-        3: ["thumbnail"],
-    }
 
-    for idx, part in enumerate(prompt_parts, start=1):
-        print(f"[Gemini] STEP{idx}/3 - calling with isolated prompt part")
-        step_prompt = part + article_info_block
-        response_text = call_gemini_generate_content(step_prompt)
+    for idx, part_info in enumerate(prompt_parts, start=1):
+        role = part_info["role"]
+        part_prompt = part_info["prompt"]
+
+        print(f"[Gemini] STEP{idx}/3 ({role}) - calling API...")
+        response_text = call_gemini_generate_content(part_prompt)
+
         if response_text is None:
-            raise RuntimeError(f"Gemini STEP{idx} で有効なレスポンスが得られませんでした")
-        if len(response_text.strip()) < 200:
-            raise RuntimeError(f"Gemini STEP{idx} の出力が短すぎます")
-        if "example.com" in response_text.lower():
-            raise RuntimeError(f"Gemini STEP{idx} の出力に example.com が含まれています")
+            raise RuntimeError(f"Gemini API (STEP{idx}: {role}) から有効なレスポンスが得られませんでした")
+
+        print(f"[Gemini] STEP{idx}/3 ({role}) - received {len(response_text)} characters")
 
         # JSONを抽出
-        print(f"[Gemini] STEP{idx}/3 - extracting JSON")
+        print(f"[Gemini] STEP{idx}/3 ({role}) - extracting JSON")
         json_text = extract_json_text(response_text)
-        if json_text is None:
-            raise RuntimeError(f"STEP{idx} のレスポンスから JSON を抽出できませんでした")
 
-        # JSONをパース
+        if json_text is None:
+            print(f"[ERROR] Failed to extract JSON from STEP{idx} ({role})")
+            print(f"[DEBUG] Response (first 1000 chars): {response_text[:1000]}")
+            raise RuntimeError(f"STEP{idx} ({role}) のレスポンスから JSON を抽出できませんでした")
+
+        # パース
         try:
             part_data = json.loads(json_text)
+            print(f"[Gemini] STEP{idx}/3 ({role}) - JSON parsed successfully")
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"STEP{idx} の JSON 解析に失敗しました: {exc}") from exc
+            print(f"[ERROR] JSON parse failed for STEP{idx} ({role}): {exc}")
+            print(f"[DEBUG] JSON text (first 1000 chars): {json_text[:1000]}")
+            raise RuntimeError(f"STEP{idx} ({role}) の JSON 解析に失敗: {exc}")
 
-        # ステップごとの役割に合わせて必要キーのみ採用
-        allowed_keys = step_key_whitelist.get(idx, [])
-        filtered = {k: part_data.get(k) for k in allowed_keys if k in part_data}
-        if len(filtered) != len(allowed_keys):
-            missing = [k for k in allowed_keys if k not in filtered]
-            raise RuntimeError(f"STEP{idx} で必要なキーが不足しています: {missing}")
+        # 期待されるキーの検証（roleベース）
+        expected_keys_map = {
+            "metadata": ["title", "description"],
+            "script": ["content"],
+            "thumbnail": ["thumbnail"],
+        }
+        expected_keys = expected_keys_map.get(role, [])
 
-        merged_script.update(filtered)
+        if expected_keys:
+            missing = [key for key in expected_keys if key not in part_data]
+            if missing:
+                print(f"[ERROR] STEP{idx} ({role}) missing keys: {missing}")
+                print(f"[DEBUG] Received keys: {list(part_data.keys())}")
+                print(f"[DEBUG] Part data: {json.dumps(part_data, ensure_ascii=False, indent=2)[:500]}")
+                raise RuntimeError(f"STEP{idx} ({role}) で必要なキーが不足しています: {missing}")
+
+        if role == "thumbnail":
+            thumbnail_obj = part_data.get("thumbnail")
+            if not isinstance(thumbnail_obj, dict):
+                raise RuntimeError(f"STEP{idx} ({role}) の thumbnail が不正です")
+            missing_thumb_keys = [k for k in ["main_text", "sub_texts"] if k not in thumbnail_obj]
+            if missing_thumb_keys:
+                raise RuntimeError(f"STEP{idx} ({role}) の thumbnail に必要なキーが不足しています: {missing_thumb_keys}")
+            if not isinstance(thumbnail_obj.get("sub_texts"), list):
+                raise RuntimeError(f"STEP{idx} ({role}) の thumbnail.sub_texts は配列である必要があります")
+
+        # マージ
+        merged_script.update(part_data)
+        print(f"[Gemini] STEP{idx}/3 ({role}) - merged into final script")
 
     # マージ結果の検証
+    print("Validating merged script structure...")
     required_keys = ["title", "description", "content", "thumbnail"]
     missing_keys = [key for key in required_keys if key not in merged_script]
+
     if missing_keys:
+        print(f"[ERROR] Merged script is missing required keys: {missing_keys}")
+        print(f"[DEBUG] Current keys: {list(merged_script.keys())}")
         raise RuntimeError(f"台本に必須項目が不足しています: {missing_keys}")
 
-    if contains_example_dot_com(merged_script):
-        raise RuntimeError("生成結果に example.com が含まれています")
-
+    print("Script generation completed successfully")
     script_payload = merged_script
 
     # メタ情報を上書き（Gemini出力は使用しない）
