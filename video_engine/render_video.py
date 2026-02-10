@@ -160,6 +160,26 @@ class ImagePool:
             self.index = 0
         return path
 
+def apply_fade(clip, fade_in: float = None, fade_out: float = None):
+    """MoviePy v1/v2互換のフェード適用"""
+    if fade_in:
+        try:
+            clip = clip.with_effects([vfx.FadeIn(fade_in)])
+        except Exception:
+            try:
+                clip = clip.fadein(fade_in)
+            except Exception:
+                pass
+    if fade_out:
+        try:
+            clip = clip.with_effects([vfx.FadeOut(fade_out)])
+        except Exception:
+            try:
+                clip = clip.fadeout(fade_out)
+            except Exception:
+                pass
+    return clip
+
 # === Titleパート分割関数 ===
 def split_title_part(script_parts: List[Dict], part_durations: List[float], 
                      title_duration: float, title_audio_duration: float) -> tuple:
@@ -335,6 +355,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             print(f"[TIMELINE] Positioning modulation video ({modulation_duration:.2f}s) at {modulation_start_time:.2f}s...")
             # 音声を保持したまま配置
             modulation_video_with_audio = modulation_video_clip.with_duration(modulation_duration)
+            modulation_video_with_audio = apply_fade(modulation_video_with_audio, fade_in=0.4, fade_out=0.4)
             # 中央に配置し、開始時刻とFPSを明示
             modulation_video_positioned = (
                 modulation_video_with_audio
@@ -356,6 +377,9 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         for img_clip in image_clips:
             img_start = getattr(img_clip, 'start', 0.0)
             img_end = img_start + img_clip.duration
+            part_type = getattr(img_clip, '_part_type', None)
+            segment_start = getattr(img_clip, '_segment_start', None)
+            segment_end = getattr(img_clip, '_segment_end', None)
             
             # Modulation期間に完全に含まれる画像はスキップ
             if img_start >= modulation_start_time and img_end <= modulation_end_time:
@@ -371,6 +395,14 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 print(f"[TIMELINE] Adjusted image start to avoid modulation: {img_start:.2f}s -> {actual_start:.2f}s")
             
             adjusted_clip = img_clip.with_start(actual_start).with_duration(actual_duration)
+            # ネットの反応 → Modulation：最後の画像をフェードアウト
+            if part_type == "reaction" and segment_end is not None:
+                if abs((actual_start + actual_duration) - segment_end) <= 0.05:
+                    adjusted_clip = apply_fade(adjusted_clip, fade_out=0.4)
+            # Modulation → まとめ：最初の画像をフェードイン
+            if part_type == "owner_comment" and segment_start is not None:
+                if abs(actual_start - segment_start) <= 0.05:
+                    adjusted_clip = apply_fade(adjusted_clip, fade_in=0.4)
             all_clips_by_layer['images'].append({
                 'clip': adjusted_clip,
                 'start': actual_start,
@@ -453,6 +485,12 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     
                     # 絶対時間で配置
                     txt_clip = txt_clip.with_start(chunk_start).with_duration(chunk_duration).with_opacity(1.0).with_fps(FPS)
+                    # ネットの反応 → Modulation：最後の字幕をフェードアウト
+                    if script_parts[part_index].get("part") == "reaction" and chunk_index == len(chunk_durations) - 1:
+                        txt_clip = apply_fade(txt_clip, fade_out=0.4)
+                    # Modulation → まとめ：最初の字幕をフェードイン
+                    if script_parts[part_index].get("part") == "owner_comment" and chunk_index == 0:
+                        txt_clip = apply_fade(txt_clip, fade_in=0.4)
                     all_clips_by_layer['subtitles'].append({'clip': txt_clip})
                     last_subtitle_end = chunk_start + chunk_duration
                     
@@ -620,13 +658,42 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
         # BGM（main_titleから開始、owner_comment終了まで）
         if bgm_clip:
+            def apply_audio_fade(clip, fade_in: float = None, fade_out: float = None):
+                if fade_in:
+                    try:
+                        from moviepy.audio.fx.all import audio_fadein
+                        clip = audio_fadein(clip, fade_in)
+                    except Exception:
+                        try:
+                            clip = clip.audio_fadein(fade_in)
+                        except Exception:
+                            pass
+                if fade_out:
+                    try:
+                        from moviepy.audio.fx.all import audio_fadeout
+                        clip = audio_fadeout(clip, fade_out)
+                    except Exception:
+                        try:
+                            clip = clip.audio_fadeout(fade_out)
+                        except Exception:
+                            pass
+                return clip
+
             # メイン（title後〜modulation前）
             main_bgm_start = title_duration
             main_bgm_duration = max(0.0, modulation_start_time - title_duration)
             if main_bgm_duration > 0:
                 bgm_main = bgm_clip.subclipped(0, main_bgm_duration)
+                bgm_main = apply_audio_fade(bgm_main, fade_out=0.4)
                 audio_elements.append(bgm_main.with_start(main_bgm_start))
                 print(f"[TIMELINE] Added BGM (main): {main_bgm_duration:.2f}s starting at {main_bgm_start:.2f}s")
+
+            # Modulation中のダッキングBGM
+            if modulation_duration > 0:
+                bgm_mod = bgm_clip.subclipped(0, modulation_duration).with_volume_scaled(0.35)
+                bgm_mod = apply_audio_fade(bgm_mod, fade_in=0.4, fade_out=0.4)
+                audio_elements.append(bgm_mod.with_start(modulation_start_time))
+                print(f"[TIMELINE] Added BGM (modulation ducked): {modulation_duration:.2f}s starting at {modulation_start_time:.2f}s")
 
             # まとめ（owner_comment期間）
             owner_comment_duration = 0.0
@@ -637,6 +704,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             if owner_comment_duration > 0:
                 bgm_duration_for_summary = min(owner_comment_duration, bgm_clip.duration)
                 bgm_summary = bgm_clip.subclipped(0, bgm_duration_for_summary)
+                bgm_summary = apply_audio_fade(bgm_summary, fade_in=0.4)
                 # owner_comment終了時刻でBGMも終了
                 audio_elements.append(
                     bgm_summary.with_start(owner_comment_start_time).with_duration(owner_comment_duration)
@@ -3903,6 +3971,9 @@ async def build_video_with_subtitles(
                     "start": img_start,
                     "duration": actual_image_duration + 0.5,  # 0.5秒延長してオーバーラップ
                     "path": selected_image,
+                    "part_type": part_type,
+                    "segment_start": seg_start,
+                    "segment_end": seg_end,
                 })
                 images_scheduled += 1
                 print(f"[DEBUG] Image {img_idx}: start={img_start}s, duration={actual_image_duration + 0.5}s")
@@ -4005,6 +4076,9 @@ async def build_video_with_subtitles(
             start_time = item["start"]
             image_duration = item["duration"]
             image_path = item["path"]
+            part_type = item.get("part_type")
+            segment_start = item.get("segment_start")
+            segment_end = item.get("segment_end")
             if image_path:
                 try:
                     # SVGファイルを除外
@@ -4085,6 +4159,10 @@ async def build_video_with_subtitles(
 
             # 有効な画像のみクリップを作成
             clip = ImageClip(image_array).with_start(start_time).with_duration(image_duration).with_opacity(1.0).with_fps(FPS)
+            # セグメント情報を付与（統一タイムライン側でフェード制御）
+            clip._part_type = part_type
+            clip._segment_start = segment_start
+            clip._segment_end = segment_end
 
             # ランダムなポジション計算（画面内に収まる範囲で）
             img_height, img_width = image_array.shape[:2]
