@@ -684,9 +684,6 @@ def save_pending_article(article: Dict[str, Any], reaction: Dict[str, str]) -> s
     except:
         summary = article["topic_summary"][:50]  # エラー時は元の要約を短縮
     
-    # ソース名を短縮
-    source_name = entry.get("source", {}).get("title", "")[:20] if entry.get("source") else ""
-    
     # リアクションをコンパクト化
     compact_reaction = {
         "site": reaction.get("site", "")[:15],  # 最大15文字
@@ -699,7 +696,6 @@ def save_pending_article(article: Dict[str, Any], reaction: Dict[str, str]) -> s
         "summary": summary,
         "content_hash": article["content_hash"],
         "published_at": article.get("published_at", ""),
-        "source": source_name,
         "reaction": compact_reaction,
         "selected_at": _iso_now(),
     }
