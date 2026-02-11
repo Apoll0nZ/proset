@@ -6,6 +6,11 @@ on:
 
 jobs:
   render-and-upload:
+    # 防御: フォークや第三者アクターからの実行を拒否
+    if: >
+      github.repository == 'Apoll0nZ/proset' &&
+      github.actor == 'Apoll0nZ' &&
+      (github.event.repository == null || github.event.repository.fork == false)
     runs-on: ubuntu-latest
 
     env:

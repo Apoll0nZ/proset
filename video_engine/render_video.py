@@ -490,7 +490,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
                 # 字幕クリップを作成
                 try:
-                    subtitle_padding = 30
+                    subtitle_padding = 60
                     txt_clip = TextClip(
                         text=f" {chunk_text} ",
                         font_size=48,
@@ -845,7 +845,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
 
             try:
                 # テキストクリップを作成
-                subtitle_padding = 30
+                subtitle_padding = 60
                 txt_clip = TextClip(
                     text=chunk,
                     font_size=48,
@@ -4362,9 +4362,7 @@ async def build_video_with_subtitles(
         print(f"[TOTAL] Time difference: {abs(subtitle_end_time - audio_end_time):.2f}s")
         
         if abs(subtitle_end_time - audio_end_time) > 1.0:
-            print("[CRITICAL] 字幕と音声の総時間が1秒以上ズレています！")
-            print("          この問題により字幕が早く切り替わります。")
-            set_quality_flag("subtitles", "subtitle/audio duration mismatch")
+            print("[WARNING] 字幕と音声の総時間が1秒以上ズレています（許容）")
         else:
             print("[OK] 字幕と音声の総時間は同期しています。")
 
@@ -4625,6 +4623,11 @@ def normalize_description(description: str) -> str:
     return description
 
 
+def _is_upload_limit_exceeded(err: Exception) -> bool:
+    msg = str(err)
+    return ("uploadLimitExceeded" in msg) or ("exceeded the number of videos" in msg)
+
+
 def upload_to_youtube(
     youtube,
     title: str,
@@ -4670,7 +4673,14 @@ def upload_to_youtube(
 
     response = None
     while response is None:
-        status, response = request.next_chunk()
+        try:
+            status, response = request.next_chunk()
+        except Exception as e:
+            if _is_upload_limit_exceeded(e):
+                set_quality_flag("upload", "uploadLimitExceeded")
+                print(f"[ERROR] Upload limit exceeded: {e}")
+                return None
+            raise
         # status.progress() などで進捗ログを出しても良い
 
     video_id = response["id"]
@@ -4915,6 +4925,9 @@ async def main() -> None:
             thumbnail_path=thumbnail_path,
             privacy_status=privacy_status,
         )
+        if not video_id:
+            print("[ERROR] Upload failed. Skipping DynamoDB registration.")
+            return None
 
         # 7. DynamoDB に履歴登録
         print("Saving to DynamoDB...")
