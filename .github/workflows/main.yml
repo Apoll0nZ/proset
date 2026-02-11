@@ -129,15 +129,15 @@ jobs:
           [ -f "./thumbnail.png" ] && echo "✓ ./thumbnail.png found" || echo "✗ ./thumbnail.png NOT found"
           [ -f "../thumbnail.png" ] && echo "✓ ../thumbnail.png found" || echo "✗ ../thumbnail.png NOT found"
 
-      - name: Upload Video Artifact
-        if: always()  # エラーが起きても実行
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-video-artifacts
-          path: |
-            debug-video-artifacts/video.mp4
-            debug-video-artifacts/thumbnail.png
-          retention-days: 1
+      # - name: Upload Video Artifact
+      #   if: always()  # エラーが起きても実行
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: debug-video-artifacts
+      #     path: |
+      #       debug-video-artifacts/video.mp4
+      #       debug-video-artifacts/thumbnail.png
+      #     retention-days: 1
 
       - name: Cleanup VOICEVOX container
         if: always()
