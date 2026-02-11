@@ -4697,8 +4697,8 @@ def put_video_history_item(item: Dict[str, Any]) -> None:
 async def main() -> None:
     """ローカル/Actions 実行用エントリポイント。"""
     # 画像キャッシュをリセット
-        reset_image_cache()  # 追加
-        reset_quality_flags()
+    reset_image_cache()  # 追加
+    reset_quality_flags()
     
     # 一時ディレクトリを自動削除しないように変更
     tmpdir = tempfile.mkdtemp()
