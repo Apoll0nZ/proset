@@ -588,6 +588,7 @@ def create_thumbnail(
     main_text = thumbnail_data.get("main_text", title[:20])
     if not main_text:
         main_text = title[:20]
+    main_text = main_text[:20]
     
     # テキスト色をランダムに選択（黒・赤・青）
     main_colors = ["black", "red", "blue"]
@@ -614,7 +615,7 @@ def create_thumbnail(
     # sub_textsが空またはNoneの場合は描画を完全にスキップ
     if sub_texts and len(sub_texts) > 0:
         # 最初の1つのみ使用
-        sub_text = sub_texts[0]
+        sub_text = sub_texts[0][:15]
         
         try:
             # 高解像度での描画準備（2倍サイズで作成して後で縮小することでアンチエイリアスを効かせる）
