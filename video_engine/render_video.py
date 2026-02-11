@@ -787,26 +787,27 @@ def _build_subtitle_clip(
         stroke_color=stroke_color,
         stroke_width=stroke_width,
         font=font_path,
-        bg_color=None,
+        bg_color=bg_color,
     )
-    # 背景を後付けしてパディングを確実化
+    # パディングを付与（margin優先、失敗時はon_colorにフォールバック）
     try:
-        txt_clip = txt_clip.on_color(
-            size=(txt_clip.w + padding * 2, txt_clip.h + padding * 2),
+        txt_clip = txt_clip.margin(
+            left=padding,
+            right=padding,
+            top=padding,
+            bottom=padding,
             color=bg_color,
-            pos=("center", "center"),
         )
-    except Exception:
+    except Exception as e:
+        print(f"[WARNING] subtitle margin failed: {e}")
         try:
-            txt_clip = txt_clip.margin(
-                left=padding,
-                right=padding,
-                top=padding,
-                bottom=padding,
+            txt_clip = txt_clip.on_color(
+                size=(txt_clip.w + padding * 2, txt_clip.h + padding * 2),
                 color=bg_color,
+                pos=("center", "center"),
             )
-        except Exception:
-            pass
+        except Exception as e2:
+            print(f"[WARNING] subtitle on_color failed: {e2}")
     return txt_clip
 
 
