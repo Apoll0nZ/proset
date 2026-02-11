@@ -6,6 +6,7 @@ import math
 import time
 import hashlib
 import shutil
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 import random
@@ -4599,6 +4600,31 @@ def check_video_quality(video_path="video.mp4", min_size_mb=1, min_brightness=10
     return True
 
 
+def normalize_description(description: str) -> str:
+    """
+    概要欄の整形:
+    - "\\n" や "/n" を改行に変換
+    - Markdownリンク [text](url) を "text\\nurl" に変換
+    """
+    if not description:
+        return description
+
+    # エスケープされた改行/誤表記を修正
+    description = description.replace("\\n", "\n").replace("/n", "\n")
+
+    # MarkdownリンクをプレーンURLに変換
+    def _md_link_to_text(match):
+        text = match.group(1).strip()
+        url = match.group(2).strip()
+        if text and text != url:
+            return f"{text}\n{url}"
+        return url
+
+    description = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", _md_link_to_text, description)
+
+    return description
+
+
 def upload_to_youtube(
     youtube,
     title: str,
@@ -4717,7 +4743,7 @@ async def main() -> None:
 
         # JSONデータのバリデーションとデフォルト値設定
         title = data.get("title", "PCニュース解説")
-        description = data.get("description", "")
+        description = normalize_description(data.get("description", ""))
         content = data.get("content", {})
         topic_summary = content.get("topic_summary", "")
         script_parts = content.get("script_parts", [])
