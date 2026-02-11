@@ -1751,6 +1751,7 @@ def download_modulation_video() -> str:
 _used_image_hashes = set()  # 動画全体で使用した画像のハッシュ値を記録
 _used_image_paths = []  # 動画全体で使用した画像のパスを記録（サムネイル用）
 _latest_image_schedule = []  # 直近の画像スケジュール（サムネイル選定用）
+_quality_flags = {}  # 生成品質フラグ（問題検知）
 _image_search_cache = {}  # 画像検索キャッシュ（マルチスレッド対応）
 
 def reset_image_cache():
@@ -1760,6 +1761,18 @@ def reset_image_cache():
     _used_image_paths = []
     _latest_image_schedule = []
     print("[INFO] Image cache reset")
+
+def reset_quality_flags():
+    """品質フラグをリセット"""
+    global _quality_flags
+    _quality_flags = {}
+    print("[INFO] Quality flags reset")
+
+def set_quality_flag(key: str, detail: str = "") -> None:
+    """品質フラグをセット"""
+    global _quality_flags
+    _quality_flags[key] = detail or "flagged"
+    print(f"[QUALITY FLAG] {key}: {detail or 'flagged'}")
 
 def cleanup_local_temp_dir() -> None:
     """LOCAL_TEMP_DIRを削除（サムネイル生成後に実行）"""
@@ -3666,6 +3679,8 @@ async def build_video_with_subtitles(
         audio_clip = AudioFileClip(audio_path)
         total_duration = audio_clip.duration
         print(f"Main audio duration: {total_duration:.2f} seconds")
+        if total_duration <= 0:
+            set_quality_flag("audio", "audio duration is non-positive")
 
         # 変数の初期化
         title_duration = 0
@@ -3854,6 +3869,7 @@ async def build_video_with_subtitles(
             
             if bg_clip is None:
                 print("Failed to process background video")
+                set_quality_flag("background", "background video processing failed")
                 raise RuntimeError("Background video processing failed - no valid background clip available")
 
         # Layer 2: 画像スライド（セグメント連動）
@@ -4115,6 +4131,7 @@ async def build_video_with_subtitles(
         if not image_schedule:
             print("[WARNING] No images were scheduled for any segment")
             print("[INFO] Video will proceed with background only")
+            set_quality_flag("images", "no images scheduled")
         else:
             # 画像スケジュールの検証とソート
             print(f"[DEBUG] Validating image schedule with {len(image_schedule)} items")
@@ -4150,6 +4167,7 @@ async def build_video_with_subtitles(
         if not valid_images:
             print("[WARNING] No valid images were collected for the entire video")
             print("[INFO] Video will proceed with background only")
+            set_quality_flag("images", "no valid images")
         else:
             print(f"[DEBUG] Total images scheduled: {len(valid_images)} out of {len(image_schedule)} segments")
 
@@ -4345,6 +4363,7 @@ async def build_video_with_subtitles(
         if abs(subtitle_end_time - audio_end_time) > 1.0:
             print("[CRITICAL] 字幕と音声の総時間が1秒以上ズレています！")
             print("          この問題により字幕が早く切り替わります。")
+            set_quality_flag("subtitles", "subtitle/audio duration mismatch")
         else:
             print("[OK] 字幕と音声の総時間は同期しています。")
 
@@ -4586,6 +4605,7 @@ def upload_to_youtube(
     description: str,
     video_path: str,
     thumbnail_path: str = None,
+    privacy_status: str = "private",
 ) -> str:
     """
     YouTube に「非公開」で動画をアップロードし、videoId を返す。
@@ -4606,7 +4626,7 @@ def upload_to_youtube(
             "categoryId": "28",  # Science & Technology
         },
         "status": {
-            "privacyStatus": "private",
+            "privacyStatus": privacy_status,
         },
     }
 
@@ -4677,7 +4697,8 @@ def put_video_history_item(item: Dict[str, Any]) -> None:
 async def main() -> None:
     """ローカル/Actions 実行用エントリポイント。"""
     # 画像キャッシュをリセット
-    reset_image_cache()  # 追加
+        reset_image_cache()  # 追加
+        reset_quality_flags()
     
     # 一時ディレクトリを自動削除しないように変更
     tmpdir = tempfile.mkdtemp()
@@ -4789,13 +4810,13 @@ async def main() -> None:
                 thumbnail_error = e
                 print(f"[ERROR] サムネイル生成失敗 (attempt {attempt}/{max_thumbnail_retries}): {e}")
 
-        # サムネイル生成に失敗した場合は処理を中断
-        if not thumbnail_success:
-            cleanup_local_temp_dir()
-            raise RuntimeError("Thumbnail generation failed after retries") from thumbnail_error
-
         # サムネイル生成後にtempを削除
         cleanup_local_temp_dir()
+
+        # サムネイル生成に失敗した場合は処理を中断
+        if not thumbnail_success:
+            set_quality_flag("thumbnail", "thumbnail generation failed")
+            raise RuntimeError("Thumbnail generation failed after retries")
 
             # 4.5. 成果物をカレントディレクトリにコピー（GitHub Actions用）
         print("Copying artifacts to current directory for GitHub Actions...")
@@ -4849,16 +4870,20 @@ async def main() -> None:
         print("Performing video quality check before upload...")
         quality_ok = check_video_quality(video_path)
         if not quality_ok:
-            print("[ERROR] 動画品質チェックに失敗しました。アップロードを中止します。")
-            sys.exit(1)
+            print("[ERROR] 動画品質チェックに失敗しました。非公開でアップロードします。")
         
         # 6. YouTube アップロード
+        has_quality_flags = bool(_quality_flags)
+        if has_quality_flags:
+            print(f"[QUALITY FLAG] Flags detected: {_quality_flags}")
+        privacy_status = "public" if (quality_ok and not has_quality_flags) else "private"
         video_id = upload_to_youtube(
             youtube=youtube_client,
             title=title,
             description=description,
             video_path=video_path,
             thumbnail_path=thumbnail_path,
+            privacy_status=privacy_status,
         )
 
         # 7. DynamoDB に履歴登録
