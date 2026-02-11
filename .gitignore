@@ -17,6 +17,8 @@ generated_audio/
 generated_video/
 dist/
 build/
+thumbnail.png
+*.png
 
 # Lambda functions - PROTECTED: Do not delete these files
 # These contain the latest deployed code from AWS Lambda
@@ -37,6 +39,7 @@ token.json
 test_*.py
 *_test.py
 tests/
+diagnose_*.py
 
 # Temporary files
 temp/
