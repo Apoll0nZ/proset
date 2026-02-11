@@ -241,7 +241,6 @@ def get_article_images(
     for attempt in range(1, max_retries + 1):
         try:
             import sys
-            import os
             sys.path.append(os.path.dirname(os.path.abspath(__file__)))
             from render_video import search_images_with_playwright, download_image_from_url
             import asyncio

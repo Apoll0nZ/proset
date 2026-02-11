@@ -4764,7 +4764,6 @@ async def main() -> None:
             # 4.5. 成果物をカレントディレクトリにコピー（GitHub Actions用）
         print("Copying artifacts to current directory for GitHub Actions...")
         try:
-            import shutil
             
             # debug-video-artifacts ディレクトリを作成
             artifacts_dir = os.path.join(workspace_root, "debug-video-artifacts")
