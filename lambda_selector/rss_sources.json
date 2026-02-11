@@ -1,0 +1,38 @@
+{
+  "group_a": [
+    "https://pc.watch.impress.co.jp/data/rss/1.0/pcw/feed.rdf",
+    "https://k-tai.watch.impress.co.jp/data/rss/1.0/ktw/feed.rdf",
+    "https://www.techpowerup.com/rss/news",
+    "https://www.tomshardware.com/rss.xml",
+    "https://feeds.arstechnica.com/arstechnica/index",
+    "https://www.gsmarena.com/rss-news-reviews.php3",
+    "https://www.androidauthority.com/feed",
+    "https://www.phonearena.com/feed",
+    "https://nvidianews.nvidia.com/releases.xml",
+    "https://blog.google/products/rss/",
+    "https://news.samsung.com/global/feed"
+  ],
+  "group_b": [
+    "https://www.reddit.com/r/hardware/.rss",
+    "https://www.reddit.com/r/nvidia/.rss",
+    "https://www.reddit.com/r/pcmasterrace/.rss",
+    "https://www.reddit.com/r/buildapc/.rss",
+    "https://www.reddit.com/r/Android/.rss",
+    "https://www.reddit.com/r/iphone/.rss",
+    "https://www.reddit.com/r/GooglePixel/.rss",
+    "https://www.reddit.com/r/MachineLearning/.rss",
+    "https://www.reddit.com/r/OpenAI/.rss",
+    "https://www.reddit.com/r/ArtificialIntelligence/.rss",
+    "https://news.ycombinator.com/rss",
+    "https://lobste.rs/rss",
+    "https://b.hatena.ne.jp/hotentry/it.rss",
+    "https://b.hatena.ne.jp/hotentry/technology.rss"
+  ],
+  "support": [
+    "https://www.wired.com/feed/rss",
+    "https://www.gizmodo.com/rss",
+    "https://techcrunch.com/feed/",
+    "https://www.engadget.com/rss.xml",
+    "https://www.digitaltrends.com/feed/"
+  ]
+}
