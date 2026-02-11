@@ -46,8 +46,8 @@
   "title": "（固有名詞を含む、知的好奇心を刺激するタイトル）",
   "description": "■関連商品リンク\n動画で紹介した関連商品はこちらからご購入いただけます：\nhttps://amzn.to/3O0LpGl ・iPhone17\nhttps://amzn.to/4kxYu67 ・MacBook Pro\nhttps://amzn.to/3MbSqUe ・MacBook Air\nhttps://amzn.to/45OmGv2 ・Pixel 10\nhttps://amzn.to/4rCskZy ・RTX 5090\n\n（技術的意義を凝縮した概要文）\n\nIT・ガジェット系のニュースをお届けします。\n■動画の内容について\n動画のシナリオ内容は分かりやすくするために再構成・改変を行い、独自コンテンツになるように工夫しております。なお、誹謗中傷並びに著作権侵害を目的としておりません。\n\n■YouTube のチャンネル収益化ポリシーについて\n（以下略・原文維持）",
   "thumbnail": {
-    "main_text": "（10字以上の強いフレーズ）",
-    "sub_texts": ["（煽り文言1つ）"]
+    "main_text": "（20字以内の強いフレーズ）",
+    "sub_texts": ["（15字以内の煽り文言1つ）"]
   },
   "content": {
     "topic_summary": "（事実・分析・本音の要約）",

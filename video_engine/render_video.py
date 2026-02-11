@@ -489,18 +489,36 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
                 # 字幕クリップを作成
                 try:
+                    subtitle_padding = 30
                     txt_clip = TextClip(
                         text=f" {chunk_text} ",
                         font_size=48,
                         color="black",
                         method="caption",
-                        size=(1600, None),
+                        size=(1600 - (subtitle_padding * 2), None),
                         bg_color="white",
                         text_align="left",
                         stroke_color="black",
                         stroke_width=1,
                         font=font_path
                     )
+                    try:
+                        txt_clip = txt_clip.margin(
+                            left=subtitle_padding,
+                            right=subtitle_padding,
+                            top=subtitle_padding,
+                            bottom=subtitle_padding,
+                            color="white",
+                        )
+                    except Exception:
+                        try:
+                            txt_clip = txt_clip.on_color(
+                                size=(txt_clip.w + subtitle_padding * 2, txt_clip.h + subtitle_padding * 2),
+                                color=(255, 255, 255),
+                                pos=("center", "center"),
+                            )
+                        except Exception:
+                            pass
                     
                     # アニメーションを適用
                     try:
@@ -826,6 +844,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
 
             try:
                 # テキストクリップを作成
+                subtitle_padding = 30
                 txt_clip = TextClip(
                     text=chunk,
                     font_size=48,
@@ -833,9 +852,26 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                     stroke_color="black",
                     stroke_width=2,
                     method="caption",
-                    size=(VIDEO_WIDTH - 100, None),
+                    size=(VIDEO_WIDTH - 100 - (subtitle_padding * 2), None),
                     font=font_path
                 )
+                try:
+                    txt_clip = txt_clip.margin(
+                        left=subtitle_padding,
+                        right=subtitle_padding,
+                        top=subtitle_padding,
+                        bottom=subtitle_padding,
+                        color="black",
+                    )
+                except Exception:
+                    try:
+                        txt_clip = txt_clip.on_color(
+                            size=(txt_clip.w + subtitle_padding * 2, txt_clip.h + subtitle_padding * 2),
+                            color=(0, 0, 0),
+                            pos=("center", "center"),
+                        )
+                    except Exception:
+                        pass
 
                 # アニメーション効果を追加
                 txt_clip = subtitle_slide_scale_animation(txt_clip)
