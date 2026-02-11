@@ -491,7 +491,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 # 字幕クリップを作成
                 try:
                     txt_clip = _build_subtitle_clip(
-                        text=chunk_text,
+                        text=wrap_subtitle_text(chunk_text),
                         font_path=font_path,
                         font_size=48,
                         text_color="black",
@@ -787,6 +787,7 @@ def _build_subtitle_clip(
         stroke_color=stroke_color,
         stroke_width=stroke_width,
         font=font_path,
+        bg_color=None,
     )
     # 背景を後付けしてパディングを確実化
     try:
@@ -807,6 +808,26 @@ def _build_subtitle_clip(
         except Exception:
             pass
     return txt_clip
+
+
+def wrap_subtitle_text(text: str, max_chars: int = 18) -> str:
+    """字幕用に簡易改行を挿入（日本語の長文対策）"""
+    if not text:
+        return text
+    lines = []
+    current = ""
+    for ch in text:
+        if ch == "\n":
+            lines.append(current)
+            current = ""
+            continue
+        current += ch
+        if len(current) >= max_chars:
+            lines.append(current)
+            current = ""
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
 
 
 def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_start_time: float, font_path: str, 
@@ -874,15 +895,15 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
             try:
                 # テキストクリップを作成（背景は後から付与してパディングを確実化）
                 txt_clip = _build_subtitle_clip(
-                    text=chunk,
+                    text=wrap_subtitle_text(chunk),
                     font_path=font_path,
                     font_size=48,
-                    text_color="white",
+                    text_color="black",
                     stroke_color="black",
                     stroke_width=2,
                     max_width=VIDEO_WIDTH - 100,
                     padding=60,
-                    bg_color=(0, 0, 0),
+                    bg_color=(255, 255, 255),
                     text_align="center",
                 )
 
