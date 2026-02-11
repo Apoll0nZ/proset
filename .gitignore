@@ -24,8 +24,26 @@ build/
 lambda/
 
 # Lambda functions (private)
-# lambda_writer/
-# lambda_selector/
+lambda_writer/
+lambda_selector/
+
+# Test files
+test_*.py
+*_test.py
+tests/
+
+# Temporary files
+temp/
+*.tmp
+temp_*
+
+# Debug files
+debug_*.py
+debug_*
+
+# Deployment artifacts
+*_deploy.zip
+debug-video-artifacts/
 
 # OS / editor specific
 .DS_Store
