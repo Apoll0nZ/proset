@@ -2,8 +2,7 @@
 
 # Environment & secrets
 .env
-client_secrets.json
-token.json
+# Token and authentication files (moved below)
 
 # Logs
 *.log
@@ -24,8 +23,15 @@ build/
 lambda/
 
 # Lambda functions (private)
+lambda/
 lambda_writer/
 lambda_selector/
+
+# Token and authentication files
+get_token.py
+get_youtube_token.py
+client_secrets.json
+token.json
 
 # Test files
 test_*.py
@@ -50,3 +56,4 @@ debug-video-artifacts/
 
 # Documentation
 README.md
+*.md
