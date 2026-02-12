@@ -814,7 +814,7 @@ def _build_subtitle_clip(
     return final_clip
 
 
-def wrap_subtitle_text(text: str, max_chars: int = 20) -> str:
+def wrap_subtitle_text(text: str, max_chars: int = 30) -> str:
     """
     字幕用に改行を挿入（大きい文字サイズ対応）
 
