@@ -826,9 +826,9 @@ def wrap_subtitle_text(text: str, max_chars: int = 30) -> str:
         return text
     if "\n" in text:
         lines = text.split("\n")
-        if len(lines) > 3:
-            print(f"[SUBTITLE] Warning: Text has {len(lines)} lines, limiting to 3")
-            return "\n".join(lines[:3])
+        if len(lines) > 6:
+            print(f"[SUBTITLE] Warning: Text has {len(lines)} lines, limiting to 6")
+            return "\n".join(lines[:6])
         return text
 
     lines = []
@@ -848,15 +848,15 @@ def wrap_subtitle_text(text: str, max_chars: int = 30) -> str:
                 lines.append(current_line)
                 current_line = ""
 
-            if len(lines) >= 3:
+            if len(lines) >= 6:
                 if current_line:
-                    lines[2] += current_line
+                    lines[5] += current_line
                 break
 
-    if current_line and len(lines) < 3:
+    if current_line and len(lines) < 6:
         lines.append(current_line)
 
-    return "\n".join(lines[:3])
+    return "\n".join(lines[:6])
 
 
 def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_start_time: float, font_path: str, 
@@ -1325,6 +1325,10 @@ def subtitle_slide_scale_animation(clip):
     import random
     
     actual_subtitle_height = clip.h if hasattr(clip, 'h') else 220
+    # 字幕が縦に大きすぎる場合は、位置調整だけでは画面内に収まらないため縮小する
+    # （行数制限ではなく「切れない」ことを優先）
+    max_allowed_height = max(1, VIDEO_HEIGHT - 40)  # 上下に最低限の余白を残す
+    fit_scale = min(1.0, max_allowed_height / max(1, actual_subtitle_height))
     safe_bottom_margin = 80
     safe_top_limit = VIDEO_HEIGHT - actual_subtitle_height - safe_bottom_margin
     random_range = 200
@@ -1361,7 +1365,7 @@ def subtitle_slide_scale_animation(clip):
             progress = t / duration  # 0-1の進捗
         
         # サイズ：90% → 100% へ拡大
-        scale = 0.9 + 0.1 * progress
+        scale = (0.9 + 0.1 * progress) * fit_scale
         
         return scale
     
