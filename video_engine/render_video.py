@@ -3655,23 +3655,15 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
 def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str) -> tuple:
     """
     複数のセリフを順番に音声合成し、結合した音声ファイルを生成。
-    メモリ効率を改善し、大量の音声パーツ処理に対応。
-    リトライロジックを実装し、ネットワークエラーに対応。
-
-    Returns:
-        (audio_path, part_durations, query_data_list_all, text_parts_list_all)
-        - audio_path: 結合された音声ファイルのパス
-        - part_durations: 各部分の音声長リスト
-        - query_data_list_all: 各部分のVoicevox query_dataリスト
-        - text_parts_list_all: 各部分のテキスト分割リスト
+    ★インデックスの完全一致を保証
     """
     import time
 
     audio_clips = []
     part_durations: List[float] = []
-    query_data_list_all = {}  # 部分ごとのquery_dataを保存
-    text_parts_list_all = {}  # 部分ごとのtext_partsを保存
-    duration_list_all = {}    # ★ファイルベースのduration_listを保存
+    query_data_list_all = {}
+    text_parts_list_all = {}
+    duration_list_all = {}
     generated_audio_files = []
     successful_parts = 0
     failed_parts = []
@@ -3679,20 +3671,25 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     print(f"Processing {len(script_parts)} script parts...")
     
     for i, part in enumerate(script_parts):
+        part_name = part.get("part", "")
+        text = part.get("text", "")
+        
+        # ★空テキストの場合は0.0を記録してスキップ（インデックス維持）
+        if not text:
+            print(f"[REORDER] Part {i} ({part_name}): Empty text, recording 0.0 duration")
+            part_durations.append(0.0)
+            query_data_list_all[i] = []
+            text_parts_list_all[i] = []
+            duration_list_all[i] = []
+            continue
+        
+        # 音声生成処理（リトライ付き）
         clip = None
         part_duration = 0.0
         success = False
         
-        # 各パーツの処理にリトライロジックを実装
-        for attempt in range(1, 4):  # 最大3回リトライ
+        for attempt in range(1, 4):
             try:
-                part_name = part.get("part", "")
-                text = part.get("text", "")
-                
-                if not text:
-                    print(f"[REORDER] Part {i}: Empty text, skipping completely...")
-                    continue  # 空テキストは完全スキップ（success扱いしない）
-                
                 # part名に応じてspeaker_idを決定
                 if part_name.startswith("article_"):
                     speaker_id = 3
@@ -3705,9 +3702,8 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 
                 audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
 
-                # ===== 新しい処理流れ：字幕優先 =====
-                # Step 1: テキストを字幕チャンク単位で分割
-                print(f"[REORDER] Part {i}: Splitting text into subtitle chunks...")
+                # テキストを字幕チャンク単位で分割
+                print(f"[REORDER] Part {i} ({part_name}): Splitting text into subtitle chunks...")
                 subtitle_text_parts = split_subtitle_text(text, max_chars=120)
 
                 if not subtitle_text_parts:
@@ -3715,48 +3711,35 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
 
                 print(f"[REORDER] Part {i}: Split into {len(subtitle_text_parts)} chunks")
 
-                # Step 2: 分割済みテキストを音声合成（1対1対応を保証）
+                # 分割済みテキストを音声合成
                 print(f"[REORDER] Part {i}: Synthesizing {len(subtitle_text_parts)} chunks...")
                 audio_file, query_data_list, text_parts_from_synthesis, duration_list = synthesize_precut_speech_voicevox(
                     subtitle_text_parts, speaker_id, audio_path
                 )
 
                 if os.path.exists(audio_path):
-                    # AudioFileClipを作成して実測durationを取得
                     audio_clip = AudioFileClip(audio_path)
                     actual_duration = audio_clip.duration
                     
-                    # 成功順にappendする方式に変更
+                    # ★成功時のデータ記録
                     audio_clips.append(audio_clip)
                     generated_audio_files.append(audio_path)
                     part_durations.append(actual_duration)
-                    
-                    # query_data、text_parts、duration_list を保存（完全1対1対応を確保）
                     query_data_list_all[i] = query_data_list
                     text_parts_list_all[i] = text_parts_from_synthesis
-                    # ★ファイルベースのduration_listも保存
                     duration_list_all[i] = duration_list
                     
-                    print(f"[REORDER] Part {i}: actual_duration={actual_duration:.2f}s, chunks={len(text_parts_from_synthesis)}")
-
-                    # 同期確認ログ
-                    print(f"[REORDER] Part {i}: ✓ Chunks={len(text_parts_from_synthesis)}, Query_data={len(query_data_list)}, Duration_list={len(duration_list)}")
-                    if len(text_parts_from_synthesis) != len(query_data_list) or len(text_parts_from_synthesis) != len(duration_list):
-                        print(f"[WARNING] Part {i}: Mismatch detected!")
-
+                    print(f"[REORDER] Part {i} ({part_name}): SUCCESS duration={actual_duration:.2f}s, chunks={len(text_parts_from_synthesis)}")
                     successful_parts += 1
                     success = True
-                    print(f"Successfully created audio clip for part {i}")
-                    break  # 成功したらリトライループを抜ける
+                    break
                 else:
                     raise RuntimeError(f"Audio file not created for part {i}")
                     
             except Exception as e:
                 if attempt < 3:
-                    print(f"Attempt {attempt} failed for part {i}, retrying... Error: {str(e)}")
-                    time.sleep(2)  # 2秒待機
-                    
-                    # クリップが存在する場合はクリーンアップ
+                    print(f"[REORDER] Part {i} ({part_name}): Attempt {attempt} failed, retrying... Error: {str(e)}")
+                    time.sleep(2)
                     if clip:
                         try:
                             clip.close()
@@ -3764,27 +3747,34 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                             pass
                     clip = None
                 else:
-                    print(f"Critical error: All 3 attempts failed for part {i}. Error: {str(e)}")
-                    print(f"Part data: {part}")
+                    print(f"[ERROR] Part {i} ({part_name}): All 3 attempts failed. Error: {str(e)}")
                     failed_parts.append(i)
-                    
-                    # 最後の試行で失敗したクリップをクリーンアップ
                     if clip:
                         try:
                             clip.close()
                         except:
                             pass
+        
+        # ★失敗時も0.0を記録（インデックス維持）
         if not success:
+            print(f"[REORDER] Part {i} ({part_name}): FAILED - Recording 0.0 duration")
             part_durations.append(0.0)
+            query_data_list_all[i] = []
+            text_parts_list_all[i] = []
+            duration_list_all[i] = []
     
-    # 処理結果のサマリーを出力
+    # 処理結果のサマリー
     print(f"Audio synthesis completed: {successful_parts}/{len(script_parts)} parts successful")
     if failed_parts:
-        print(f"Failed parts: {failed_parts}")
-        print(f"Warning: {len(failed_parts)} parts failed, but continuing with successful parts...")
+        print(f"Failed parts indices: {failed_parts}")
+        print(f"Warning: {len(failed_parts)} parts failed")
+    
+    # ★インデックス一致確認
+    print(f"[INDEX CHECK] script_parts: {len(script_parts)}, part_durations: {len(part_durations)}")
+    assert len(script_parts) == len(part_durations), "Index mismatch detected!"
     
     if not audio_clips:
-        raise RuntimeError(f"音声クリップが生成されませんでした。{len(failed_parts)}個のパーツが失敗しました。script_partsの内容を確認してください。")
+        raise RuntimeError(f"音声クリップが生成されませんでした。{len(failed_parts)}個のパーツが失敗しました。")
     
     print(f"Concatenating {len(audio_clips)} audio clips...")
     
@@ -3792,7 +3782,6 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     final_audio_path = os.path.join(tmpdir, "final_audio.wav")
     
     try:
-        # すべての音声クリップを結合
         final_audio = concatenate_audioclips(audio_clips)
         final_audio.write_audiofile(final_audio_path, codec="pcm_s16le", fps=44100)
         print(f"Final audio saved to: {final_audio_path}")
@@ -3801,7 +3790,6 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
         print(f"Error during audio concatenation: {e}")
         raise
     finally:
-        # すべてのクリップを解放
         for clip in audio_clips:
             try:
                 clip.close()
@@ -3814,12 +3802,10 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
             except Exception as e:
                 print(f"Error closing final audio: {e}")
         
-        # 個別の音声ファイルを削除してメモリを解放
         for audio_file in generated_audio_files:
             try:
                 if os.path.exists(audio_file):
                     os.remove(audio_file)
-                    print(f"Cleaned up temporary audio file: {audio_file}")
             except Exception as e:
                 print(f"Failed to remove temporary audio file {audio_file}: {e}")
 
