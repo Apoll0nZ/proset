@@ -500,7 +500,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                         max_width=1600,
                         padding=40,
                         bg_color=(0, 0, 0, 180),
-                        text_align="center",
+                        text_align="left",
                     )
                     
                     # アニメーションを適用
@@ -933,7 +933,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                     max_width=VIDEO_WIDTH - 100,
                     padding=60,
                     bg_color=(255, 255, 255),
-                    text_align="center",
+                    text_align="left",
                 )
 
                 # アニメーション効果を追加
