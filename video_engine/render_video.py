@@ -773,7 +773,7 @@ def _build_subtitle_clip(
     max_width: int,
     padding: int,
     bg_color: tuple,
-    text_align: str,
+    text_align: str = "center",
 ) -> TextClip:
     """字幕用テキストをパディング付き背景で描画（文字幅に合わせた背景）"""
     content_width = max(100, int(max_width - (padding * 2)))
@@ -793,6 +793,8 @@ def _build_subtitle_clip(
     actual_text_height = txt_clip.h
     bg_width = actual_text_width + padding * 2
     bg_height = actual_text_height + padding * 2
+    if bg_height > 350:
+        print(f"[WARNING] Subtitle height is large: {bg_height}px (may not fit on screen)")
     print(f"[DEBUG] Text size: {actual_text_width}x{actual_text_height}, BG size: {bg_width}x{bg_height}")
 
     # RGBA対応の背景
@@ -812,7 +814,7 @@ def _build_subtitle_clip(
     return final_clip
 
 
-def wrap_subtitle_text(text: str, max_chars: int = 30) -> str:
+def wrap_subtitle_text(text: str, max_chars: int = 20) -> str:
     """
     字幕用に改行を挿入（大きい文字サイズ対応）
 
@@ -823,6 +825,10 @@ def wrap_subtitle_text(text: str, max_chars: int = 30) -> str:
     if not text:
         return text
     if "\n" in text:
+        lines = text.split("\n")
+        if len(lines) > 3:
+            print(f"[SUBTITLE] Warning: Text has {len(lines)} lines, limiting to 3")
+            return "\n".join(lines[:3])
         return text
 
     lines = []
@@ -842,10 +848,15 @@ def wrap_subtitle_text(text: str, max_chars: int = 30) -> str:
                 lines.append(current_line)
                 current_line = ""
 
-    if current_line:
+            if len(lines) >= 3:
+                if current_line:
+                    lines[2] += current_line
+                break
+
+    if current_line and len(lines) < 3:
         lines.append(current_line)
 
-    return "\n".join(lines)
+    return "\n".join(lines[:3])
 
 
 def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_start_time: float, font_path: str, 
@@ -1310,15 +1321,24 @@ def get_images_for_time_range(image_clips: List, start_time: float, end_time: fl
 
 # 字幕スライドイン・拡大アニメーション関数
 def subtitle_slide_scale_animation(clip):
-    """字幕をスライドインしながら90%→100%に拡大（Y軸ランダム配置）"""
+    """字幕をスライドインしながら90%→100%に拡大（Y軸ランダム配置・画面内保証・最大3行対応）"""
     import random
     
-    # Y軸をランダムに決定（画面下部に配置）
-    estimated_subtitle_height = 150
-    min_y = VIDEO_HEIGHT - 300  # 下部300pxの範囲
-    max_y = VIDEO_HEIGHT - estimated_subtitle_height - 50  # 下端から50pxマージン
+    actual_subtitle_height = clip.h if hasattr(clip, 'h') else 220
+    safe_bottom_margin = 80
+    safe_top_limit = VIDEO_HEIGHT - actual_subtitle_height - safe_bottom_margin
+    random_range = 200
+    min_y = max(0, safe_top_limit - random_range)
+    max_y = safe_top_limit
     
-    base_y = random.randint(min_y, max_y)  # ランダムなY座標
+    if min_y > max_y:
+        print(f"[SUBTITLE] Warning: Subtitle too large ({actual_subtitle_height}px), using fixed position")
+        base_y = VIDEO_HEIGHT - actual_subtitle_height - safe_bottom_margin
+        base_y = max(0, base_y)
+    else:
+        base_y = random.randint(min_y, max_y)
+    
+    print(f"[SUBTITLE] Positioned at y={base_y}px (height={actual_subtitle_height}px, screen={VIDEO_HEIGHT}px)")
     
     def animate(t):
         duration = 0.5  # 0.5秒でアニメーション完了
@@ -1330,9 +1350,8 @@ def subtitle_slide_scale_animation(clip):
         # Y座標：base_y - 50px → base_y へスライド（絶対ピクセル値）
         y_pos = base_y - 50 + 50 * progress
         
-        # 画面外防止（念のため再チェック）
-        safe_y_pos = max(min_y, min(y_pos, max_y))
-        return ("center", safe_y_pos)  # X軸は中央固定
+        safe_y_pos = max(0, min(y_pos, VIDEO_HEIGHT - actual_subtitle_height - 20))
+        return ("center", safe_y_pos)
     
     def scale_animate(t):
         duration = 0.5  # 0.5秒でアニメーション完了
@@ -1353,8 +1372,8 @@ def subtitle_slide_scale_animation(clip):
         ]).with_position(animate)
     except Exception as e:
         print(f"[DEBUG] Animation error: {e}")
-        # フォールバック：ランダムなY座標で静止
-        return clip.with_position(("center", base_y))
+        fallback_y = max(0, VIDEO_HEIGHT - actual_subtitle_height - 80)
+        return clip.with_position(("center", fallback_y))
 
 # loop関数の安全なインポート（MoviePy 2.0対応）
 try:
