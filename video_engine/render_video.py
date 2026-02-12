@@ -491,16 +491,16 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 # 字幕クリップを作成
                 try:
                     txt_clip = _build_subtitle_clip(
-                        text=wrap_subtitle_text(chunk_text),
+                        text=wrap_subtitle_text(chunk_text, max_chars=30),
                         font_path=font_path,
-                        font_size=48,
-                        text_color="black",
+                        font_size=72,
+                        text_color="white",
                         stroke_color="black",
-                        stroke_width=1,
+                        stroke_width=3,
                         max_width=1600,
-                        padding=60,
-                        bg_color=(255, 255, 255),
-                        text_align="left",
+                        padding=40,
+                        bg_color=(0, 0, 0, 180),
+                        text_align="center",
                     )
                     
                     # アニメーションを適用
@@ -775,7 +775,7 @@ def _build_subtitle_clip(
     bg_color: tuple,
     text_align: str,
 ) -> TextClip:
-    """字幕用テキストをパディング付き背景で描画"""
+    """字幕用テキストをパディング付き背景で描画（文字幅に合わせた背景）"""
     content_width = max(100, int(max_width - (padding * 2)))
     txt_clip = TextClip(
         text=text,
@@ -787,47 +787,64 @@ def _build_subtitle_clip(
         stroke_color=stroke_color,
         stroke_width=stroke_width,
         font=font_path,
-        bg_color=bg_color,
     )
-    # パディングを付与（margin優先、失敗時はon_colorにフォールバック）
-    try:
-        txt_clip = txt_clip.margin(
-            left=padding,
-            right=padding,
-            top=padding,
-            bottom=padding,
+
+    actual_text_width = txt_clip.w
+    actual_text_height = txt_clip.h
+    bg_width = actual_text_width + padding * 2
+    bg_height = actual_text_height + padding * 2
+    print(f"[DEBUG] Text size: {actual_text_width}x{actual_text_height}, BG size: {bg_width}x{bg_height}")
+
+    # RGBA対応の背景
+    if len(bg_color) == 4:
+        bg_clip = ColorClip(
+            size=(bg_width, bg_height),
+            color=bg_color[:3],
+        ).with_duration(txt_clip.duration).with_opacity(bg_color[3] / 255.0)
+    else:
+        bg_clip = ColorClip(
+            size=(bg_width, bg_height),
             color=bg_color,
-        )
-    except Exception as e:
-        print(f"[WARNING] subtitle margin failed: {e}")
-        try:
-            txt_clip = txt_clip.on_color(
-                size=(txt_clip.w + padding * 2, txt_clip.h + padding * 2),
-                color=bg_color,
-                pos=("center", "center"),
-            )
-        except Exception as e2:
-            print(f"[WARNING] subtitle on_color failed: {e2}")
-    return txt_clip
+        ).with_duration(txt_clip.duration)
+
+    txt_clip = txt_clip.with_position(("center", "center"))
+    final_clip = CompositeVideoClip([bg_clip, txt_clip], size=(bg_width, bg_height))
+    return final_clip
 
 
-def wrap_subtitle_text(text: str, max_chars: int = 18) -> str:
-    """字幕用に簡易改行を挿入（日本語の長文対策）"""
+def wrap_subtitle_text(text: str, max_chars: int = 30) -> str:
+    """
+    字幕用に改行を挿入（大きい文字サイズ対応）
+
+    Args:
+        text: 元のテキスト
+        max_chars: 1行の最大文字数
+    """
     if not text:
         return text
+    if "\n" in text:
+        return text
+
     lines = []
-    current = ""
-    for ch in text:
-        if ch == "\n":
-            lines.append(current)
-            current = ""
-            continue
-        current += ch
-        if len(current) >= max_chars:
-            lines.append(current)
-            current = ""
-    if current:
-        lines.append(current)
+    current_line = ""
+
+    for char in text:
+        current_line += char
+        if len(current_line) >= max_chars:
+            for delimiter in ["。", "、", "！", "？", ".", ",", "!", "?"]:
+                if delimiter in current_line:
+                    split_pos = current_line.rfind(delimiter) + 1
+                    if split_pos > max_chars * 0.7:
+                        lines.append(current_line[:split_pos])
+                        current_line = current_line[split_pos:]
+                        break
+            else:
+                lines.append(current_line)
+                current_line = ""
+
+    if current_line:
+        lines.append(current_line)
+
     return "\n".join(lines)
 
 
@@ -1296,11 +1313,10 @@ def subtitle_slide_scale_animation(clip):
     """字幕をスライドインしながら90%→100%に拡大（Y軸ランダム配置）"""
     import random
     
-    # Y軸をランダムに決定（画面外にはみ出ない範囲）
-    # 字幕の高さを推定（font_size=48の場合、約60-80px）
-    estimated_subtitle_height = 100
-    min_y = 100  # 上部マージン
-    max_y = (VIDEO_HEIGHT // 2) - estimated_subtitle_height  # 画面中央までに制限
+    # Y軸をランダムに決定（画面下部に配置）
+    estimated_subtitle_height = 150
+    min_y = VIDEO_HEIGHT - 300  # 下部300pxの範囲
+    max_y = VIDEO_HEIGHT - estimated_subtitle_height - 50  # 下端から50pxマージン
     
     base_y = random.randint(min_y, max_y)  # ランダムなY座標
     
@@ -1479,7 +1495,7 @@ FPS = int(os.environ.get("FPS", "30"))
 VIDEO_BITRATE = "8M"  # 高画質設定：8Mbps
 
 # デバッグモード（Trueの時は最初の60秒のみ書き出し）
-DEBUG_MODE = False
+DEBUG_MODE = True
 
 # デバッグモードでの処理制限
 DEBUG_MAX_PARTS = 2 if DEBUG_MODE else None  # 最初の2パーツのみ処理
