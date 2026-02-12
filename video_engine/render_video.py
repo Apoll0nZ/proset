@@ -493,7 +493,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     txt_clip = _build_subtitle_clip(
                         text=wrap_subtitle_text(chunk_text, max_chars=30),
                         font_path=font_path,
-                        font_size=72,
+                        font_size=60,
                         text_color="white",
                         stroke_color="black",
                         stroke_width=3,
