@@ -776,10 +776,29 @@ def _build_subtitle_clip(
     text_align: str = "center",
 ) -> TextClip:
     """字幕用テキストをパディング付き背景で描画（文字幅に合わせた背景）"""
+    # 画面内収まるようにフォントサイズを事前調整
+    max_allowed_height = max(1, VIDEO_HEIGHT - 40)
+    temp_clip = TextClip(
+        text=text,
+        font_size=font_size,
+        color=text_color,
+        method="caption",
+        size=(max_width - padding * 2, None),  # 仮の幅でテスト
+        text_align=text_align,
+        stroke_color=stroke_color,
+        stroke_width=stroke_width,
+        font=font_path,
+    )
+    
+    # 実際の高さを取得して縮小率を計算
+    actual_height = temp_clip.h
+    fit_scale = min(1.0, max_allowed_height / max(1, actual_height))
+    adjusted_font_size = int(font_size * fit_scale)
+    
     content_width = max(100, int(max_width - (padding * 2)))
     txt_clip = TextClip(
         text=text,
-        font_size=font_size,
+        font_size=adjusted_font_size,  # 調整後のフォントサイズ
         color=text_color,
         method="caption",
         size=(content_width, None),
