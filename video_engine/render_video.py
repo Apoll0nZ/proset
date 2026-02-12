@@ -4871,7 +4871,7 @@ async def main() -> None:
 
         # 4. サムネイル生成
         print("Generating thumbnail...")
-        workspace_root = os.environ.get('GITHUB_WORKSPACE', '.')
+        workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         thumbnail_path = os.path.join(workspace_root, "thumbnail.png")
         thumbnail_success = False
         thumbnail_error = None
