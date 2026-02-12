@@ -5072,19 +5072,28 @@ async def main() -> None:
                     video_file = "video.mp4"
                     thumbnail_file = "thumbnail.png"
                     
-                    if os.path.exists(video_file):
-                        os.remove(video_file)
-                        print(f"[INFO] Removed video file: {video_file}")
-                    
-                    if os.path.exists(thumbnail_file):
-                        os.remove(thumbnail_file)
-                        print(f"[INFO] Removed thumbnail file: {thumbnail_file}")
+                    # デバッグモードでない場合のみ、ファイルを削除する
+                    if not DEBUG_MODE:
+                        if os.path.exists(video_file):
+                            os.remove(video_file)
+                            print(f"[INFO] Removed video file: {video_file}")
+                        
+                        if os.path.exists(thumbnail_file):
+                            os.remove(thumbnail_file)
+                            print(f"[INFO] Removed thumbnail file: {thumbnail_file}")
+                    else:
+                        # デバッグモード時は残す
+                        print(f"[DEBUG] KEEPING ARTIFACTS: {video_file}, {thumbnail_file}")
                         
                 except Exception as e:
                     print(f"[WARNING] Failed to remove project root files: {e}")
                 
-                shutil.rmtree(tmpdir, ignore_errors=True)
-                print(f"[INFO] Cleaned up temporary directory: {tmpdir}")
+                # 一時ディレクトリのクリーンアップ
+                if not DEBUG_MODE:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                    print(f"[INFO] Cleaned up temporary directory: {tmpdir}")
+                else:
+                    print(f"[DEBUG] KEEPING TEMP DIRECTORY: {tmpdir}")
         except Exception as e:
             print(f"[WARNING] Failed to cleanup: {e}")
 
