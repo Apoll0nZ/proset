@@ -849,13 +849,13 @@ def _build_subtitle_clip(
     return final_clip
 
 
-def wrap_subtitle_text(text: str, max_chars: int = 28) -> str:
+def wrap_subtitle_text(text: str, max_chars: int = 26) -> str:
     """
-    字幕用に改行を挿入（安全マージン考慮・単語境界尊重）
+    字幕用に改行を挿入（シンプルな文字数ベース）
 
     Args:
         text: 元のテキスト
-        max_chars: 1行の最大文字数（デフォルト28文字 = 1260px程度）
+        max_chars: 1行の最大文字数（デフォルト26文字）
     """
     if not text:
         return text
@@ -869,104 +869,26 @@ def wrap_subtitle_text(text: str, max_chars: int = 28) -> str:
 
     lines = []
     current_line = ""
-    
-    # ハードリミット: 絶対に超えてはいけない文字数
-    HARD_LIMIT = 32
 
     for char in text:
         current_line += char
         
-        # ★ハードリミットチェック（最優先）
-        if len(current_line) > HARD_LIMIT:
-            # 1文字オーバーしたので、最後の文字を次の行に回す
-            print(f"[SUBTITLE] Hard limit exceeded, forcing break at {HARD_LIMIT} chars")
-            lines.append(current_line[:-1])  # 最後の文字を除いて追加
-            current_line = char  # 現在の文字から新しい行を開始
+        # 「。」で改行（優先）
+        if char == "。" and len(current_line) > 0:
+            lines.append(current_line)
+            current_line = ""
             
             if len(lines) >= 6:
-                # 6行目に残りを追加
-                lines[5] += current_line
                 break
             continue
         
-        # max_charsに到達した場合（単語境界でのみ改行を試みる）
+        # 26文字で改行（文字数超過時）
         if len(current_line) >= max_chars:
-            # ★区切り文字チェックを無効化（split_text_unifiedで既に分割済みのため）
-            delimiter_found = False
-            # for delimiter in ["。", "、", "！", "？", ".", ",", "!", "?"]:
-            #     if delimiter in current_line:
-            #         split_pos = current_line.rfind(delimiter) + 1
-            #         # 区切り文字がmax_charsの70%以降にある場合のみ採用
-            #         if split_pos >= max_chars * 0.7:
-            #             lines.append(current_line[:split_pos])
-            #             current_line = current_line[split_pos:]
-            #             delimiter_found = True
-            #             break
+            lines.append(current_line)
+            current_line = ""
             
-            if delimiter_found:
-                if len(lines) >= 6:
-                    if current_line:
-                        lines[5] += current_line
-                    break
-                continue
-            
-            # ステップ2: 単語境界で改行（HARD_LIMIT未満の場合のみ）
-            import re
-            
-            # ひらがな→漢字の境界
-            boundary = re.search(r'[ぁ-ん][一-龥]', current_line)
-            if boundary:
-                split_pos = boundary.start() + 1
-                # 境界位置がHARD_LIMITを超えない場合のみ採用
-                if split_pos <= HARD_LIMIT:
-                    lines.append(current_line[:split_pos])
-                    current_line = current_line[split_pos:]
-                    if len(lines) >= 6:
-                        if current_line:
-                            lines[5] += current_line
-                        break
-                    continue
-            
-            # カタカナ→ひらがなの境界
-            boundary = re.search(r'[ァ-ヶー][ぁ-ん]', current_line)
-            if boundary:
-                split_pos = boundary.start() + 1
-                if split_pos <= HARD_LIMIT:
-                    lines.append(current_line[:split_pos])
-                    current_line = current_line[split_pos:]
-                    if len(lines) >= 6:
-                        if current_line:
-                            lines[5] += current_line
-                        break
-                    continue
-            
-            # 漢字→ひらがなの境界
-            boundary = re.search(r'[一-龥][ぁ-ん]', current_line)
-            if boundary:
-                split_pos = boundary.start() + 1
-                if split_pos <= HARD_LIMIT:
-                    lines.append(current_line[:split_pos])
-                    current_line = current_line[split_pos:]
-                    if len(lines) >= 6:
-                        if current_line:
-                            lines[5] += current_line
-                        break
-                    continue
-            
-            # スペース
-            if ' ' in current_line or '　' in current_line:
-                split_pos = max(
-                    current_line.rfind(' '),
-                    current_line.rfind('　')
-                )
-                if split_pos > 0 and split_pos <= HARD_LIMIT:
-                    lines.append(current_line[:split_pos])
-                    current_line = current_line[split_pos:].lstrip()
-                    if len(lines) >= 6:
-                        if current_line:
-                            lines[5] += current_line
-                        break
-                    continue
+            if len(lines) >= 6:
+                break
 
     # 残りの文字を追加
     if current_line and len(lines) < 6:
