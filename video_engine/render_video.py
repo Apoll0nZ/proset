@@ -959,7 +959,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
             try:
                 # テキストクリップを作成（背景は後から付与してパディングを確実化）
                 txt_clip = _build_subtitle_clip(
-                    text=wrap_subtitle_text(chunk),
+                    text=chunk,  # wrap_subtitle_text の呼び出しを削除
                     font_path=font_path,
                     font_size=48,
                     text_color="black",
