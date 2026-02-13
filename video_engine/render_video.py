@@ -507,7 +507,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 # 字幕クリップを作成
                 try:
                     txt_clip = _build_subtitle_clip(
-                        text=wrap_subtitle_text(chunk_text, max_chars=30),
+                        text=chunk_text,  # wrap_subtitle_text の呼び出しを削除
                         font_path=font_path,
                         font_size=60,
                         text_color="white",
@@ -798,8 +798,7 @@ def _build_subtitle_clip(
         text=text,
         font_size=font_size,
         color=text_color,
-        method="caption",
-        size=(max_width - padding * 2, None),  # 仮の幅でテスト
+        method="label",
         text_align=text_align,
         stroke_color=stroke_color,
         stroke_width=stroke_width,
@@ -811,13 +810,11 @@ def _build_subtitle_clip(
     fit_scale = min(1.0, max_allowed_height / max(1, actual_height))
     adjusted_font_size = int(font_size * fit_scale)
     
-    content_width = max(100, int(max_width - (padding * 2)))
     txt_clip = TextClip(
         text=text,
         font_size=adjusted_font_size,  # 調整後のフォントサイズ
         color=text_color,
-        method="caption",
-        size=(content_width, None),
+        method="label",
         text_align=text_align,
         stroke_color=stroke_color,
         stroke_width=stroke_width,
@@ -2868,48 +2865,6 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
 
 
 
-def add_line_breaks(text: str) -> str:
-    """30〜35文字ごとに適切な位置で改行を挿入する（最大5〜6行）"""
-    if len(text) <= 32:
-        return text
-    
-    import re
-    
-    # 読点「、」や文の区切りで改行を挿入
-    lines = []
-    current_line = ""
-    
-    # 優先順位：読点 > 文末 > 35文字超えの適当な位置
-    for char in text:
-        current_line += char
-        
-        # 35文字を超えたら改行位置を検索
-        if len(current_line) > 35:
-            # 読点で改行
-            if '、' in current_line:
-                last_comma_pos = current_line.rfind('、')
-                if last_comma_pos >= 32:  # 30文字以降の読点で改行
-                    lines.append(current_line[:last_comma_pos + 1])
-                    current_line = current_line[last_comma_pos + 1:]
-                    continue
-            
-            # 句点で改行
-            if '。' in current_line:
-                last_period_pos = current_line.rfind('。')
-                if last_period_pos >= 32:  # 30文字以降の句点で改行
-                    lines.append(current_line[:last_period_pos + 1])
-                    current_line = current_line[last_period_pos + 1:]
-                    continue
-            
-            # 強制改行（最大6行制限）
-            if len(lines) >= 5:
-                lines.append(current_line)
-                current_line = ""
-    
-    if current_line:
-        lines.append(current_line)
-    
-    return '\n'.join(lines)
 
 
 def split_network_reactions(text: str, max_chars: int) -> List[str]:
@@ -2921,7 +2876,7 @@ def split_network_reactions(text: str, max_chars: int) -> List[str]:
     
     if not comments:
         # コメントが見つからない場合は通常処理
-        return [add_line_breaks(text)]
+        return [text.strip()]
     
     # コメントをフラットなリストに変換
     comment_list = []
@@ -2941,13 +2896,13 @@ def split_network_reactions(text: str, max_chars: int) -> List[str]:
             current_chunk += formatted_comment + " "
         else:
             if current_chunk:
-                chunks.append(add_line_breaks(current_chunk.strip()))
+                chunks.append(current_chunk.strip())
             current_chunk = formatted_comment + " "
     
     if current_chunk:
-        chunks.append(add_line_breaks(current_chunk.strip()))
+        chunks.append(current_chunk.strip())
     
-    return chunks if chunks else [add_line_breaks(text)]
+    return chunks if chunks else [text.strip()]
 
 
 async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
