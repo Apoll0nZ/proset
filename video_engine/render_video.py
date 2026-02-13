@@ -406,18 +406,34 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             segment_start = getattr(img_clip, '_segment_start', None)
             segment_end = getattr(img_clip, '_segment_end', None)
             
-            # Modulation期間に完全に含まれる画像はスキップ
-            if img_start >= modulation_start_time and img_end <= modulation_end_time:
-                print(f"[TIMELINE] Skipping image completely within modulation: {img_start:.2f}s - {img_end:.2f}s")
-                continue
-            
-            # 部分的に重複する場合はmodulation後にシフトして表示
-            actual_start = img_start
-            actual_duration = img_clip.duration
-            if img_start < modulation_end_time and img_end > modulation_end_time:
-                actual_start = modulation_end_time
-                actual_duration = img_end - modulation_end_time
-                print(f"[TIMELINE] Adjusted image start to avoid modulation: {img_start:.2f}s -> {actual_start:.2f}s")
+            # ★reactionパートは音声時間（segment_end）を基準にチェック
+            if part_type == "reaction" and segment_end is not None:
+                # 音声がModulation期間に完全に含まれる場合は画像をスキップ
+                if img_start >= modulation_start_time and segment_end <= modulation_end_time:
+                    print(f"[TIMELINE] Skipping reaction image (audio-based): {img_start:.2f}s - {segment_end:.2f}s within modulation")
+                    continue
+                
+                # 音声がModulationと部分的に重複する場合、音声終了時間を基準に調整
+                actual_start = img_start
+                actual_duration = img_clip.duration
+                if img_start < modulation_end_time and segment_end > modulation_end_time:
+                    actual_start = modulation_end_time
+                    actual_duration = segment_end - modulation_end_time
+                    print(f"[TIMELINE] Adjusted reaction image (audio-based): {img_start:.2f}s -> {actual_start:.2f}s, duration: {actual_duration:.2f}s")
+            else:
+                # その他のパートは従来通り画像時間でチェック
+                # Modulation期間に完全に含まれる画像はスキップ
+                if img_start >= modulation_start_time and img_end <= modulation_end_time:
+                    print(f"[TIMELINE] Skipping image completely within modulation: {img_start:.2f}s - {img_end:.2f}s")
+                    continue
+                
+                # 部分的に重複する場合はmodulation後にシフトして表示
+                actual_start = img_start
+                actual_duration = img_clip.duration
+                if img_start < modulation_end_time and img_end > modulation_end_time:
+                    actual_start = modulation_end_time
+                    actual_duration = img_end - modulation_end_time
+                    print(f"[TIMELINE] Adjusted image start to avoid modulation: {img_start:.2f}s -> {actual_start:.2f}s")
             
             adjusted_clip = img_clip.with_start(actual_start).with_duration(actual_duration)
             # ネットの反応 → Modulation：最後の画像をフェードアウト
@@ -873,19 +889,19 @@ def wrap_subtitle_text(text: str, max_chars: int = 28) -> str:
                 break
             continue
         
-        # max_charsに到達した場合（自然な改行を試みる）
+        # max_charsに到達した場合（単語境界でのみ改行を試みる）
         if len(current_line) >= max_chars:
-            # ステップ1: 区切り文字で改行
+            # ★区切り文字チェックを無効化（split_text_unifiedで既に分割済みのため）
             delimiter_found = False
-            for delimiter in ["。", "、", "！", "？", ".", ",", "!", "?"]:
-                if delimiter in current_line:
-                    split_pos = current_line.rfind(delimiter) + 1
-                    # 区切り文字がmax_charsの70%以降にある場合のみ採用
-                    if split_pos >= max_chars * 0.7:
-                        lines.append(current_line[:split_pos])
-                        current_line = current_line[split_pos:]
-                        delimiter_found = True
-                        break
+            # for delimiter in ["。", "、", "！", "？", ".", ",", "!", "?"]:
+            #     if delimiter in current_line:
+            #         split_pos = current_line.rfind(delimiter) + 1
+            #         # 区切り文字がmax_charsの70%以降にある場合のみ採用
+            #         if split_pos >= max_chars * 0.7:
+            #             lines.append(current_line[:split_pos])
+            #             current_line = current_line[split_pos:]
+            #             delimiter_found = True
+            #             break
             
             if delimiter_found:
                 if len(lines) >= 6:
