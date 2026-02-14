@@ -2359,7 +2359,7 @@ def extract_image_keywords_list(script_data: Dict[str, Any]) -> List[str]:
         llm_keywords = generate_keywords_with_gemini(all_text)
         
         if llm_keywords and isinstance(llm_keywords, list) and len(llm_keywords) > 0:
-            # LLMキーワードをそのまま返す（加工なし）
+            # LLMキーワードはそのまま維持（ロゴキーワードはLLMが調整）
             print(f"Using LLM-generated keywords: {llm_keywords}")
             return llm_keywords
         
@@ -2508,7 +2508,7 @@ def validate_and_clean_keywords(keywords: str, fallback_text: str) -> List[str]:
     if not result:
         return [fallback_text[:10]]
     
-    return result[:5]  # 最大5つ（プロンプトで最低3つを要求）
+    return result[:5]  # 最大5つ
 
 
 def generate_keywords_with_gemini(text: str, max_keywords: int = 5) -> List[str]:
@@ -2670,6 +2670,7 @@ def evaluate_image_with_gemini(image_info: Dict, keyword: str, script_text: str)
         # 画像評価プロンプト
         prompt = f"""
 IT・ガジェット解説動画にこの画像が適しているか評価してください。
+**著作権・肖像権リスクを最優先で厳格に判定してください。**
 
 ### 動画情報
 - タイトル: {script_data.get('title', 'N/A')}
@@ -2683,25 +2684,38 @@ IT・ガジェット解説動画にこの画像が適しているか評価して
 ### 評価指示
 **この画像のURLとタイトルを注意深く分析し、あなた自身の判断で評価してください**:
 
-1. **ジャンルの推測**:
+1. **著作権リスクの判定（最重要）**:
+   - ストックフォトサイト（Shutterstock, Getty Images, iStock等）の透かしが入っていないか
+   - 他者のブログ記事、ニュースサイト、YouTubeサムネイルでないか
+   - Webサイトのヘッダー、メニュー、広告が見えるスクリーンショットでないか
+   - 画像全体の30%以上がテキストであるものは除外
+
+2. **肖像権・パブリシティ権の判定**:
+   - 人物の顔や姿が写っていないか（一般人・有名人問わず）
+   - 人物が写っている場合は即座に不適合と判断
+
+3. **ジャンルの推測**:
    - どのようなジャンルの画像か推測してください
    - IT・ガジェット関連か、アニメ・キャラクター関連か、その他か
    - Android17のような固有名詞は、文脈からOSかキャラクターかを判断
 
-2. **動画との適合性**:
+4. **動画との適合性**:
    - IT・ガジェット解説動画にふさわしいか
    - 技術的な価値を提供する画像か、それとも無関係なコンテンツか
 
-3. **品質と信頼性**:
+5. **品質と信頼性**:
    - 公式的な技術情報か、個人のファンコンテンツか
    - 視聴者が求める情報源として適切か
 
 ### 重要な判断基準
+- **著作権侵害のリスクがあるものはすべて不適合**
+- **人物が写っているものはすべて不適合**
+- **透かし（ウォーターマーク）が入っているものはすべて不適合**
+- **ブログ・ニュースのスクリーンショットはすべて不適合**
 - IT・ガジェットチャンネルの専門性を最優先してください
 - 明確な不適合は積極的に除外してください
 - Android17のようなケースでは、動画内容に応じて適切に判断
 - 人物画像・顔写真・ポートレートは除外する
-
 
 ### 回答形式
 JSON: {{"suitable": true/false, "reason": "あなたの分析に基づく詳細な評価理由"}}
@@ -2737,19 +2751,501 @@ JSON: {{"suitable": true/false, "reason": "あなたの分析に基づく詳細�
         return {"suitable": False, "reason": f"Evaluation error: {e}"}
 
 
+def pre_filter_image_metadata(image_info: Dict) -> Dict:
+    """取得前にURLとタイトルだけで著作権リスクを判定"""
+    url = image_info.get('url', '').lower()
+    title = image_info.get('title', '').lower()
+    
+    # リスクスコア（0-100、高いほど危険）
+    risk_score = 0
+    reasons = []
+    
+    # 1. ブロックドメインチェック
+    if is_blocked_domain(url):
+        return {'suitable': False, 'reason': 'Blocked domain', 'risk_score': 100}
+    
+    # 2. 安全ドメインチェック
+    if is_safe_domain(url):
+        return {'suitable': True, 'reason': 'Safe domain', 'risk_score': 0}
+    
+    # 3. タイトルによるリスク判定
+    high_risk_keywords = [
+        'shutterstock', 'getty', 'istock', 'adobe stock', 'stock photo',
+        'watermark', 'preview', 'sample', 'demo', 'placeholder',
+        'screenshot', 'キャプチャ', 'スクリーンショット',
+        'ブログ', 'blog', '記事', 'article', 'news', 'ニュース',
+        'youtube', 'thumbnail', 'サムネ', 'チャンネル',
+        'twitter', 'tweet', 'ツイート', 'instagram', 'インスタ',
+        'facebook', 'fb', 'tiktok', 'ティックトック'
+    ]
+    
+    # ロゴ関連キーワード（積極的に許可）
+    logo_keywords = [
+        'logo', 'logos', 'icon', 'icons', 'brand', 'brands',
+        'ロゴ', 'アイコン', 'ブランド', 'マーク', 'シンボル',
+        'company logo', 'corporate logo', 'brand logo', 'official logo'
+    ]
+    
+    # ロゴ関連はリスクスコアを減らす
+    for keyword in logo_keywords:
+        if keyword in title or keyword in url:
+            risk_score -= 10  # リスクを減らす
+            reasons.append(f'Logo keyword: {keyword}')
+    
+    for keyword in high_risk_keywords:
+        if keyword in title or keyword in url:
+            risk_score += 15
+            reasons.append(f'High-risk keyword: {keyword}')
+    
+    # 4. 人物関連キーワード
+    person_keywords = [
+        'person', 'people', 'man', 'woman', 'face', 'portrait',
+        '人物', '人', '顔', '写真', '肖像', 'celebrity', '有名人'
+    ]
+    
+    for keyword in person_keywords:
+        if keyword in title:
+            risk_score += 20
+            reasons.append(f'Person keyword: {keyword}')
+    
+    # 5. テキスト関連キーワード
+    text_keywords = [
+        'text', 'title', 'heading', 'header', 'menu', 'navigation',
+        'テキスト', 'タイトル', '見出し', 'メニュー', 'ナビゲーション'
+    ]
+    
+    for keyword in text_keywords:
+        if keyword in title:
+            risk_score += 10
+            reasons.append(f'Text keyword: {keyword}')
+    
+    # 6. 危険ドメインチェック
+    if is_risky_domain(url):
+        risk_score += 25
+        reasons.append('Risky domain')
+    
+    # 判定
+    if risk_score >= 60:
+        return {'suitable': False, 'reason': f'High risk ({risk_score}): {"; ".join(reasons)}', 'risk_score': risk_score}
+    elif risk_score >= 30:
+        return {'suitable': True, 'reason': f'Medium risk ({risk_score}): {"; ".join(reasons)}', 'risk_score': risk_score}
+    else:
+        return {'suitable': True, 'reason': f'Low risk ({risk_score})', 'risk_score': risk_score}
+
+
+def is_risky_domain(image_url: str) -> bool:
+    """危険ドメイン（著作権リスクが高いため不採用）"""
+    # 中程度リスクのドメインをブロックドメインに移動したため、この関数は使用しない
+    return False
+
+
 def is_blocked_domain(image_url: str) -> bool:
-    """ストックフォトドメインをブロック"""
+    """安全なドメイン（公式・クリエイティブコモンズ等）を優先"""
+    safe_domains = [
+        # 公式サイトドメイン
+        'wikipedia.org',
+        'wikimedia.org',
+        'commons.wikimedia.org',
+        'github.com',
+        'gitlab.com',
+        'stackoverflow.com',
+        'developer.mozilla.org',
+        'docs.python.org',
+        'nodejs.org',
+        'reactjs.org',
+        'angular.io',
+        'vuejs.org',
+        
+        # 主要テック企業公式サイト
+        'apple.com',
+        'microsoft.com',
+        'google.com',
+        'amazon.com',
+        'meta.com',
+        'tesla.com',
+        'nvidia.com',
+        'amd.com',
+        'intel.com',
+        'qualcomm.com',
+        'samsung.com',
+        'sony.com',
+        'panasonic.com',
+        'canon.com',
+        'nikon.com',
+        'fujifilm.com',
+        'epson.com',
+        'hp.com',
+        'dell.com',
+        'lenovo.com',
+        'asus.com',
+        'msi.com',
+        'lg.com',
+        
+        # RSS関連企業公式サイト
+        'nvidia.com',            # NVIDIA News
+        'blog.google',           # Google Blog
+        'apple.com',             # Apple Newsroom
+        
+        # 半導体・チップメーカー
+        'arm.com',               # ARM
+        'broadcom.com',          # Broadcom
+        'mediatek.com',          # MediaTek
+        'ti.com',                # Texas Instruments
+        'synopsys.com',          # Synopsys
+        'cadence.com',           # Cadence
+        
+        # スマートフォン関連
+        'oneplus.com',           # OnePlus
+        'xiaomi.com',            # Xiaomi
+        'oppo.com',              # OPPO
+        'vivo.com',              # Vivo
+        'huawei.com',            # Huawei
+        'honor.com',             # Honor
+        'motorola.com',          # Motorola
+        'nokia.com',             # Nokia
+        
+        # PC・ハードウェア関連
+        'corsair.com',           # Corsair
+        'coolermaster.com',      # Cooler Master
+        'nzxt.com',              # NZXT
+        'razer.com',             # Razer
+        'logitech.com',          # Logitech
+        'steelseries.com',       # SteelSeries
+        'hyperx.com',            # HyperX
+        'kingston.com',          # Kingston
+        'crucial.com',           # Crucial
+        'western-digital.com',   # Western Digital
+        'seagate.com',           # Seagate
+        
+        # クリエイティブコモンズ系
+        'creativecommons.org',
+        'flickr.com',
+        'pixabay.com',
+        'pexels.com',
+        'unsplash.com',
+        'freepik.com',
+        
+        # 政府・教育機関
+        'gov',
+        'edu',
+        'ac.jp',
+        'go.jp'
+    ]
+    
+    url_lower = image_url.lower()
+    for domain in safe_domains:
+        if domain in url_lower:
+            print(f"[SAFE] Safe domain detected: {domain} in {image_url}")
+            return True
+    return False
+
+
+def detect_watermark_and_issues(image_path: str) -> dict:
+    """画像内の透かし・文字占有率・人物を検出"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import cv2
+        import numpy as np
+        
+        # 画像を読み込み
+        img = Image.open(image_path)
+        img_array = np.array(img)
+        
+        # グレースケール変換
+        if len(img_array.shape) == 3:
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = img_array
+            
+        issues = {
+            'has_watermark': False,
+            'text_ratio': 0.0,
+            'has_people': False,
+            'is_screenshot': False,
+            'rejected': False,
+            'reason': ''
+        }
+        
+        # 1. 透かし検出（網目状の模様とテキスト）
+        try:
+            # エッジ検出で網目状パターンを検出
+            edges = cv2.Canny(gray, 50, 150)
+            
+            # 直線検出で透かしの枠線を検出
+            lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=50, minLineLength=100, maxLineGap=10)
+            
+            if lines is not None and len(lines) > 2:
+                # 多数の直線があれば透かしの可能性
+                issues['has_watermark'] = True
+                issues['rejected'] = True
+                issues['reason'] += '透かし検出;'
+                
+        except Exception as e:
+            print(f"[DEBUG] Watermark detection failed: {e}")
+        
+        # 2. 文字占有率検出
+        try:
+            # OCRで文字を検出
+            import pytesseract
+            
+            # 日本語と英語を認識
+            text = pytesseract.image_to_string(gray, lang='jpn+eng')
+            
+            if text.strip():
+                # 文字面積を計算（簡易的な方法）
+                text_mask = pytesseract.image_to_data(gray, lang='jpn+eng', output_type=pytesseract.Output.DICT)
+                
+                text_pixels = 0
+                for i, conf in enumerate(text_mask['conf']):
+                    if int(conf) > 30:  # 信頼度30%以上
+                        w = text_mask['width'][i]
+                        h = text_mask['height'][i]
+                        text_pixels += w * h
+                
+                total_pixels = gray.shape[0] * gray.shape[1]
+                issues['text_ratio'] = text_pixels / total_pixels if total_pixels > 0 else 0
+                
+                # 文字占有率が30%以上なら拒否
+                if issues['text_ratio'] > 0.3:
+                    issues['rejected'] = True
+                    issues['reason'] += f'文字占有率{issues["text_ratio"]:.1%};'
+                    
+        except Exception as e:
+            print(f"[DEBUG] Text detection failed: {e}")
+        
+        # 3. 人物検出
+        try:
+            # 顔検出
+            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            
+            if len(faces) > 0:
+                issues['has_people'] = True
+                issues['rejected'] = True
+                issues['reason'] += f'人物検出({len(faces)}名);'
+                
+        except Exception as e:
+            print(f"[DEBUG] Face detection failed: {e}")
+        
+        # 4. スクリーンショット検出（UI要素）
+        try:
+            # 矩形検出でウィンドウ枠やメニューを検出
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            rectangle_count = 0
+            for contour in contours:
+                approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
+                if len(approx) == 4:
+                    rectangle_count += 1
+            
+            # 多数の矩形があればスクリーンショットの可能性
+            if rectangle_count > 5:
+                issues['is_screenshot'] = True
+                issues['rejected'] = True
+                issues['reason'] += f'スクリーンショット検出;'
+                
+        except Exception as e:
+            print(f"[DEBUG] Screenshot detection failed: {e}")
+        
+        return issues
+        
+    except ImportError as e:
+        print(f"[ERROR] Required libraries not installed: {e}")
+        print("[INFO] Install with: pip install opencv-python pytesseract pillow")
+        return {'rejected': False, 'reason': 'Detection libraries not available'}
+    except Exception as e:
+        print(f"[ERROR] Image analysis failed: {e}")
+        return {'rejected': True, 'reason': f'Analysis error: {e}'}
+
+
+def is_blocked_domain(image_url: str) -> bool:
+    """ブロックドメイン（著作権リスクが高いため不採用）"""
     blocked_domains = [
+        # ストックフォトサイト
         'shutterstock.com',
-        'gettyimages.com', 
+        'gettyimages.com',
+        'istockphoto.com',
+        'adobestock.com',
         'stock.adobe.com',
-        'alamy.com'
+        'dreamstime.com',
+        '123rf.com',
+        'depositphotos.com',
+        'vectorstock.com',
+        'stockphoto.com',
+        'fotolia.com',
+        
+        # SNS・ブログプラットフォーム
+        'medium.com',
+        'tumblr.com',
+        'instagram.com',
+        'facebook.com',
+        'twitter.com',
+        'x.com',
+        'pinterest.com',
+        
+        # ニュースサイト（著作権リスクが高い）
+        'nhk.or.jp',
+        'asahi.com',
+        'yomiuri.co.jp',
+        'mainichi.jp',
+        'nikkei.com',
+        'sankei.com',
+        'chunichi.co.jp',
+        'hokkaido-np.co.jp',
+        
+        # ITメディア（著作権リスクが高いためブロック）
+        'reuters.com',
+        'bloomberg.com',
+        'cnn.com',
+        'bbc.com',
+        'forbes.com',
+        'techcrunch.com',
+        'theverge.com',
+        'engadget.com',
+        'cnet.com',
+        'zdnet.com',
+        'pcmag.com',
+        'tomshardware.com',
+        'anandtech.com',
+        'arstechnica.com',
+        'wired.com',
+        'gizmodo.com',
+        'digitaltrends.com',
+        'techpowerup.com',
+        'gsmarena.com',
+        'androidauthority.com',
+        '9to5mac.com',
+        '9to5google.com',
+        'impress.co.jp',          # PC Watch, Watch Impress
+        'itmedia.co.jp',          # ITmedia
+        'zdn.net',               # ZDNet Japan
+        'nikkeibp.co.jp',        # 日経BP
+        'ascii.jp',              # ASCII.jp
+        'pc.watch.impress.co.jp', # PC Watch
+        'k-tai.watch.impress.co.jp', # ケータイ Watch
+        'ycombinator.com',       # Hacker News
+        'lobste.rs',             # Lobsters
+        'hatena.ne.jp',          # Hatena
+        'news.ycombinator.com',  # Hacker News RSS
+        'medium.com',
+        'substack.com',
+        'note.com',
+        'note.mu',
+        'imgur.com',
+        'reddit.com',
+        'discord.com',
+        'slack.com',
+        'rakuten.co.jp',
+        'yahoo.co.jp',
+        'shopping.yahoo.co.jp',
+        'amazon.co.jp'
     ]
     
     url_lower = image_url.lower()
     for domain in blocked_domains:
         if domain in url_lower:
-            print(f"[BLOCK] Blocked stock photo domain: {domain} in {image_url}")
+            print(f"[BLOCK] Blocked high-risk domain: {domain} in {image_url}")
+            return True
+    return False
+
+
+def is_safe_domain(image_url: str) -> bool:
+    """安全なドメイン（公式・クリエイティブコモンズ等）を優先"""
+    safe_domains = [
+        # 公式サイトドメイン
+        'wikipedia.org',
+        'wikimedia.org',
+        'commons.wikimedia.org',
+        'github.com',
+        'gitlab.com',
+        'stackoverflow.com',
+        'developer.mozilla.org',
+        'docs.python.org',
+        'nodejs.org',
+        'reactjs.org',
+        'angular.io',
+        'vuejs.org',
+        
+        # 主要テック企業公式サイト
+        'apple.com',
+        'microsoft.com',
+        'google.com',
+        'amazon.com',
+        'meta.com',
+        'tesla.com',
+        'nvidia.com',
+        'amd.com',
+        'intel.com',
+        'qualcomm.com',
+        'samsung.com',
+        'sony.com',
+        'panasonic.com',
+        'canon.com',
+        'nikon.com',
+        'fujifilm.com',
+        'epson.com',
+        'hp.com',
+        'dell.com',
+        'lenovo.com',
+        'asus.com',
+        'msi.com',
+        'lg.com',
+        
+        # RSS関連企業公式サイト
+        'nvidia.com',            # NVIDIA News
+        'blog.google',           # Google Blog
+        'apple.com',             # Apple Newsroom
+        
+        # 半導体・チップメーカー
+        'arm.com',               # ARM
+        'broadcom.com',          # Broadcom
+        'mediatek.com',          # MediaTek
+        'ti.com',                # Texas Instruments
+        'synopsys.com',          # Synopsys
+        'cadence.com',           # Cadence
+        
+        # スマートフォン関連
+        'oneplus.com',           # OnePlus
+        'xiaomi.com',            # Xiaomi
+        'oppo.com',              # OPPO
+        'vivo.com',              # Vivo
+        'huawei.com',            # Huawei
+        'honor.com',             # Honor
+        'motorola.com',          # Motorola
+        'nokia.com',             # Nokia
+        
+        # PC・ハードウェア関連
+        'corsair.com',           # Corsair
+        'coolermaster.com',      # Cooler Master
+        'nzxt.com',              # NZXT
+        'razer.com',             # Razer
+        'logitech.com',          # Logitech
+        'steelseries.com',       # SteelSeries
+        'hyperx.com',            # HyperX
+        'kingston.com',          # Kingston
+        'crucial.com',           # Crucial
+        'western-digital.com',   # Western Digital
+        'seagate.com',           # Seagate
+        
+        # クリエイティブコモンズ系
+        'creativecommons.org',
+        'flickr.com',
+        'pixabay.com',
+        'pexels.com',
+        'unsplash.com',
+        'freepik.com',
+        
+        # 政府・教育機関
+        'gov',
+        'edu',
+        'ac.jp',
+        'go.jp'
+    ]
+    
+    url_lower = image_url.lower()
+    for domain in safe_domains:
+        if domain in url_lower:
+            print(f"[SAFE] Safe domain detected: {domain} in {image_url}")
             return True
     return False
 
@@ -2859,6 +3355,20 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
                     
                     print(f"[PASS] Image validation passed: {width}x{height}, {file_size}B")
                     
+                    # 物理的フィルタリングを実行
+                    print(f"[FILTER] Running physical image analysis...")
+                    issues = detect_watermark_and_issues(local_path)
+                    
+                    if issues['rejected']:
+                        print(f"[REJECT] Physical filtering failed: {issues['reason']}")
+                        # 失敗した場合は痕跡（ファイル）を残さない
+                        if os.path.exists(local_path):
+                            os.remove(local_path)
+                            print(f"[DEBUG] Removed filtered file: {local_path}")
+                        return None
+                    
+                    print(f"[PASS] Physical filtering passed: watermark={issues['has_watermark']}, text_ratio={issues['text_ratio']:.1%}, people={issues['has_people']}, screenshot={issues['is_screenshot']}")
+                    
             except Exception as e:
                 print(f"[DEBUG] Image validation failed: {e}")
                 # 失敗した場合は痕跡（ファイル）を残さない
@@ -2961,9 +3471,9 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
             print(f"[IMAGE SEARCH] === Keyword {i+1}/{len(keywords)}: '{keyword}' ===")
             
             try:
-                # 画像検索実行
+                # 画像検索実行（取得数を調整）
                 print(f"[IMAGE SEARCH] Searching images for keyword: '{keyword}'")
-                images = await search_images_with_playwright(keyword)
+                images = await search_images_with_playwright(keyword, max_results=16)  # 10→16に調整
                 
                 if not images:
                     print(f"[IMAGE SEARCH] No images found for keyword: '{keyword}'")
@@ -2972,29 +3482,65 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
                 total_images_found += len(images)
                 print(f"[IMAGE SEARCH] Found {len(images)} raw images for '{keyword}'")
                 
-                # ブロックドメインの画像をフィルタリング
-                filtered_images = []
-                blocked_count = 0
+                # 取得前フィルタリングを実行
+                pre_filtered_images = []
+                pre_blocked_count = 0
                 
                 for image_info in images:
-                    image_url = image_info.get('url', '')
-                    if is_blocked_domain(image_url):
-                        blocked_count += 1
-                        print(f"[IMAGE FILTER] Blocked domain: {image_url}")
-                        total_blocked += 1
+                    pre_filter_result = pre_filter_image_metadata(image_info)
+                    
+                    if pre_filter_result['suitable']:
+                        image_info['risk_score'] = pre_filter_result['risk_score']
+                        image_info['pre_filter_reason'] = pre_filter_result['reason']
+                        pre_filtered_images.append(image_info)
+                        print(f"[PRE-FILTER] PASS: {image_info.get('title', 'N/A')[:50]}... (risk: {pre_filter_result['risk_score']})")
                     else:
-                        filtered_images.append(image_info)
+                        pre_blocked_count += 1
+                        print(f"[PRE-FILTER] BLOCK: {image_info.get('title', 'N/A')[:50]}... ({pre_filter_result['reason']})")
                 
-                print(f"[IMAGE FILTER] Filtered {blocked_count} blocked images, {len(filtered_images)} remaining")
+                print(f"[PRE-FILTER] Filtered {pre_blocked_count} high-risk images, {len(pre_filtered_images)} remaining")
+                
+                if not pre_filtered_images:
+                    print(f"[IMAGE SEARCH] No images passed pre-filtering for keyword '{keyword}'")
+                    continue
+                
+                # ドメイン別に分類（取得前フィルタリング済み）
+                safe_images = []
+                normal_images = []
+                
+                for image_info in pre_filtered_images:
+                    image_url = image_info.get('url', '')
+                    if is_safe_domain(image_url):
+                        image_info['priority'] = 'high'
+                        safe_images.append(image_info)
+                        print(f"[IMAGE PRIORITY] Safe domain (high priority): {image_url}")
+                    else:
+                        image_info['priority'] = 'normal'
+                        normal_images.append(image_info)
+                
+                # 安全なドメインを優先して結合
+                filtered_images = safe_images + normal_images
+                
+                print(f"[IMAGE FILTER] After pre-filtering: Safe: {len(safe_images)}, Normal: {len(normal_images)}")
+                print(f"[IMAGE FILTER] Total remaining: {len(filtered_images)}")
+                
+                # 安全なドメインの画像が十分にある場合はそれのみを使用
+                if len(safe_images) >= 5:
+                    filtered_images = safe_images
+                    print(f"[IMAGE STRATEGY] Using only safe domains ({len(safe_images)} images)")
+                # 安全な画像が少ない場合は通常ドメインも含める
+                elif len(safe_images) + len(normal_images) >= 3:
+                    filtered_images = safe_images + normal_images
+                    print(f"[IMAGE STRATEGY] Using safe + normal domains ({len(filtered_images)} images)")
                 
                 if not filtered_images:
                     print(f"[IMAGE SEARCH] No unblocked images for keyword '{keyword}'")
                     continue
                 
-                # Geminiで一括評価
+                # Geminiで一括評価（評価対象を調整）
                 print(f"[IMAGE EVAL] Evaluating {min(30, len(filtered_images))} images with Gemini")
                 script_text = script_data.get("content", {}).get("topic_summary", "")
-                suitable_images = evaluate_images_batch_with_gemini(filtered_images[:30], keyword, script_text)
+                suitable_images = evaluate_images_batch_with_gemini(filtered_images[:30], keyword, script_text)  # 評価対象を調整
                 
                 if not suitable_images:
                     print(f"[IMAGE EVAL] No suitable images approved by Gemini for '{keyword}'")

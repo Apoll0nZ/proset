@@ -8,4 +8,5 @@ imageio[ffmpeg]
 numpy==2.0.2
 playwright
 opencv-python
+pytesseract
 
