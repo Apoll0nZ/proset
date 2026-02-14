@@ -794,12 +794,13 @@ def _build_subtitle_clip(
     """字幕用テキストをパディング付き背景で描画（文字幅に合わせた背景）"""
     # 画面内収まるようにフォントサイズを事前調整
     max_allowed_height = max(1, VIDEO_HEIGHT - 40)
+    content_width = max(100, int(max_width - (padding * 2)))
     temp_clip = TextClip(
         text=text,
         font_size=font_size,
         color=text_color,
         method="caption",
-        size=(max_width, None),
+        size=(content_width, None),
         text_align=text_align,
         stroke_color=stroke_color,
         stroke_width=stroke_width,
@@ -816,7 +817,7 @@ def _build_subtitle_clip(
         font_size=adjusted_font_size,  # 調整後のフォントサイズ
         color=text_color,
         method="caption",
-        size=(max_width, None),
+        size=(content_width, None),
         text_align=text_align,
         stroke_color=stroke_color,
         stroke_width=stroke_width,
@@ -825,8 +826,8 @@ def _build_subtitle_clip(
 
     actual_text_width = txt_clip.w
     actual_text_height = txt_clip.h
-    bg_width = actual_text_width
-    bg_height = actual_text_height
+    bg_width = actual_text_width + padding * 2
+    bg_height = actual_text_height + padding * 2
     if bg_height > 350:
         print(f"[WARNING] Subtitle height is large: {bg_height}px (may not fit on screen)")
     print(f"[DEBUG] Text size: {actual_text_width}x{actual_text_height}, BG size: {bg_width}x{bg_height}")
