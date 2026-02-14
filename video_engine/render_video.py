@@ -261,12 +261,14 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # script_partsはインデックス決定のみに使用、時間計算はpart_durationsのみ
         # modulation/titleは音声とは別レイヤーとして固定処理
         
-        # 音声がないパートを明示的に定義
+        # 音声がないパートを明示的に定義（title_videoのみ除外）
+        EXCLUDED_TYPES = {"title_video"}
         VOICE_PARTS = {
             i for i, p in enumerate(script_parts)
-            if p.get("part") not in ("title_video", "modulation", "closing")
+            if p.get("part") not in EXCLUDED_TYPES
         }
         print(f"[TIMELINE] VOICE_PARTS defined: {sorted(VOICE_PARTS)}")
+        print(f"[TIMELINE] Total parts in VOICE_PARTS: {len(VOICE_PARTS)}")
 
         # 字幕と音声の両方が揃っているパートだけを対象にする
         duration_list_all = duration_list_all or {}
@@ -627,10 +629,19 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             clip_end = (getattr(clip, 'start', 0.0) or 0.0) + clip.duration
             last_subtitle_end = max(last_subtitle_end, clip_end)
 
-        # ★★★ 修正: total_durationを最後の字幕終了時刻に設定 ★★★
+        # ★★★ 修正: Modulation終了時刻まで動画長を設定 ★★★
+        # 各要素の終了時刻を計算
+        audio_end = title_audio_duration + sum(get_part_duration(i) for i in sorted(VOICE_PARTS))
+        modulation_start = audio_end
+        modulation_end = modulation_start + modulation_duration
+        
+        # 動画の長さは最も長い要素に合わせる
         if last_subtitle_end > 0:
-            total_duration = last_subtitle_end
-            print(f"[TIMELINE] Video duration set to last subtitle end: {total_duration:.2f}s")
+            total_duration = max(last_subtitle_end, modulation_end)
+            print(f"[TIMELINE] Last subtitle ends at: {last_subtitle_end:.2f}s")
+            print(f"[TIMELINE] Audio ends at: {audio_end:.2f}s")
+            print(f"[TIMELINE] Modulation: {modulation_start:.2f}s - {modulation_end:.2f}s")
+            print(f"[TIMELINE] Video duration set to: {total_duration:.2f}s")
         else:
             # フォールバック: 既存のクリップから計算
             if composite_clips:
