@@ -968,7 +968,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                     text_color="black",
                     stroke_color="black",
                     stroke_width=2,
-                    max_width=VIDEO_WIDTH - 100,
+                    max_width=1600,
                     padding=60,
                     bg_color=(255, 255, 255),
                     text_align="left",
