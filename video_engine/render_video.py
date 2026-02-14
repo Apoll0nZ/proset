@@ -635,19 +635,11 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             clip_end = (getattr(clip, 'start', 0.0) or 0.0) + clip.duration
             last_subtitle_end = max(last_subtitle_end, clip_end)
 
-        # ★★★ 修正: Modulation終了時刻まで動画長を設定 ★★★
-        # 各要素の終了時刻を計算
-        audio_end = title_audio_duration + sum(get_part_duration(i) for i in sorted(VOICE_PARTS))
-        modulation_start = audio_end
-        modulation_end = modulation_start + modulation_duration
-        
-        # 動画の長さは最も長い要素に合わせる
+        # ★★★ 修正: 正しい構成に基づいて動画長を設定 ★★★
+        # Title → Main parts (Owner Commentを含まない) → Modulation → Owner Comment → Closing
         if last_subtitle_end > 0:
-            total_duration = max(last_subtitle_end, modulation_end)
-            print(f"[TIMELINE] Last subtitle ends at: {last_subtitle_end:.2f}s")
-            print(f"[TIMELINE] Audio ends at: {audio_end:.2f}s")
-            print(f"[TIMELINE] Modulation: {modulation_start:.2f}s - {modulation_end:.2f}s")
-            print(f"[TIMELINE] Video duration set to: {total_duration:.2f}s")
+            total_duration = last_subtitle_end
+            print(f"[TIMELINE] Video duration set to last subtitle end: {total_duration:.2f}s")
         else:
             # フォールバック: 既存のクリップから計算
             if composite_clips:
