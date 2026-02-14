@@ -261,12 +261,18 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # script_partsはインデックス決定のみに使用、時間計算はpart_durationsのみ
         # modulation/titleは音声とは別レイヤーとして固定処理
         
-        # 音声がないパートを明示的に定義（title_videoのみ除外）
-        EXCLUDED_TYPES = {"title_video"}
+        # 音声がないパートを明示的に定義（modulationとclosingは映像のみ）
         VOICE_PARTS = {
             i for i, p in enumerate(script_parts)
-            if p.get("part") not in EXCLUDED_TYPES
+            if p.get("part") not in ("title_video", "modulation", "closing")
         }
+        
+        # Owner Commentは音声と字幕を表示するのでVOICE_PARTSに追加
+        for i, p in enumerate(script_parts):
+            if p.get("part") == "owner_comment":
+                VOICE_PARTS.add(i)
+                break
+        
         print(f"[TIMELINE] VOICE_PARTS defined: {sorted(VOICE_PARTS)}")
         print(f"[TIMELINE] Total parts in VOICE_PARTS: {len(VOICE_PARTS)}")
 
