@@ -2974,11 +2974,10 @@ def detect_watermark_and_issues(image_path: str) -> dict:
             # 直線検出で透かしの枠線を検出
             lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=50, minLineLength=100, maxLineGap=10)
             
-            if lines is not None and len(lines) > 2:
+            if lines is not None and len(lines) > 20:  # 閾値を2→20に大幅引き上げ
                 # 多数の直線があれば透かしの可能性
                 issues['has_watermark'] = True
-                issues['rejected'] = True
-                issues['reason'] += '透かし検出;'
+                # 透かし検出だけでは拒否しない（他の条件と組み合わせる）
                 
         except Exception as e:
             print(f"[DEBUG] Watermark detection failed: {e}")
@@ -3011,7 +3010,8 @@ def detect_watermark_and_issues(image_path: str) -> dict:
                     issues['reason'] += f'文字占有率{issues["text_ratio"]:.1%};'
                     
         except Exception as e:
-            print(f"[DEBUG] Text detection failed: {e}")
+            print(f"[DEBUG] Text detection skipped: {e}")
+            # Tesseract未インストール時はスキップして続行
         
         # 3. 人物検出
         try:
@@ -3019,10 +3019,9 @@ def detect_watermark_and_issues(image_path: str) -> dict:
             face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
             faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
             
-            if len(faces) > 0:
+            if len(faces) > 3:  # 閾値を1→3に緩和
                 issues['has_people'] = True
-                issues['rejected'] = True
-                issues['reason'] += f'人物検出({len(faces)}名);'
+                # 人物検出だけでは拒否しない（他の条件と組み合わせる）
                 
         except Exception as e:
             print(f"[DEBUG] Face detection failed: {e}")
@@ -3039,13 +3038,30 @@ def detect_watermark_and_issues(image_path: str) -> dict:
                     rectangle_count += 1
             
             # 多数の矩形があればスクリーンショットの可能性
-            if rectangle_count > 5:
+            if rectangle_count > 50:  # 閾値を5→50に大幅引き上げ
                 issues['is_screenshot'] = True
-                issues['rejected'] = True
-                issues['reason'] += f'スクリーンショット検出;'
+                # スクリーンショット検出だけでは拒否しない
                 
         except Exception as e:
             print(f"[DEBUG] Screenshot detection failed: {e}")
+        
+        # 最終判定：複数の問題が重なった場合のみ拒否
+        problem_count = 0
+        if issues['has_watermark']:
+            problem_count += 1
+        if issues['text_ratio'] > 0.4:  # 文字占有率閾値を30%→40%に緩和
+            problem_count += 1
+            issues['rejected'] = True
+            issues['reason'] += f'文字占有率{issues["text_ratio"]:.1%};'
+        if issues['has_people']:
+            problem_count += 1
+        if issues['is_screenshot']:
+            problem_count += 1
+            
+        # 3つ以上の問題が重なった場合のみ拒否
+        if problem_count >= 3:
+            issues['rejected'] = True
+            issues['reason'] = f'複数問題検出({problem_count}個);' + issues['reason']
         
         return issues
         
