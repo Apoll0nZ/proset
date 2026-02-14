@@ -2578,39 +2578,42 @@ def evaluate_images_batch_with_gemini(images_list: List[Dict], keyword: str, scr
 """
         
         prompt = f"""
-以下の複数の画像情報を基に、動画の解説内容に適した画像だけを選択してください。
+IT・ガジェット解説動画に適した画像を選択してください。
 
-### 指示
-- **明らかな誤一致のみ除外**: テーマと明確に無関係な画像だけを除外し、迷う場合は採用してください。
-- **回答形式**: 最も適している画像の番号をカンマ区切りで回答してください (例: 1,3)。適切な画像が一つもなければ「なし」と回答してください。
+### 動画情報
+- タイトル: {script_data.get('title', 'N/A')}
+- キーワード: {keyword}
+- 内容: {script_text[:300]}...
 
-### コンテキスト
-- **検索キーワード**: {keyword}
-- **動画のテーマ**: {script_text[:200]}...
-
-### 評価対象の画像リスト
+### 画像リスト
 {images_info_text}
 
-### 評価基準
-#### 【最優先】
-- **テーマとの関連性**: 画像は「{keyword}」および動画のテーマに直接関連している必要があります。
-- **公式画像・ロゴ**: 製品、企業、サービスの公式サイトで使われているような、高品質なロゴや製品画像を最優先します。
+### 選択指示
+**各画像のURLとタイトルの単語を注意深く分析し、IT・ガジェットなのか別ジャンルなのかをあなた自身の判断で選択してください**:
 
-#### 【除外対象】
-- **無関係なコンテンツ**: 解説しているテーマと無関係な製品、企業、人物、事象の画像はすべて除外します。
-- **異ジャンル混入**: アニメ・ゲーム・キャラクター・ガンプラ・ロボット等、テック/ガジェット文脈と明らかに無関係な固有名詞は除外します。
-- **GPU系の誤一致**: RTX/GeForce/NVIDIA/GPU/グラボ/グラフィック等が検索キーワードに含まれる場合でも、画像がそれらと関係がある可能性があれば採用可。明らかに無関係な場合のみ除外します。
-- **第三者のコンテンツ**:
-    - 他のYouTubeチャンネルのサムネイルや動画キャプチャ
-    - 個人のブログやニュース記事のスクリーンショット
-    - SNSの投稿画像
-- **低品質な画像**:
-    - 解像度が低い、ぼやけている、ノイズが多い画像
-    - 過度な装飾や文字が追加されている画像
-- **不適切なコンテンツ**:
-    - 人物の顔写真やポートレート（製品の公式モデルを除く）
-    - 一般的なストックフォト（iStockphoto, Getty Imagesなど）
-    - アプリのUIスクリーンショットや操作画面
+1. **URL・タイトルの分析**:
+   - どのようなジャンルの画像か推測してください
+   - IT・ガジェット関連か、アニメ・キャラクター関連か、その他エンターテイメントか
+   - Android17のような固有名詞は、文脈からOSかキャラクターかを判断
+   - IT・ガジェット関連の画像のみを採用すること。
+
+2. **動画との適合性判断**:
+   - 動画の内容（IT・ガジェット解説）に合致するか
+   - 視聴者が期待する技術的な情報か、それとも無関係なコンテンツか
+
+3. **品質評価**:
+   - 公式的な技術情報か、個人のファンコンテンツか
+   - 第三者のブログやYouTubeサムネイルでないか
+
+### 重要な注意点
+- IT・ガジェットチャンネルとしての専門性を維持してください
+- 些細な迷いよりも、明確な不適合を優先的に除外してください
+- Android17のようなケースでは、OS解説なら技術画像を使用すること。
+
+### 回答形式
+JSON: {{"selected_indices": [適切な番号,適切な番号,...], "reason": "あなたの分析に基づく詳細な選択理由"}}
+該当なし: {{"selected_indices": [], "reason": "すべてがIT・ガジェット解説に不適合"}}
+不明確: {{"selected_indices": [], "reason": "判断が困難なため不採用"}}
 """
         
         print(f"[DEBUG] Batch evaluating {len(images_list)} images with Gemini")
@@ -2624,20 +2627,32 @@ def evaluate_images_batch_with_gemini(images_list: List[Dict], keyword: str, scr
         raw_response = response.text.strip()
         print(f"[DEBUG] Gemini batch evaluation result: {raw_response}")
         
-        # レスポンスを解析
-        if "なし" in raw_response or "none" in raw_response.lower():
+        # JSONレスポンスを解析
+        try:
+            import json
+            result = json.loads(raw_response)
+            selected_indices = result.get('selected_indices', [])
+            
+            if not selected_indices:
+                print(f"[DEBUG] No suitable images selected")
+                return []
+            
+            # インデックスを0ベースに変換
+            suitable_indices = [idx - 1 for idx in selected_indices if 1 <= idx <= len(images_list)]
+            
+            # 適切な画像のリストを返す
+            suitable_images = [images_list[i] for i in suitable_indices]
+            print(f"[DEBUG] Selected {len(suitable_images)} suitable images: {[i+1 for i in suitable_indices]}")
+            print(f"[DEBUG] Selection reason: {result.get('reason', 'N/A')}")
+            
+            return suitable_images
+            
+        except json.JSONDecodeError:
+            print(f"[ERROR] Failed to parse JSON response: {raw_response}")
             return []
-        
-        # 画像番号を抽出
-        import re
-        numbers = re.findall(r'\d+', raw_response)
-        suitable_indices = [int(n) - 1 for n in numbers if 1 <= int(n) <= len(images_list)]
-        
-        # 適切な画像のリストを返す
-        suitable_images = [images_list[i] for i in suitable_indices]
-        print(f"[DEBUG] Selected {len(suitable_images)} suitable images: {[i+1 for i in suitable_indices]}")
-        
-        return suitable_images
+        except Exception as e:
+            print(f"[ERROR] Error processing response: {e}")
+            return []
         
     except Exception as e:
         print(f"[ERROR] Batch image evaluation failed: {e}")
@@ -2654,27 +2669,44 @@ def evaluate_image_with_gemini(image_info: Dict, keyword: str, script_text: str)
     try:
         # 画像評価プロンプト
         prompt = f"""
-以下の情報を基に、この画像が動画に適しているかを評価してください。
+IT・ガジェット解説動画にこの画像が適しているか評価してください。
 
-検索キーワード：{keyword}
-動画の内容：{script_text[:200]}...
+### 動画情報
+- タイトル: {script_data.get('title', 'N/A')}
+- キーワード: {keyword}
+- 内容: {script_text[:300]}...
 
-画像情報：
-- タイトル：{image_info.get('title', 'N/A')}
-- URL：{image_info.get('url', 'N/A')}
+### 画像情報
+- タイトル: {image_info.get('title', 'N/A')}
+- URL: {image_info.get('url', 'N/A')}
 
-評価基準：
-1. 製品・企業・サービスを象徴する公式画像やロゴである（高評価）
-2. 第三者が作成した記事の画像やスクリーンショットである（低評価）
-3. 検索キーワードと直接的な関係がある（高評価）
-4. 一般的なストックフォトや無関係な画像である（低評価）
-5. アニメ・ゲーム・キャラクター・ガンプラ・ロボット等は無関係として除外する（低評価）
-6. RTX/GeForce/NVIDIA/GPU/グラボ/グラフィック等が含まれる検索でも、関連の可能性があれば採用し、明確に無関係な場合のみ除外する（低評価）
-7. 人物画像・顔写真・ポートレートは除外する（低評価）
-8. スクリーンショット・UI画像・アプリ画面は除外する（低評価）
+### 評価指示
+**この画像のURLとタイトルを注意深く分析し、あなた自身の判断で評価してください**:
 
-回答形式：
-JSON形式で{"suitable": true/false, "reason": "評価理由"} のみを回答してください。
+1. **ジャンルの推測**:
+   - どのようなジャンルの画像か推測してください
+   - IT・ガジェット関連か、アニメ・キャラクター関連か、その他か
+   - Android17のような固有名詞は、文脈からOSかキャラクターかを判断
+
+2. **動画との適合性**:
+   - IT・ガジェット解説動画にふさわしいか
+   - 技術的な価値を提供する画像か、それとも無関係なコンテンツか
+
+3. **品質と信頼性**:
+   - 公式的な技術情報か、個人のファンコンテンツか
+   - 視聴者が求める情報源として適切か
+
+### 重要な判断基準
+- IT・ガジェットチャンネルの専門性を最優先してください
+- 明確な不適合は積極的に除外してください
+- Android17のようなケースでは、動画内容に応じて適切に判断
+- 人物画像・顔写真・ポートレートは除外する
+
+
+### 回答形式
+JSON: {{"suitable": true/false, "reason": "あなたの分析に基づく詳細な評価理由"}}
+不採用: {{"suitable": false, "reason": "IT・ガジェット解説に不適合"}}
+不明確: {{"suitable": false, "reason": "判断が困難なため不採用"}}
 """
         
         print(f"[DEBUG] Evaluating image with Gemini: {image_info.get('title', 'N/A')}")
