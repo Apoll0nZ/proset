@@ -2672,13 +2672,20 @@ JSON: {{"selected_indices": [適切な番号,適切な番号,...], "reason": "�
 
 
 def evaluate_image_with_gemini(image_info: Dict, keyword: str, script_text: str) -> Dict:
-    """Geminiで画像の適切性を評価（第三者作成画像や関係性を判断）"""
+    """Geminiで画像の適切性を評価（URLから直接分析）"""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("[ERROR] GEMINI_API_KEY not found for image evaluation")
         return {"suitable": False, "reason": "API key not found"}
     
     try:
+        # 画像URLを取得
+        image_url = image_info.get('url', '')
+        if not image_url:
+            return {"suitable": False, "reason": "No image URL provided"}
+        
+        print(f"[DEBUG] Evaluating image URL with Gemini: {image_url}")
+        
         # 画像評価プロンプト
         prompt = f"""
 IT・ガジェット解説動画にこの画像が適しているか評価してください。
@@ -2691,10 +2698,10 @@ IT・ガジェット解説動画にこの画像が適しているか評価して
 
 ### 画像情報
 - タイトル: {image_info.get('title', 'N/A')}
-- URL: {image_info.get('url', 'N/A')}
+- URL: {image_url}
 
 ### 評価指示
-**この画像のURLとタイトルを注意深く分析し、あなた自身の判断で評価してください**:
+**提供された画像URLの画像を注意深く分析し、あなた自身の判断で評価してください**:
 
 1. **著作権リスクの判定（最重要）**:
    - ストックフォトサイト（Shutterstock, Getty Images, iStock等）の透かしが入っていないか
@@ -2738,9 +2745,47 @@ JSON: {{"suitable": true/false, "reason": "あなたの分析に基づく詳細�
         print(f"[DEBUG] Evaluating image with Gemini: {image_info.get('title', 'N/A')}")
         
         client = genai.Client(api_key=api_key)
+        
+        # Geminiにテキストと画像URLを渡す
+        from google.genai import types
+        import urllib.parse
+        
+        # URLから画像形式を検出
+        def get_mime_type_from_url(url: str) -> str:
+            """URLから画像のMIMEタイプを推測"""
+            path = urllib.parse.urlparse(url).path.lower()
+            if path.endswith(('.jpg', '.jpeg')):
+                return "image/jpeg"
+            elif path.endswith('.png'):
+                return "image/png"
+            elif path.endswith('.gif'):
+                return "image/gif"
+            elif path.endswith('.webp'):
+                return "image/webp"
+            elif path.endswith('.bmp'):
+                return "image/bmp"
+            else:
+                # 不明な形式はNoneを返す
+                return None
+        
+        mime_type = get_mime_type_from_url(image_url)
+        if not mime_type:
+            print(f"[DEBUG] Unsupported image format, skipping: {image_url}")
+            return {"suitable": False, "reason": "Unsupported image format"}
+        
+        print(f"[DEBUG] Detected MIME type: {mime_type}")
+        
+        contents = [
+            types.Part.from_uri(
+                file_uri=image_url,
+                mime_type=mime_type
+            ),
+            prompt
+        ]
+        
         response = client.models.generate_content(
             model='gemini-2.5-flash-lite',
-            contents=prompt
+            contents=contents
         )
         
         raw_response = response.text.strip()
