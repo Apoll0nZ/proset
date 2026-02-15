@@ -428,6 +428,10 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     actual_start = modulation_end_time
                     actual_duration = segment_end - modulation_end_time
                     print(f"[TIMELINE] Adjusted reaction image (audio-based): {img_start:.2f}s -> {actual_start:.2f}s, duration: {actual_duration:.2f}s")
+                # ★画像表示時間が音声時間を超える場合は、音声終了時刻で打ち切り
+                elif img_start < segment_end and (img_start + img_clip.duration) > segment_end:
+                    actual_duration = segment_end - img_start
+                    print(f"[TIMELINE] Truncated reaction image duration to audio end: {img_clip.duration:.2f}s -> {actual_duration:.2f}s")
             else:
                 # その他のパートは従来通り画像時間でチェック
                 # Modulation期間に完全に含まれる画像はスキップ
@@ -820,6 +824,13 @@ def _build_subtitle_clip(
     actual_height = temp_clip.h
     fit_scale = min(1.0, max_allowed_height / max(1, actual_height))
     adjusted_font_size = int(font_size * fit_scale)
+    
+    # 幅も確認して縮小
+    actual_width = temp_clip.w
+    if actual_width > content_width:
+        width_scale = content_width / actual_width * 0.95  # 5%マージン
+        fit_scale = min(fit_scale, width_scale)
+        adjusted_font_size = int(font_size * fit_scale)
     
     txt_clip = TextClip(
         text=text,
