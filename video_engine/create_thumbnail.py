@@ -522,7 +522,7 @@ def create_thumbnail(
     draw = ImageDraw.Draw(img)
     
     # 上部70%エリア: 画像2枚をランダム比率で配置
-    ratio = random.uniform(0.6, 0.7)  # 6:4 〜 7:3 の範囲
+    ratio = random.uniform(0.3, 0.7)  # 3:7 〜 7:3 の範囲でランダム
     left_width = int(THUMBNAIL_WIDTH * ratio)
     right_width = THUMBNAIL_WIDTH - left_width
     
