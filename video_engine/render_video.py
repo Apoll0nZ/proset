@@ -2701,28 +2701,43 @@ IT・ガジェット解説動画にこの画像が適しているか評価して
 - URL: {image_url}
 
 ### 評価指示
-**提供された画像URLの画像を注意深く分析し、あなた自身の判断で評価してください**:
+**まず画像の内容を正確に分析し、その上で評価してください**:
 
-1. **著作権リスクの判定（最重要）**:
+1. **画像の詳細な分析**:
+   - この画像には何が写っていますか？（具体的に記述）
+   - 主要な被写体は何ですか？
+   - 背景には何がありますか？
+   - 色彩やスタイルはどのような感じですか？
+
+2. **テキストとロゴの検出**:
+   - 画像内にテキストは含まれていますか？
+   - ロゴやブランド名は見えますか？
+   - 透かし（ウォーターマーク）はありますか？
+
+3. **人物の検出**:
+   - 人物の顔や姿が写っていますか？
+   - 写真に人物が含まれている場合は具体的に説明してください
+
+4. **著作権リスクの判定（最重要）**:
    - ストックフォトサイト（Shutterstock, Getty Images, iStock等）の透かしが入っていないか
    - 他者のブログ記事、ニュースサイト、YouTubeサムネイルでないか
    - Webサイトのヘッダー、メニュー、広告が見えるスクリーンショットでないか
    - 画像全体の30%以上がテキストであるものは除外
 
-2. **肖像権・パブリシティ権の判定**:
+5. **肖像権・パブリシティ権の判定**:
    - 人物の顔や姿が写っていないか（一般人・有名人問わず）
    - 人物が写っている場合は即座に不適合と判断
 
-3. **ジャンルの推測**:
+6. **ジャンルの推測**:
    - どのようなジャンルの画像か推測してください
    - IT・ガジェット関連か、アニメ・キャラクター関連か、その他か
    - Android17のような固有名詞は、文脈からOSかキャラクターかを判断
 
-4. **動画との適合性**:
+7. **動画との適合性**:
    - IT・ガジェット解説動画にふさわしいか
    - 技術的な価値を提供する画像か、それとも無関係なコンテンツか
 
-5. **品質と信頼性**:
+8. **品質と信頼性**:
    - 公式的な技術情報か、個人のファンコンテンツか
    - 視聴者が求める情報源として適切か
 
@@ -2737,7 +2752,31 @@ IT・ガジェット解説動画にこの画像が適しているか評価して
 - 人物画像・顔写真・ポートレートは除外する
 
 ### 回答形式
-JSON: {{"suitable": true/false, "reason": "あなたの分析に基づく詳細な評価理由"}}
+まず画像内容を詳細に記述し、その上で評価を行ってください：
+{{
+  "image_analysis": {{
+    "content_description": "画像の詳細な説明（何が写っているか）",
+    "main_subjects": ["主要な被写体のリスト"],
+    "background": "背景の説明",
+    "colors_style": "色彩やスタイルの説明",
+    "contains_text": true/false,
+    "text_content": "含まれているテキストの内容",
+    "contains_logo": true/false,
+    "logo_content": "含まれているロゴの内容",
+    "contains_watermark": true/false,
+    "watermark_description": "透かしの説明",
+    "contains_people": true/false,
+    "people_description": "人物の説明（いる場合）"
+  }},
+  "evaluation": {{
+    "suitable": true/false,
+    "reason": "あなたの分析に基づく詳細な評価理由",
+    "copyright_risk": "low/medium/high",
+    "genre_classification": "ITガジェット/アニメ・キャラクター/その他",
+    "it_gadget_relevance": "high/medium/low"
+  }}
+}}
+
 不採用: {{"suitable": false, "reason": "IT・ガジェット解説に不適合"}}
 不明確: {{"suitable": false, "reason": "判断が困難なため不採用"}}
 """
@@ -2795,8 +2834,38 @@ JSON: {{"suitable": true/false, "reason": "あなたの分析に基づく詳細�
         try:
             import json
             result = json.loads(raw_response)
+            
+            # 画像分析結果を詳細に出力
+            if "image_analysis" in result:
+                analysis = result["image_analysis"]
+                print(f"[IMAGE ANALYSIS] 画像内容: {analysis.get('content_description', 'N/A')}")
+                print(f"[IMAGE ANALYSIS] 主要被写体: {analysis.get('main_subjects', [])}")
+                print(f"[IMAGE ANALYSIS] 背景: {analysis.get('background', 'N/A')}")
+                print(f"[IMAGE ANALYSIS] テキスト含有: {analysis.get('contains_text', False)}")
+                if analysis.get('contains_text'):
+                    print(f"[IMAGE ANALYSIS] テキスト内容: {analysis.get('text_content', 'N/A')}")
+                print(f"[IMAGE ANALYSIS] ロゴ含有: {analysis.get('contains_logo', False)}")
+                if analysis.get('contains_logo'):
+                    print(f"[IMAGE ANALYSIS] ロゴ内容: {analysis.get('logo_content', 'N/A')}")
+                print(f"[IMAGE ANALYSIS] 透かし有無: {analysis.get('contains_watermark', False)}")
+                if analysis.get('contains_watermark'):
+                    print(f"[IMAGE ANALYSIS] 透かし説明: {analysis.get('watermark_description', 'N/A')}")
+                print(f"[IMAGE ANALYSIS] 人物含有: {analysis.get('contains_people', False)}")
+                if analysis.get('contains_people'):
+                    print(f"[IMAGE ANALYSIS] 人物説明: {analysis.get('people_description', 'N/A')}")
+            
+            # 評価結果を出力
+            if "evaluation" in result:
+                evaluation = result["evaluation"]
+                print(f"[EVALUATION] 適合性: {evaluation.get('suitable', False)}")
+                print(f"[EVALUATION] 理由: {evaluation.get('reason', 'N/A')}")
+                print(f"[EVALUATION] 著作権リスク: {evaluation.get('copyright_risk', 'N/A')}")
+                print(f"[EVALUATION] ジャンル分類: {evaluation.get('genre_classification', 'N/A')}")
+                print(f"[EVALUATION] ITガジェット関連性: {evaluation.get('it_gadget_relevance', 'N/A')}")
+            
             return result
         except json.JSONDecodeError:
+            print(f"[ERROR] JSON解析失敗。生の応答: {raw_response}")
             # JSON解析失敗時は手動解析
             if "true" in raw_response.lower():
                 return {"suitable": True, "reason": raw_response}
