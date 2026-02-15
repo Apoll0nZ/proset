@@ -319,7 +319,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
         # modulation開始時間 = title終了 + owner_comment直前まで（reaction含む）
         if owner_comment_voice_index is not None:
-            # フォールバック: owner_commentの直前まで
+            # reactionを含めた全パートの時間を加算
             modulation_start_time = title_duration + sum(
                 get_part_duration(voice_idx)
                 for voice_idx in valid_voice_parts
@@ -3923,23 +3923,28 @@ def split_text_unified(text: str, max_chars: int = 120, merge_small_chunks: bool
     return result
 
 # 古い関数は互換性のためwrapperとして定義
-def split_text_for_voicevox(text: str) -> List[str]:
-    """VoiceVox用テキスト分割（統一ロジックを使用、小さいチャンク結合機能あり）
-
-    字幕生成と同じ分割ロジックを使用することで、音声と字幕の完全同期を実現
-    1文が150字に到達しない場合は、次の文と自動的に結合される
+def split_text_for_voicevox(text: str, part_type: str = None) -> List[str]:
+    """VoiceVox用テキスト分割
+    
+    Args:
+        text: 分割するテキスト
+        part_type: パートタイプ（"reaction"の場合は結合無効化）
     """
-    return split_text_unified(text, max_chars=80, merge_small_chunks=True, merge_threshold=120)
+    # reactionパートは結合を無効化
+    merge_enabled = (part_type != "reaction")
+    return split_text_unified(text, max_chars=80, merge_small_chunks=merge_enabled, merge_threshold=120)
 
-def split_subtitle_text(text: str, max_chars: int = 80) -> List[str]:
-    """字幕用テキスト分割（統一ロジックを使用、小さいチャンク結合機能あり）
-
-    注：max_charsパラメータは互換性のため受け取りますが、
-    統一ロジックではmax_charsは常に80で統一されます
-
-    解説パートでは120字に到達しない文を結合して字幕を繋ぎます
+def split_subtitle_text(text: str, max_chars: int = 80, part_type: str = None) -> List[str]:
+    """字幕用テキスト分割
+    
+    Args:
+        text: 分割するテキスト
+        max_chars: 最大文字数
+        part_type: パートタイプ（"reaction"の場合は結合無効化）
     """
-    return split_text_unified(text, max_chars=80, merge_small_chunks=True, merge_threshold=120)
+    # reactionパートは結合を無効化
+    merge_enabled = (part_type != "reaction")
+    return split_text_unified(text, max_chars=80, merge_small_chunks=merge_enabled, merge_threshold=120)
 
 def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tuple:
     """
@@ -4251,7 +4256,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
 
                 # テキストを字幕チャンク単位で分割
                 print(f"[REORDER] Part {i} ({part_name}): Splitting text into subtitle chunks...")
-                subtitle_text_parts = split_subtitle_text(text, max_chars=120)
+                subtitle_text_parts = split_subtitle_text(text, max_chars=120, part_type=part.get("part"))
 
                 if not subtitle_text_parts:
                     raise RuntimeError(f"Failed to split text for part {i}")
