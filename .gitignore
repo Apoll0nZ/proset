@@ -32,8 +32,13 @@ lambda_selector/
 # Token and authentication files
 get_token.py
 get_youtube_token.py
+refresh_youtube_token.py
 client_secrets.json
 token.json
+new_token.json
+token_for_github.txt
+YOUTUBE_CLIENT_SECRET
+YOUTUBE_CLIENT_ID
 
 # Test files
 test_*.py

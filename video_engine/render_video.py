@@ -2235,7 +2235,7 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
 
 
 def get_youtube_credentials_from_env():
-    """環境変数からYouTube OAuth認証情報を取得（GitHub Secrets対応）"""
+    """環境変数からYouTube OAuth認証情報を取得（YOUTUBE_CLIENT_SECRETS_JSON使用）"""
     try:
         # YOUTUBE_TOKEN_JSONは必須
         if not YOUTUBE_TOKEN_JSON:
@@ -2243,23 +2243,11 @@ def get_youtube_credentials_from_env():
         
         token_data = json.loads(YOUTUBE_TOKEN_JSON)
         
-        # 個別の環境変数からclient_secrets.json形式を構築（常にこちらを使用）
-        client_id = os.environ.get("YOUTUBE_CLIENT_ID", "")
-        client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
+        # YOUTUBE_CLIENT_SECRETS_JSONからクライアント情報を取得
+        if not YOUTUBE_CLIENT_SECRETS_JSON:
+            raise RuntimeError("YOUTUBE_CLIENT_SECRETS_JSON must be set")
         
-        if not client_id or not client_secret:
-            raise RuntimeError("YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET must be set")
-        
-        client_secrets = {
-            "installed": {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                "redirect_uris": ["http://localhost"]
-            }
-        }
+        client_secrets = json.loads(YOUTUBE_CLIENT_SECRETS_JSON)
         
         print("Successfully loaded YouTube OAuth credentials from environment")
         return token_data, client_secrets
@@ -2312,41 +2300,45 @@ def refresh_youtube_token_if_needed():
 
 
 def build_youtube_client_from_env():
-    """環境変数からYouTube APIクライアントを構築（個別文字列から動的生成）"""
+    """環境変数からYouTube APIクライアントを構築（YOUTUBE_CLIENT_SECRETS_JSON使用）"""
     try:
-        token_data = refresh_youtube_token_if_needed()
-        
-        # 環境変数から直接文字列を取得
-        client_id = os.environ.get("YOUTUBE_CLIENT_ID")
-        client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET")
-        
-        # JSONパースを介さず、プログラム内で辞書を組み立てる
-        client_secrets = {
-            "installed": {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token"
-            }
-        }
+        token_data, client_secrets = refresh_youtube_token_if_needed()
         
         # 認証情報を構築
         from google.oauth2.credentials import Credentials
+        
+        # client_secretsからクライアント情報を取得
+        if "installed" in client_secrets:
+            client_info = client_secrets["installed"]
+        elif "web" in client_secrets:
+            client_info = client_secrets["web"]
+        else:
+            raise RuntimeError("Invalid client_secrets format")
+        
         credentials = Credentials(
             token=token_data['token'],
             refresh_token=token_data['refresh_token'],
-            token_uri='https://oauth2.googleapis.com/token',
-            client_id=client_secrets['installed']['client_id'],
-            client_secret=client_secrets['installed']['client_secret'],
+            token_uri=client_info.get('token_uri', 'https://oauth2.googleapis.com/token'),
+            client_id=client_info['client_id'],
+            client_secret=client_info['client_secret'],
             scopes=['https://www.googleapis.com/auth/youtube.upload']
         )
         
         youtube = build("youtube", "v3", credentials=credentials)
-        print("Successfully built YouTube client by dynamic dictionary generation")
+        print("Successfully built YouTube client using YOUTUBE_CLIENT_SECRETS_JSON")
         return youtube
         
     except Exception as e:
         print(f"Failed to build YouTube client: {e}")
+        if 'invalid_grant' in str(e):
+            print("\n=== YouTube Authentication Error ===")
+            print("The YouTube OAuth token has expired or been revoked.")
+            print("To fix this issue:")
+            print("1. Go to Google Cloud Console")
+            print("2. Revoke the existing credentials")
+            print("3. Generate a new refresh token")
+            print("4. Update the YOUTUBE_TOKEN_JSON environment variable")
+            print("=====================================\n")
         raise
 
 
