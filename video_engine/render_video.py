@@ -2266,7 +2266,7 @@ def refresh_youtube_token_if_needed():
         import time
         if token_data.get('expires_at', 0) > time.time():
             print("YouTube token is still valid")
-            return token_data
+            return token_data, client_secrets
         
         print("YouTube token expired, attempting refresh...")
         
@@ -2292,7 +2292,7 @@ def refresh_youtube_token_if_needed():
         }
         
         print("Successfully refreshed YouTube token")
-        return new_token_data
+        return new_token_data, client_secrets
         
     except Exception as e:
         print(f"Failed to refresh YouTube token: {e}")
