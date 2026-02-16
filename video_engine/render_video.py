@@ -2572,6 +2572,108 @@ def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List
 
 
 
+def evaluate_images_batch_with_gemini_improved(images_list: List[Dict], keyword: str, script_text: str) -> List[Dict]:
+    """Geminiで複数の画像を一括評価（改善版：URLベース分析）"""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("[ERROR] GEMINI_API_KEY not found for batch image evaluation")
+        return []
+    
+    print(f"[DEBUG] Starting improved batch evaluation: {len(images_list)} images")
+    
+    # 画像情報をテキストでまとめる
+    images_info_text = ""
+    for i, image_info in enumerate(images_list):
+        images_info_text += f"""
+画像{i+1}:
+- タイトル：{image_info.get('title', 'N/A')}
+- URL：{image_info.get('url', 'N/A')}
+"""
+    
+    # 一括評価プロンプト
+    prompt = f"""
+IT・ガジェット解説動画に適した画像を選択してください。
+
+### 動画情報
+- キーワード: {keyword}
+- 内容: {script_text[:300]}...
+
+### 画像リスト
+{images_info_text}
+
+### 選択指示
+**各画像のURLとタイトルの単語を注意深く分析し、IT・ガジェットなのか別ジャンルなのかをあなた自身の判断で選択してください**:
+
+1. **URL・タイトルの分析**:
+   - どのようなジャンルの画像か推測してください
+   - IT・ガジェット関連か、アニメ・キャラクター関連か、その他エンターテイメントか
+   - Android17のような固有名詞は、文脈からOSかキャラクターかを判断
+   - IT・ガジェット関連の画像のみを採用すること。
+
+2. **動画との適合性判断**:
+   - 動画の内容（IT・ガジェット解説）に合致するか
+   - 視聴者が期待する技術的な情報か、それとも無関係なコンテンツか
+
+3. **品質評価**:
+   - 公式的な技術情報か、個人のファンコンテンツか
+   - 第三者のブログやYouTubeサムネイルでないか
+
+### 重要な注意点
+- IT・ガジェットチャンネルとしての専門性を維持してください
+- 些細な迷いよりも、明確な不適合を優先的に除外してください
+- Android17のようなケースでは、OS解説なら技術画像を使用すること。
+
+### 回答形式
+JSON: {{"selected_indices": [適切な番号,適切な番号,...], "reason": "あなたの分析に基づく詳細な選択理由"}}
+該当なし: {{"selected_indices": [], "reason": "すべてがIT・ガジェット解説に不適合"}}
+不明確: {{"selected_indices": [], "reason": "判断が困難なため不採用"}}
+"""
+    
+    print(f"[DEBUG] Gemini API を呼び出します（一括評価）")
+    
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=prompt
+        )
+        
+        raw_response = response.text.strip()
+        print(f"[DEBUG] Gemini response: {raw_response}")
+        
+        # JSONレスポンスを解析
+        try:
+            import json
+            result = json.loads(raw_response)
+            selected_indices = result.get('selected_indices', [])
+            
+            if not selected_indices:
+                print(f"[DEBUG] No suitable images selected")
+                return []
+            
+            # インデックスを0ベースに変換
+            suitable_indices = [idx - 1 for idx in selected_indices if 1 <= idx <= len(images_list)]
+            
+            # 適切な画像のリストを返す
+            suitable_images = [images_list[i] for i in suitable_indices]
+            print(f"[SUCCESS] Found {len(suitable_images)} suitable images after evaluation")
+            print(f"[DEBUG] Selected {len(suitable_images)} suitable images: {[i+1 for i in suitable_indices]}")
+            print(f"[DEBUG] Selection reason: {result.get('reason', 'N/A')}")
+            
+            return suitable_images
+            
+        except json.JSONDecodeError:
+            print(f"[ERROR] Failed to parse JSON response: {raw_response}")
+            return []
+        except Exception as e:
+            print(f"[ERROR] Error processing response: {e}")
+            return []
+        
+    except Exception as e:
+        print(f"[ERROR] Batch image evaluation failed: {e}")
+        return []
+
+
 def evaluate_images_batch_with_gemini(images_list: List[Dict], keyword: str, script_text: str) -> List[Dict]:
     """Geminiで複数の画像を一括評価（APIコール削減）"""
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -3685,7 +3787,7 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
                 print(f"[IMAGE EVAL] Script text length: {len(script_text)} chars")
                 print(f"[IMAGE EVAL] Keyword: '{keyword}'")
                 
-                suitable_images = evaluate_images_batch_with_gemini(filtered_images[:30], keyword, script_text)  # 評価対象を調整
+                suitable_images = evaluate_images_batch_with_gemini_improved(filtered_images[:30], keyword, script_text)  # 改善版を使用
                 
                 print(f"[IMAGE EVAL] Gemini evaluation completed. Result: {len(suitable_images)} suitable images")
                 
