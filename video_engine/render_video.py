@@ -623,19 +623,28 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 looped = concatenate_videoclips([base_clip] * num_loops)
                 return looped.subclipped(0, needed_duration)
 
-            # メインパート用背景
-            main_bg_duration = main_bg_end - main_bg_start
-            if main_bg_duration > 0:
-                main_bg = ensure_bg_duration(clip, main_bg_duration)
-                composite_clips.append(main_bg.with_start(main_bg_start))
-                print(f"[BACKGROUND] Main background: {main_bg_duration:.2f}s from {main_bg_start:.2f}s to {main_bg_end:.2f}s")
-            
-            # owner_commentパート用背景
-            owner_bg_duration = owner_bg_end - owner_bg_start
-            if owner_bg_duration > 0:
-                owner_bg = ensure_bg_duration(clip, owner_bg_duration)
-                composite_clips.append(owner_bg.with_start(owner_bg_start))
-                print(f"[BACKGROUND] Owner background: {owner_bg_duration:.2f}s from {owner_bg_start:.2f}s to {owner_bg_end:.2f}s")
+            # 最後の字幕終了時刻を基準に背景を生成
+            if last_subtitle_end > 0:
+                # title終了からlast_subtitle_endまでの背景が必要
+                background_needed_duration = last_subtitle_end - title_duration
+                main_bg = ensure_bg_duration(clip, background_needed_duration)
+                composite_clips.append(main_bg.with_start(title_duration))
+                print(f"[BACKGROUND] Single continuous background: {background_needed_duration:.2f}s from {title_duration:.2f}s")
+            else:
+                # フォールバック: 従来の分割背景配置
+                # メインパート用背景
+                main_bg_duration = main_bg_end - main_bg_start
+                if main_bg_duration > 0:
+                    main_bg = ensure_bg_duration(clip, main_bg_duration)
+                    composite_clips.append(main_bg.with_start(main_bg_start))
+                    print(f"[BACKGROUND] Main background: {main_bg_duration:.2f}s from {main_bg_start:.2f}s to {main_bg_end:.2f}s")
+                
+                # owner_commentパート用背景
+                owner_bg_duration = owner_bg_end - owner_bg_start
+                if owner_bg_duration > 0:
+                    owner_bg = ensure_bg_duration(clip, owner_bg_duration)
+                    composite_clips.append(owner_bg.with_start(owner_bg_start))
+                    print(f"[BACKGROUND] Owner background: {owner_bg_duration:.2f}s from {owner_bg_start:.2f}s to {owner_bg_end:.2f}s")
 
         # 10b. ビデオ（背景の上に配置）
         for item in all_clips_by_layer['videos']:
@@ -4688,14 +4697,27 @@ async def build_video_with_subtitles(
         if bg_video_path and os.path.exists(bg_video_path):
             print("Using random background video from S3")
             
-            # 背景動画の長さをメイン音声＋まとめパートの合計時間に設定
-            # modulation.mp4を除外した実際のコンテンツ時間
-            background_duration = total_duration  # メイン音声の長さ（まとめパートを含む）
-            
-            print(f"[BACKGROUND] Background will loop for main+summary duration: {background_duration:.2f}s")
-            print(f"[BACKGROUND] Modulation.mp4 ({modulation_duration:.2f}s) will be excluded from background loop")
-            
-            bg_clip = process_background_video_for_hd(bg_video_path, background_duration)
+            # 背景動画の正確な長さを計算
+            # Title後のメインコンテンツ全体の長さ = 音声全体 - title音声
+            title_audio_duration = part_durations[0] if part_durations else title_duration
+            main_content_duration = total_duration - title_audio_duration
+
+            # owner_commentの正確な長さを計算
+            owner_comment_voice_index = None
+            for i, part in enumerate(script_parts):
+                if part.get("part") == "owner_comment":
+                    owner_comment_voice_index = i
+                    break
+
+            # 背景動画の必要な長さ = メインコンテンツ全体
+            # (title_duration後から最後まで、modulationを含む)
+            background_total_duration = main_content_duration
+            if owner_comment_voice_index is not None:
+                # owner_comment以降も含める
+                background_total_duration = sum(part_durations[1:])  # title以外の全音声
+
+            print(f"[BACKGROUND] Background will cover: {background_total_duration:.2f}s")
+            bg_clip = process_background_video_for_hd(bg_video_path, background_total_duration)
             
             # 成功フラグのログ出力
             video_processing_successful = True
