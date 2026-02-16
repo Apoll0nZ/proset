@@ -12,6 +12,25 @@ from typing import Any, Dict, List
 import random
 import google.genai as genai
 
+# グローバル変数：使用済み画像URLを記録して重複を回避
+_used_image_urls = set()
+
+def is_duplicate_image_url(image_url: str) -> bool:
+    """画像URLが既に使用済みかチェック"""
+    return image_url in _used_image_urls
+
+def add_used_image_url(image_url: str) -> None:
+    """使用済み画像URLを記録"""
+    _used_image_urls.add(image_url)
+
+def clear_used_image_urls() -> None:
+    """使用済み画像URL記録をクリア（テスト用）"""
+    _used_image_urls.clear()
+
+def get_used_image_urls_count() -> int:
+    """使用済み画像URLの数を取得"""
+    return len(_used_image_urls)
+
 # GitHub Actions (Linux) 環境向けに ImageMagick を完全に無効化
 if os.name != 'nt':
     os.environ["IMAGEMAGICK_BINARY"] = ""  # 空文字列で無効化
@@ -2184,12 +2203,16 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                         # サイズ情報がない場合は許可（Bingメタデータ経由の場合）
                                         pass
                                     
-                                    # 画像をリストに追加
-                                    images.append({
-                                        'url': original_url,
-                                        'title': alt,
-                                        'is_google_thumbnail': False
-                                    })
+                                    # 画像をリストに追加（重複チェック）
+                                    if not is_duplicate_image_url(original_url):
+                                        images.append({
+                                            'url': original_url,
+                                            'title': alt,
+                                            'is_google_thumbnail': False
+                                        })
+                                        add_used_image_url(original_url)
+                                    else:
+                                        print(f"[DEBUG] Skipping duplicate image: {original_url[:50]}...")
                                     
                                     # フィルタリング：人物画像はプロンプトで除外するため、ここではフィルタリングしない
                                     if len(images) >= max_results:
@@ -2573,124 +2596,42 @@ def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List
 
 
 def evaluate_images_batch_with_gemini_improved(images_list: List[Dict], keyword: str, script_text: str) -> List[Dict]:
-    """Geminiで複数の画像を一括評価（改善版：URLベース分析）"""
+    """Geminiで複数の画像を分割評価（負荷軽減版：10枚ずつ評価）"""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("[ERROR] GEMINI_API_KEY not found for batch image evaluation")
         return []
     
-    print(f"[DEBUG] Starting improved batch evaluation: {len(images_list)} images")
+    print(f"[DEBUG] Starting split batch evaluation: {len(images_list)} images (10 images per batch)")
     
-    # 画像情報をテキストでまとめる
-    images_info_text = ""
-    for i, image_info in enumerate(images_list):
-        images_info_text += f"""
-画像{i+1}:
-- タイトル：{image_info.get('title', 'N/A')}
-- URL：{image_info.get('url', 'N/A')}
-"""
+    all_suitable_images = []
+    batch_size = 10
     
-    # 一括評価プロンプト
-    prompt = f"""
-IT・ガジェット解説動画に適した画像を選択してください。
-
-### 動画情報
-- キーワード: {keyword}
-- 内容: {script_text[:300]}...
-
-### 画像リスト
-{images_info_text}
-
-### 選択指示
-**各画像のURLとタイトルの単語を注意深く分析し、IT・ガジェットなのか別ジャンルなのかをあなた自身の判断で選択してください**:
-
-1. **URL・タイトルの分析**:
-   - どのようなジャンルの画像か推測してください
-   - IT・ガジェット関連か、アニメ・キャラクター関連か、その他エンターテイメントか
-   - Android17のような固有名詞は、文脈からOSかキャラクターかを判断
-   - IT・ガジェット関連の画像のみを採用すること。
-
-2. **動画との適合性判断**:
-   - 動画の内容（IT・ガジェット解説）に合致するか
-   - 視聴者が期待する技術的な情報か、それとも無関係なコンテンツか
-
-3. **品質評価**:
-   - 公式的な技術情報か、個人のファンコンテンツか
-   - 第三者のブログやYouTubeサムネイルでないか
-
-### 重要な注意点
-- IT・ガジェットチャンネルとしての専門性を維持してください
-- 些細な迷いよりも、明確な不適合を優先的に除外してください
-- Android17のようなケースでは、OS解説なら技術画像を使用すること。
-
-### 回答形式
-JSON: {{"selected_indices": [適切な番号,適切な番号,...], "reason": "あなたの分析に基づく詳細な選択理由"}}
-該当なし: {{"selected_indices": [], "reason": "すべてがIT・ガジェット解説に不適合"}}
-不明確: {{"selected_indices": [], "reason": "判断が困難なため不採用"}}
-"""
-    
-    print(f"[DEBUG] Gemini API を呼び出します（一括評価）")
-    
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
-            contents=prompt
-        )
+    # 画像を10枚ずつ分割して評価
+    for batch_start in range(0, len(images_list), batch_size):
+        batch_end = min(batch_start + batch_size, len(images_list))
+        batch_images = images_list[batch_start:batch_end]
+        batch_number = (batch_start // batch_size) + 1
+        total_batches = (len(images_list) + batch_size - 1) // batch_size
         
-        raw_response = response.text.strip()
-        print(f"[DEBUG] Gemini response: {raw_response}")
+        print(f"[DEBUG] Processing batch {batch_number}/{total_batches}: {len(batch_images)} images")
         
-        # JSONレスポンスを解析
-        try:
-            import json
-            result = json.loads(raw_response)
-            selected_indices = result.get('selected_indices', [])
-            
-            if not selected_indices:
-                print(f"[DEBUG] No suitable images selected")
-                return []
-            
-            # インデックスを0ベースに変換
-            suitable_indices = [idx - 1 for idx in selected_indices if 1 <= idx <= len(images_list)]
-            
-            # 適切な画像のリストを返す
-            suitable_images = [images_list[i] for i in suitable_indices]
-            print(f"[SUCCESS] Found {len(suitable_images)} suitable images after evaluation")
-            print(f"[DEBUG] Selected {len(suitable_images)} suitable images: {[i+1 for i in suitable_indices]}")
-            print(f"[DEBUG] Selection reason: {result.get('reason', 'N/A')}")
-            
-            return suitable_images
-            
-        except json.JSONDecodeError:
-            print(f"[ERROR] Failed to parse JSON response: {raw_response}")
-            return []
-        except Exception as e:
-            print(f"[ERROR] Error processing response: {e}")
-            return []
+        # 少し待機してAPI負荷を軽減
+        if batch_number > 1:
+            import time
+            time.sleep(1)
         
-    except Exception as e:
-        print(f"[ERROR] Batch image evaluation failed: {e}")
-        return []
-
-
-def evaluate_images_batch_with_gemini(images_list: List[Dict], keyword: str, script_text: str) -> List[Dict]:
-    """Geminiで複数の画像を一括評価（APIコール削減）"""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("[ERROR] GEMINI_API_KEY not found for batch image evaluation")
-        return []
-    
-    try:
-        # 一括評価プロンプト
+        # バッチ用の画像情報を作成（画像URLを直接分析対象に含める）
         images_info_text = ""
-        for i, image_info in enumerate(images_list):
+        for i, image_info in enumerate(batch_images):
             images_info_text += f"""
 画像{i+1}:
 - タイトル：{image_info.get('title', 'N/A')}
 - URL：{image_info.get('url', 'N/A')}
+- 画像URL：{image_info.get('url', 'N/A')}
 """
         
+        # バッチ評価プロンプト（画像を直接分析するよう変更）
         prompt = f"""
 IT・ガジェット解説動画に適した画像を選択してください。
 
@@ -2698,27 +2639,33 @@ IT・ガジェット解説動画に適した画像を選択してください。
 - キーワード: {keyword}
 - 内容: {script_text[:300]}...
 
-### 画像リスト
+### 画像リスト（バッチ{batch_number}/{total_batches}）
 {images_info_text}
 
 ### 選択指示
-**各画像のURLとタイトルの単語を注意深く分析し、IT・ガジェットなのか別ジャンルなのかをあなた自身の判断で選択してください**:
+**各画像のURLにアクセスして実際の画像内容を視覚的に分析し、IT・ガジェットなのか別ジャンルなのかをあなた自身の判断で選択してください**:
 
-1. **URL・タイトルの分析**:
+1. **画像の視覚的分析**:
+   - 画像に写っているものが何か（デバイス、ロゴ、人物、アニメキャラクター等）
+   - 画像のスタイル（技術的な図解、写真、イラスト、スクリーンショット等）
+   - 画像の品質と専門性（公式サイト、ブログ、ファンコンテンツ等）
+
+2. **URL・タイトルの分析**:
    - どのようなジャンルの画像か推測してください
    - IT・ガジェット関連か、アニメ・キャラクター関連か、その他エンターテイメントか
    - Android17のような固有名詞は、文脈からOSかキャラクターかを判断
    - IT・ガジェット関連の画像のみを採用すること。
 
-2. **動画との適合性判断**:
+3. **動画との適合性判断**:
    - 動画の内容（IT・ガジェット解説）に合致するか
    - 視聴者が期待する技術的な情報か、それとも無関係なコンテンツか
 
-3. **品質評価**:
+4. **品質評価**:
    - 公式的な技術情報か、個人のファンコンテンツか
    - 第三者のブログやYouTubeサムネイルでないか
 
 ### 重要な注意点
+- **必ず各画像URLにアクセスして実際の画像内容を確認してください**
 - IT・ガジェットチャンネルとしての専門性を維持してください
 - 些細な迷いよりも、明確な不適合を優先的に除外してください
 - Android17のようなケースでは、OS解説なら技術画像を使用すること。
@@ -2729,47 +2676,54 @@ JSON: {{"selected_indices": [適切な番号,適切な番号,...], "reason": "�
 不明確: {{"selected_indices": [], "reason": "判断が困難なため不採用"}}
 """
         
-        print(f"[DEBUG] Batch evaluating {len(images_list)} images with Gemini")
+        print(f"[DEBUG] Gemini API を呼び出します（バッチ{batch_number}/{total_batches}）")
         
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
-            contents=prompt
-        )
-        
-        raw_response = response.text.strip()
-        print(f"[DEBUG] Gemini batch evaluation result: {raw_response}")
-        
-        # JSONレスポンスを解析
         try:
-            import json
-            result = json.loads(raw_response)
-            selected_indices = result.get('selected_indices', [])
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model='gemini-2.5-flash-lite',
+                contents=prompt
+            )
             
-            if not selected_indices:
-                print(f"[DEBUG] No suitable images selected")
-                return []
+            raw_response = response.text.strip()
+            print(f"[DEBUG] Gemini response (batch {batch_number}): {raw_response}")
             
-            # インデックスを0ベースに変換
-            suitable_indices = [idx - 1 for idx in selected_indices if 1 <= idx <= len(images_list)]
-            
-            # 適切な画像のリストを返す
-            suitable_images = [images_list[i] for i in suitable_indices]
-            print(f"[DEBUG] Selected {len(suitable_images)} suitable images: {[i+1 for i in suitable_indices]}")
-            print(f"[DEBUG] Selection reason: {result.get('reason', 'N/A')}")
-            
-            return suitable_images
-            
-        except json.JSONDecodeError:
-            print(f"[ERROR] Failed to parse JSON response: {raw_response}")
-            return []
+            # JSONレスポンスを解析（コードブロックを除去）
+            try:
+                import json
+                import re
+                
+                # ```json```コードブロックを除去
+                cleaned_response = re.sub(r'```json\s*', '', raw_response)
+                cleaned_response = re.sub(r'```\s*$', '', cleaned_response)
+                cleaned_response = cleaned_response.strip()
+                
+                result = json.loads(cleaned_response)
+                selected_indices = result.get('selected_indices', [])
+                
+                if not selected_indices:
+                    print(f"[DEBUG] No suitable images selected in batch {batch_number}")
+                    continue
+                
+                # インデックスを0ベースに変換（バッチ内の相対インデックス）
+                suitable_indices = [idx - 1 for idx in selected_indices if 1 <= idx <= len(batch_images)]
+                
+                # 適切な画像のリストを追加
+                batch_suitable_images = [batch_images[i] for i in suitable_indices]
+                all_suitable_images.extend(batch_suitable_images)
+                print(f"[SUCCESS] Batch {batch_number}: Found {len(batch_suitable_images)} suitable images")
+                
+            except json.JSONDecodeError as e:
+                print(f"[ERROR] Failed to parse JSON response in batch {batch_number}: {e}")
+                print(f"[ERROR] Raw response: {raw_response}")
+                continue
+                
         except Exception as e:
-            print(f"[ERROR] Error processing response: {e}")
-            return []
-        
-    except Exception as e:
-        print(f"[ERROR] Batch image evaluation failed: {e}")
-        return []
+            print(f"[ERROR] Gemini API call failed in batch {batch_number}: {e}")
+            continue
+    
+    print(f"[SUCCESS] Total suitable images from all batches: {len(all_suitable_images)}")
+    return all_suitable_images
 
 
 def evaluate_image_with_gemini(image_info: Dict, keyword: str, script_text: str) -> Dict:
@@ -3696,8 +3650,14 @@ def split_network_reactions(text: str, max_chars: int) -> List[str]:
 async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
     """AIによる動的選別・自動取得で最適な画像を取得（複数キーワード対応）"""
     try:
-        # 1. キーワードリスト抽出
-        keywords = extract_image_keywords_list(script_data)
+        # 1. キーワードリスト抽出（外部から渡されたキーワードを優先）
+        if "extracted_keywords" in script_data and script_data["extracted_keywords"]:
+            keywords = script_data["extracted_keywords"]
+            print(f"[IMAGE SEARCH] Using externally provided keywords")
+        else:
+            keywords = extract_image_keywords_list(script_data)
+            print(f"[IMAGE SEARCH] Extracting keywords from script data")
+        
         print(f"[IMAGE SEARCH] Starting image search process")
         print(f"[IMAGE SEARCH] Extracted {len(keywords)} keywords: {keywords}")
         
@@ -3705,10 +3665,13 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
             print(f"[ERROR] No keywords extracted from script data")
             raise RuntimeError("No keywords available for image search")
         
-        # 2. 各キーワードで画像検索を試行（最小枚数確保）
+        # 2. 各キーワードで画像検索を試行（各キーワード5枚、合計15枚まで）
         total_images_found = 0
         total_blocked = 0
         download_failures = 0
+        images_per_keyword = 5  # 各キーワードあたりの上限枚数
+        max_total_images = 15  # 合計上限枚数
+        found_suitable_images = []
         
         for i, keyword in enumerate(keywords):
             print(f"[IMAGE SEARCH] === Keyword {i+1}/{len(keywords)}: '{keyword}' ===")
@@ -3731,50 +3694,37 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
                 
                 for image_info in images:
                     pre_filter_result = pre_filter_image_metadata(image_info)
-                    
-                    if pre_filter_result['suitable']:
-                        image_info['risk_score'] = pre_filter_result['risk_score']
-                        image_info['pre_filter_reason'] = pre_filter_result['reason']
-                        pre_filtered_images.append(image_info)
-                        print(f"[PRE-FILTER] PASS: {image_info.get('title', 'N/A')[:50]}... (risk: {pre_filter_result['risk_score']})")
-                    else:
+                    if not pre_filter_result['suitable']:
                         pre_blocked_count += 1
-                        print(f"[PRE-FILTER] BLOCK: {image_info.get('title', 'N/A')[:50]}... ({pre_filter_result['reason']})")
+                        print(f"[PRE-FILTER] BLOCK: {image_info.get('title', 'N/A')} ({pre_filter_result['reason']})")
+                    else:
+                        pre_filtered_images.append(image_info)
                 
+                total_blocked += pre_blocked_count
                 print(f"[PRE-FILTER] Filtered {pre_blocked_count} high-risk images, {len(pre_filtered_images)} remaining")
                 
                 if not pre_filtered_images:
-                    print(f"[IMAGE SEARCH] No images passed pre-filtering for keyword '{keyword}'")
+                    print(f"[IMAGE SEARCH] No unblocked images for keyword '{keyword}'")
                     continue
                 
-                # ドメイン別に分類（取得前フィルタリング済み）
+                # 安全ドメインと通常ドメインに分類
                 safe_images = []
                 normal_images = []
                 
                 for image_info in pre_filtered_images:
-                    image_url = image_info.get('url', '')
-                    if is_safe_domain(image_url):
-                        image_info['priority'] = 'high'
+                    if is_safe_domain(image_info['url']):
                         safe_images.append(image_info)
-                        print(f"[IMAGE PRIORITY] Safe domain (high priority): {image_url}")
                     else:
-                        image_info['priority'] = 'normal'
                         normal_images.append(image_info)
                 
-                # 安全なドメインを優先して結合
-                filtered_images = safe_images + normal_images
-                
-                print(f"[IMAGE FILTER] After pre-filtering: Safe: {len(safe_images)}, Normal: {len(normal_images)}")
-                print(f"[IMAGE FILTER] Total remaining: {len(filtered_images)}")
-                
-                # 安全なドメインの画像が十分にある場合はそれのみを使用
-                if len(safe_images) >= 5:
+                # 戦略的選択：安全ドメインを優先
+                filtered_images = []
+                if len(safe_images) >= 3:
                     filtered_images = safe_images
                     print(f"[IMAGE STRATEGY] Using only safe domains ({len(safe_images)} images)")
                 # 安全な画像が少ない場合は通常ドメインも含める
                 elif len(safe_images) + len(normal_images) >= 3:
                     filtered_images = safe_images + normal_images
-                    print(f"[IMAGE STRATEGY] Using safe + normal domains ({len(filtered_images)} images)")
                 
                 if not filtered_images:
                     print(f"[IMAGE SEARCH] No unblocked images for keyword '{keyword}'")
@@ -3793,27 +3743,51 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
                 
                 if not suitable_images:
                     print(f"[IMAGE EVAL] No suitable images approved by Gemini for '{keyword}'")
-                    continue
+                    continue  # 次のキーワードを試行
                 
                 print(f"[IMAGE EVAL] Gemini approved {len(suitable_images)} images")
                 
-                # 適切な画像のダウンロードを試行
+                # 適切な画像のダウンロードを試行（各キーワード5枚、合計15枚まで）
+                keyword_images_found = 0
                 for j, selected_image in enumerate(suitable_images):
+                    # 合計上限チェック
+                    if len(found_suitable_images) >= max_total_images:
+                        print(f"[IMAGE SUCCESS] Reached total limit of {max_total_images} images")
+                        break
+                    
+                    # キーワードあたりの上限チェック
+                    if keyword_images_found >= images_per_keyword:
+                        print(f"[IMAGE SUCCESS] Reached keyword limit of {images_per_keyword} images for '{keyword}'")
+                        break
+                    
                     print(f"[IMAGE DOWNLOAD] Attempting download {j+1}/{len(suitable_images)}: {selected_image.get('title', 'N/A')}")
                     
                     image_path = download_image_from_url(selected_image['url'])
                     
                     if image_path:
                         print(f"[IMAGE SUCCESS] Successfully downloaded and validated: {selected_image.get('title', 'N/A')}")
-                        print(f"[IMAGE SUCCESS] Final image path: {image_path}")
-                        print(f"[IMAGE SUMMARY] Total processed: {total_images_found} found, {total_blocked} blocked, {download_failures} download failures")
-                        return image_path
+                        found_suitable_images.append({
+                            'path': image_path,
+                            'title': selected_image.get('title', 'N/A'),
+                            'url': selected_image['url']
+                        })
+                        keyword_images_found += 1
+                        
+                        # 合計上限に達したら終了
+                        if len(found_suitable_images) >= max_total_images:
+                            print(f"[IMAGE SUCCESS] Reached total limit of {max_total_images} images")
+                            break
                     else:
                         download_failures += 1
                         print(f"[IMAGE DOWNLOAD] Failed to download image {j+1}, trying next suitable image")
                         continue
                 
-                print(f"[IMAGE SEARCH] All suitable images failed to download for '{keyword}'")
+                print(f"[IMAGE SEARCH] Found {len(found_suitable_images)} suitable images so far (keyword '{keyword}': {keyword_images_found} images)")
+                
+                # 合計上限に達したら全キーワード検索を終了
+                if len(found_suitable_images) >= max_total_images:
+                    print(f"[IMAGE SUCCESS] Reached total limit of {max_total_images} images across all keywords")
+                    break
                 
             except Exception as e:
                 print(f"[IMAGE ERROR] Error processing keyword '{keyword}': {type(e).__name__}: {e}")
@@ -3821,19 +3795,25 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
                 print(f"[IMAGE ERROR] Traceback: {traceback.format_exc()}")
                 continue
         
-        # すべてのキーワードで失敗した場合
-        print(f"[IMAGE ERROR] === IMAGE SEARCH FAILED ===")
-        print(f"[IMAGE ERROR] Total statistics:")
-        print(f"[IMAGE ERROR] - Keywords tried: {len(keywords)}")
-        print(f"[IMAGE ERROR] - Total images found: {total_images_found}")
-        print(f"[IMAGE ERROR] - Total blocked domains: {total_blocked}")
-        print(f"[IMAGE ERROR] - Download failures: {download_failures}")
-        print(f"[IMAGE ERROR] No suitable images found for any keywords")
-        
-        raise RuntimeError(f"Image search failed: tried {len(keywords)} keywords, found {total_images_found} images, blocked {total_blocked}, failed to download any")
-            
+        # 規定枚数に達したか確認
+        if found_suitable_images:
+            print(f"[IMAGE SUCCESS] Successfully found {len(found_suitable_images)} suitable images")
+            print(f"[IMAGE SUMMARY] Total processed: {total_images_found} found, {total_blocked} blocked, {download_failures} download failures")
+            # 最初の画像を返す（従来通りの互換性）
+            return found_suitable_images[0]['path']
+        else:
+            # 規定枚数に達しなかった場合はエラーで終了
+            print(f"[IMAGE ERROR] === IMAGE SEARCH FAILED ===")
+            print(f"[IMAGE ERROR] Could not find sufficient images")
+            print(f"[IMAGE ERROR] Total statistics:")
+            print(f"[IMAGE ERROR] - Keywords tried: {len(keywords)}")
+            print(f"[IMAGE ERROR] - Total images found: {total_images_found}")
+            print(f"[IMAGE ERROR] - Total blocked domains: {total_blocked}")
+            print(f"[IMAGE ERROR] - Download failures: {download_failures}")
+            raise RuntimeError(f"Could not find sufficient images: tried {len(keywords)} keywords, found {total_images_found} images, blocked {total_blocked}, failed to download {download_failures}")
+                
     except Exception as e:
-        print(f"[IMAGE CRITICAL] Critical error in image selection process: {type(e).__name__}: {e}")
+        print(f"[IMAGE CRITICAL] Critical error in image selection process: {e}")
         import traceback
         print(f"[IMAGE CRITICAL] Full traceback: {traceback.format_exc()}")
         
@@ -4776,84 +4756,47 @@ async def build_video_with_subtitles(
         def is_explanation_part(part_type: str) -> bool:
             return part_type.startswith("article_")
 
-        # 解説パートからのみ画像を取得してプールを作成
+        # 従来のキーワード抽出を使用し、新しい関数でフィルタリングと評価を実行
+        print("[IMAGE SEARCH] Using traditional keyword extraction with new filtering")
+        
+        # 複数の解説パートからキーワードを収集
+        all_keywords = []
         for i, (part, duration) in enumerate(zip(script_parts, part_durations)):
             if duration <= 0:
                 continue
             part_type = part.get("part", "")
-            if not is_explanation_part(part_type):
+            if not part_type.startswith("article_"):
                 continue
-
+            
             part_text = part.get("text", "")
-            keywords = get_segment_keywords(part_text, title, topic_summary)
-
-            for keyword in keywords:
-                if total_images_collected >= 60:
-                    print("[INFO] 画像収集が60枚に達したため、解説パートの検索を終了します")
-                    break
-
-                # Geminiが抽出したキーワードを完全に維持して使用
-                # 実体のある画像が出やすい接尾辞を付与して具体化
-                search_keyword = keyword
-
-                # 抽象的な概念を具体化する接尾辞を付与
-                concrete_suffixes = [
-                    "official image", "product photo", "technology", "device", "hardware"
-                ]
-
-                is_abstract = any(word in keyword.lower() for word in ['concept', 'idea', 'system', 'solution', 'platform'])
-
-                if is_abstract and len(keyword) <= 10:
-                    # 短い抽象的なキーワードには接尾辞を付与
-                    search_keyword = f"{keyword} {concrete_suffixes[0]}"
-                    print(f"[DEBUG] Abstract keyword detected, adding suffix: {keyword} -> {search_keyword}")
-                elif "logo" not in keyword.lower() and "screenshot" not in keyword.lower():
-                    # ロゴやスクリーンショットでない場合は画像用接尾辞を試行
-                    if len(keyword.split()) == 1:  # 単語の場合
-                        search_keyword = f"{keyword} official image"
-                        print(f"[DEBUG] Single word keyword, adding image suffix: {keyword} -> {search_keyword}")
-
-                # ストックフォトを除外するために-shutterstockを付与
-                if '-shutterstock' not in search_keyword.lower():
-                    search_keyword = f"{search_keyword} -shutterstock"
-
-                print(f"[DEBUG] Explanation search keyword: {search_keyword}")
-                print(f"[DEBUG] Original keyword: '{keyword}' (length: {len(keyword)})")
-
-                try:
-                    images = await search_images_with_playwright(search_keyword, max_results=10)
-                    print(f"[DEBUG] Found {len(images)} images for keyword: '{keyword}'")
-
-                    for image in images:
-                        image_url = image.get("url")
-                        if not image_url or image_url.lower().endswith(".svg"):
-                            continue
-                        image_path = download_image_from_url(image_url)
-                        if image_path and os.path.exists(image_path):
-                            # 重複チェック
-                            if is_duplicate_image(image_path):
-                                print(f"[SKIP] Duplicate image: {image_url}")
-                                continue
-                            # サムネイル用に画像パスを記録（重複でない場合のみ）
-                            _used_image_paths.append(image_path)
-                            downloaded_image_paths.append(image_path)
-                            total_images_collected += 1
-                            print(
-                                f"[DEBUG] Image pool updated: total={total_images_collected}, "
-                                f"keyword='{keyword}'"
-                            )
-                            if total_images_collected >= 60:
-                                print("[INFO] 画像収集上限（60枚）に達しました")
-                                break
-                except Exception as e:
-                    print(f"[WARNING] Failed to search images for keyword '{keyword}': {e}")
-                    continue
-
-                if total_images_collected >= 60:
-                    break
-
-        if not downloaded_image_paths:
-            raise RuntimeError("画像が1枚もダウンロードされていません")
+            part_keywords = get_segment_keywords(part_text, title, topic_summary)
+            all_keywords.extend(part_keywords)
+            
+            # 十分なキーワードが集まったら終了
+            if len(all_keywords) >= 5:
+                print(f"[INFO] Collected {len(all_keywords)} keywords from {i+1} parts")
+                break
+        
+        if not all_keywords:
+            print("[ERROR] No keywords extracted from explanation parts")
+            raise RuntimeError("No keywords available for image search")
+        
+        print(f"[KEYWORDS] Extracted {len(all_keywords)} keywords: {all_keywords[:5]}")
+        
+        # 新しい関数で画像検索とフィルタリングを実行
+        enhanced_script_data = script_data.copy()
+        enhanced_script_data["extracted_keywords"] = all_keywords[:5]
+        
+        selected_image_path = await get_ai_selected_image(enhanced_script_data)
+        
+        if selected_image_path and os.path.exists(selected_image_path):
+            downloaded_image_paths = [selected_image_path]
+            total_images_collected = 1
+            print(f"[SUCCESS] Filtered and evaluated image: {selected_image_path}")
+        else:
+            print("[ERROR] Failed to get filtered image, using fallback")
+            downloaded_image_paths = []
+            total_images_collected = 0
 
         image_pool = ImagePool(downloaded_image_paths)
         image_schedule = []
