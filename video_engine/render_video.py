@@ -3656,7 +3656,7 @@ def split_network_reactions(text: str, max_chars: int) -> List[str]:
     return chunks if chunks else [text.strip()]
 
 
-async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
+async def get_ai_selected_image(script_data: Dict[str, Any]) -> List[str]:
     """AIによる動的選別・自動取得で最適な画像を取得（複数キーワード対応）"""
     try:
         # 1. キーワードリスト抽出（外部から渡されたキーワードを優先）
@@ -3808,8 +3808,8 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
         if found_suitable_images:
             print(f"[IMAGE SUCCESS] Successfully found {len(found_suitable_images)} suitable images")
             print(f"[IMAGE SUMMARY] Total processed: {total_images_found} found, {total_blocked} blocked, {download_failures} download failures")
-            # 最初の画像を返す（従来通りの互換性）
-            return found_suitable_images[0]['path']
+            # すべての画像パスを返す
+            return [img['path'] for img in found_suitable_images]
         else:
             # 規定枚数に達しなかった場合はエラーで終了
             print(f"[IMAGE ERROR] === IMAGE SEARCH FAILED ===")
@@ -4809,14 +4809,14 @@ async def build_video_with_subtitles(
         enhanced_script_data = script_data.copy()
         enhanced_script_data["extracted_keywords"] = all_keywords[:5]
         
-        selected_image_path = await get_ai_selected_image(enhanced_script_data)
+        # 複数画像を受け取る
+        downloaded_image_paths = await get_ai_selected_image(enhanced_script_data)
         
-        if selected_image_path and os.path.exists(selected_image_path):
-            downloaded_image_paths = [selected_image_path]
-            total_images_collected = 1
-            print(f"[SUCCESS] Filtered and evaluated image: {selected_image_path}")
+        if downloaded_image_paths:
+            total_images_collected = len(downloaded_image_paths)
+            print(f"[SUCCESS] Filtered and evaluated {total_images_collected} images")
         else:
-            print("[ERROR] Failed to get filtered image, using fallback")
+            print("[ERROR] Failed to get filtered images")
             downloaded_image_paths = []
             total_images_collected = 0
 
