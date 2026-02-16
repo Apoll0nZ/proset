@@ -2593,7 +2593,6 @@ def evaluate_images_batch_with_gemini(images_list: List[Dict], keyword: str, scr
 IT・ガジェット解説動画に適した画像を選択してください。
 
 ### 動画情報
-- タイトル: {script_data.get('title', 'N/A')}
 - キーワード: {keyword}
 - 内容: {script_text[:300]}...
 
@@ -3680,9 +3679,15 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> str:
                     continue
                 
                 # Geminiで一括評価（評価対象を調整）
-                print(f"[IMAGE EVAL] Evaluating {min(30, len(filtered_images))} images with Gemini")
+                print(f"[IMAGE EVAL] Starting Gemini evaluation for {min(30, len(filtered_images))} images")
+                print(f"[IMAGE EVAL] GEMINI_API_KEY check: {'✓ Present' if os.environ.get('GEMINI_API_KEY') else '✗ Missing'}")
                 script_text = script_data.get("content", {}).get("topic_summary", "")
+                print(f"[IMAGE EVAL] Script text length: {len(script_text)} chars")
+                print(f"[IMAGE EVAL] Keyword: '{keyword}'")
+                
                 suitable_images = evaluate_images_batch_with_gemini(filtered_images[:30], keyword, script_text)  # 評価対象を調整
+                
+                print(f"[IMAGE EVAL] Gemini evaluation completed. Result: {len(suitable_images)} suitable images")
                 
                 if not suitable_images:
                     print(f"[IMAGE EVAL] No suitable images approved by Gemini for '{keyword}'")
