@@ -339,18 +339,23 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # modulation開始時間 = title終了 + owner_comment直前まで（reaction含む）
         if owner_comment_voice_index is not None:
             # reactionを含めた全パートの時間を加算
+            # owner_commentはVOICE_PARTS内でのインデックスなので、その直前まで
             modulation_start_time = title_duration + sum(
                 get_part_duration(voice_idx)
                 for voice_idx in valid_voice_parts
                 if voice_idx < owner_comment_voice_index
             )
-            print("[DEBUG] Modulation calculation (fallback: owner_comment):")
+            print("[DEBUG] Modulation calculation (owner_comment):")
+            print(f"  - Owner comment voice index: {owner_comment_voice_index}")
+            print(f"  - Valid voice parts before owner_comment: {[v for v in valid_voice_parts if v < owner_comment_voice_index]}")
             print(f"  - Modulation starts at: {modulation_start_time:.2f}s")
         else:
             # owner_commentがない場合は全パート終了後
             modulation_start_time = title_duration + sum(
                 get_part_duration(voice_idx) for voice_idx in valid_voice_parts
             )
+            print("[DEBUG] Modulation calculation (no owner_comment):")
+            print(f"  - Modulation starts at: {modulation_start_time:.2f}s")
 
         owner_comment_start_time = modulation_start_time + modulation_duration
 
