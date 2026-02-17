@@ -57,6 +57,8 @@ debug_*
 
 # Deployment artifacts
 *_deploy.zip
+*_updated.zip
+*_flat.zip
 debug-video-artifacts/
 
 # OS / editor specific
