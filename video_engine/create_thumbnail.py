@@ -336,56 +336,12 @@ def get_article_images(
             print(f"[THUMBNAIL] Error in independent image search (attempt {attempt}/{max_retries}): {e}")
             continue
     
-    # 動画生成で使用した画像からフォールバック（従来通り）
+    # 動画生成で使用した画像からフォールバック（完全にランダムに選択）
     if image_paths and (img1 is None or img2 is None):
         import random
         
-        def get_domain_score(image_path: str) -> int:
-            """ドメインに基づいてスコアを付与"""
-            preferred_domains = [
-                'apple.com',
-                'microsoft.com',
-                'google.com',
-                'amazon.com',
-                'verge.com',
-                'cnet.com',
-                'techcrunch.com',
-                'engadget.com',
-                'arstechnica.com',
-                'wired.com',
-                'theverge.com',
-                'zdnet.com',
-                'pcmag.com',
-                'tomshardware.com',
-                'anandtech.com'
-            ]
-            
-            # パスからURLを抽出（S3パスの場合はファイル名から推測）
-            url_lower = image_path.lower()
-            
-            # 優先ドメインのスコアリング
-            for domain in preferred_domains:
-                if domain in url_lower:
-                    print(f"[SCORE] High score for preferred domain: {domain} in {image_path}")
-                    return 10
-            
-            # 一般的な企業ドメイン
-            if any(company in url_lower for company in ['nvidia', 'amd', 'intel', 'qualcomm', 'samsung']):
-                return 8
-            
-            # ニュースメディア系
-            if any(media in url_lower for media in ['news', 'reuters', 'bloomberg', 'wsj']):
-                return 7
-            
-            # 公式サイト
-            if any(official in url_lower for official in ['official', 'press', 'media']):
-                return 6
-            
-            # その他
-            return 3
-        
-        # スコアリングして上位2枚を選択（重複を避ける）
-        scored_paths = []
+        # 存在する画像パスのみを収集（重複を避ける）
+        available_paths = []
         used_paths = set()  # 使用済みパスを追跡
         
         for path in image_paths:
@@ -397,27 +353,28 @@ def get_article_images(
                 print(f"[WARNING] Image file does not exist (already deleted): {path}")
                 continue
             
-            score = get_domain_score(path)
-            # 同点の場合はランダム性を加える
-            score += random.randint(0, 2)
-            scored_paths.append((score, path))
+            available_paths.append(path)
             used_paths.add(path)  # 使用済みとしてマーク
         
-        # スコアで降順にソートして上位2枚を選択
-        scored_paths.sort(key=lambda x: x[0], reverse=True)
-        selected_paths = [path for score, path in scored_paths[:2]]
+        # 完全にランダムに2枚を選択
+        if len(available_paths) >= 2:
+            selected_paths = random.sample(available_paths, 2)
+        elif len(available_paths) == 1:
+            selected_paths = available_paths
+        else:
+            selected_paths = []
         
-        print(f"[DEBUG] Selected {len(selected_paths)} images with scoring: {[(score, path) for score, path in scored_paths[:2]]}")
+        print(f"[DEBUG] Randomly selected {len(selected_paths)} images from {len(available_paths)} available images")
         
         for path in selected_paths:
             try:
                 loaded = Image.open(path).convert("RGBA")
                 if img1 is None:
                     img1 = loaded
-                    print(f"[DEBUG] Loaded video image 1: {path}")
+                    print(f"[DEBUG] Randomly loaded video image 1: {path}")
                 elif img2 is None:
                     img2 = loaded
-                    print(f"[DEBUG] Loaded video image 2: {path}")
+                    print(f"[DEBUG] Randomly loaded video image 2: {path}")
             except Exception as e:
                 print(f"[DEBUG] Failed to load video image: {e}")
     
