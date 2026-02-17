@@ -5550,12 +5550,22 @@ def upload_to_youtube(
     # サムネイルを設定
     if thumbnail_path and os.path.exists(thumbnail_path):
         try:
+            print(f"[DEBUG] Setting thumbnail from path: {thumbnail_path}")
+            print(f"[DEBUG] Thumbnail file exists: {os.path.exists(thumbnail_path)}")
+            print(f"[DEBUG] Thumbnail file size: {os.path.getsize(thumbnail_path)} bytes")
+            
             youtube.thumbnails().set(
                 videoId=video_id,
                 media_body=MediaFileUpload(thumbnail_path, mimetype="image/png")
             ).execute()
+            print(f"[SUCCESS] Thumbnail set successfully")
         except Exception as e:
+            import traceback
             print(f"サムネイル設定に失敗しましたが、動画アップロードは成功しています: {e}")
+            print(f"[ERROR] Thumbnail path was: {thumbnail_path}")
+            traceback.print_exc()
+    else:
+        print(f"[WARNING] Thumbnail file not found or path is empty: {thumbnail_path}")
     
     return video_id
 
