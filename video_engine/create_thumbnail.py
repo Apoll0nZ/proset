@@ -112,11 +112,11 @@ def calculate_image_score(image_path: str) -> int:
 
 def select_images_from_video(image_schedule: List[Dict], s3_bucket: str = None) -> List[str]:
     """
-    動画で使用した画像から上位2枚を選択
+    動画で使用した画像からランダムに2枚を選択
 
     優先順位:
-    1. ローカルに存在する画像
-    2. S3から画像をダウンロード
+    1. ローカルに存在する画像をランダムに選択
+    2. S3から画像をダウンロードしてランダムに選択
     3. 空リストを返す（フォールバックへ）
     """
     if not image_schedule:
@@ -126,7 +126,7 @@ def select_images_from_video(image_schedule: List[Dict], s3_bucket: str = None) 
     os.makedirs(temp_dir, exist_ok=True)
 
     # ステップ1: ローカルファイルをチェック
-    scored_images = []
+    local_images = []
     for item in image_schedule:
         path = item.get('path', '')
         if not path:
@@ -134,15 +134,15 @@ def select_images_from_video(image_schedule: List[Dict], s3_bucket: str = None) 
 
         local_path = path if os.path.isabs(path) else os.path.join(temp_dir, os.path.basename(path))
         if os.path.exists(local_path):
-            score = calculate_image_score(local_path)
-            scored_images.append((score, local_path))
+            local_images.append(local_path)
 
-    # スコア順にソート
-    scored_images.sort(reverse=True, key=lambda x: x[0])
-    local_images = [img[1] for img in scored_images[:2]]
-
+    # ランダムに2枚を選択
     if len(local_images) >= 2:
-        print(f"[SUCCESS] Found {len(local_images)} local images for thumbnail")
+        selected_images = random.sample(local_images, 2)
+        print(f"[SUCCESS] Randomly selected {len(selected_images)} local images for thumbnail")
+        return selected_images
+    elif len(local_images) == 1:
+        print(f"[SUCCESS] Using 1 available local image for thumbnail")
         return local_images
 
     # ステップ2: S3から画像をダウンロード
@@ -152,10 +152,9 @@ def select_images_from_video(image_schedule: List[Dict], s3_bucket: str = None) 
             import boto3
             s3_client = boto3.client('s3')
 
+            # 利用可能なS3画像を収集
+            s3_images = []
             for item in image_schedule[:10]:  # 上位10件を試行
-                if len(local_images) >= 2:
-                    break
-
                 path = item.get('path', '')
                 if not path:
                     continue
@@ -166,17 +165,28 @@ def select_images_from_video(image_schedule: List[Dict], s3_bucket: str = None) 
 
                 # 既にローカルにある場合はスキップ
                 if os.path.exists(local_path):
-                    local_images.append(local_path)
+                    s3_images.append(local_path)
                     continue
 
                 try:
                     s3_client.download_file(s3_bucket, s3_key, local_path)
                     if os.path.exists(local_path):
-                        local_images.append(local_path)
+                        s3_images.append(local_path)
                         print(f"[S3] Downloaded: {s3_key}")
                 except Exception as e:
                     print(f"[S3] Download failed for {s3_key}: {e}")
                     continue
+
+            # S3からダウンロードした画像も含めてランダムに選択
+            all_available_images = local_images + s3_images
+            if len(all_available_images) >= 2:
+                selected_images = random.sample(all_available_images, 2)
+                print(f"[SUCCESS] Randomly selected {len(selected_images)} images for thumbnail")
+                return selected_images
+            elif len(all_available_images) == 1:
+                print(f"[SUCCESS] Using 1 available image for thumbnail")
+                return all_available_images
+
         except Exception as e:
             print(f"[ERROR] S3 client initialization failed: {e}")
 
