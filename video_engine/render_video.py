@@ -440,12 +440,6 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             
             # ★reactionパートは音声時間（segment_end）を基準にチェック
             if part_type == "reaction" and segment_end is not None:
-                # 音声がModulation期間に完全に含まれる場合は画像をスキップ
-                if img_start >= modulation_start_time and segment_end <= modulation_end_time:
-                    print(f"[TIMELINE] Skipping reaction image (audio-based): {img_start:.2f}s - {segment_end:.2f}s within modulation")
-                    continue
-                
-                # 音声がModulationと部分的に重複する場合の調整
                 actual_start = img_start
                 actual_duration = img_clip.duration
                 
