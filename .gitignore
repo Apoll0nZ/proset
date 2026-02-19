@@ -59,6 +59,7 @@ debug_*
 *_deploy.zip
 *_updated.zip
 *_flat.zip
+lambda_selector_updated.zip
 debug-video-artifacts/
 
 # OS / editor specific

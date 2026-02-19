@@ -445,10 +445,19 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     print(f"[TIMELINE] Skipping reaction image (audio-based): {img_start:.2f}s - {segment_end:.2f}s within modulation")
                     continue
                 
-                # 音声がModulationと部分的に重複する場合、音声終了時間を基準に調整
+                # 音声がModulationと部分的に重複する場合の調整
                 actual_start = img_start
                 actual_duration = img_clip.duration
-                if img_start < modulation_end_time and segment_end > modulation_end_time:
+                
+                # reactionパートの画像がmodulation前に完全に終わる場合は調整不要
+                if img_end <= modulation_start_time:
+                    print(f"[TIMELINE] Keeping reaction image before modulation: {img_start:.2f}s - {img_end:.2f}s")
+                # 音声がModulation期間に完全に含まれる場合は画像をスキップ
+                elif img_start >= modulation_start_time and segment_end <= modulation_end_time:
+                    print(f"[TIMELINE] Skipping reaction image (audio-based): {img_start:.2f}s - {segment_end:.2f}s within modulation")
+                    continue
+                # 音声がModulationと実際に重複する場合のみ調整
+                elif img_start < modulation_end_time and segment_end > modulation_end_time:
                     actual_start = modulation_end_time
                     actual_duration = segment_end - modulation_end_time
                     print(f"[TIMELINE] Adjusted reaction image (audio-based): {img_start:.2f}s -> {actual_start:.2f}s, duration: {actual_duration:.2f}s")
