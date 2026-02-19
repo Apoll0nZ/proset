@@ -738,11 +738,15 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
                 part_audio = audio_clip.subclipped(audio_src_cursor, audio_src_cursor + duration)
 
-                if part_index in valid_voice_parts:
+                new_part_index = script_index_for_voice_index(part_index)
+                if new_part_index in valid_voice_parts:
                     modulation_gap = 0.0
-                    if owner_comment_voice_index is not None and part_index >= owner_comment_voice_index:
+                    # owner_comment_voice_indexはsplit後のインデックス(6)
+                    # part_indexはsplit前(5)なので変換が必要
+                    script_idx = script_index_for_voice_index(part_index)
+                    if owner_comment_voice_index is not None and script_idx >= owner_comment_voice_index:
                         modulation_gap = modulation_duration
-                    audio_start = part_start_times.get(part_index, 0.0) + title_duration + modulation_gap
+                    audio_start = part_start_times.get(new_part_index, 0.0) + title_duration + modulation_gap
                     audio_elements.append(part_audio.with_start(audio_start))
 
                 # 字幕と両方揃っていないパートは音声もスキップ（時間を詰める）
