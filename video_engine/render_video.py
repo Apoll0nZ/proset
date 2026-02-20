@@ -8,7 +8,7 @@ import hashlib
 import shutil
 import re
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import random
 import google.genai as genai
 
@@ -254,78 +254,6 @@ def split_title_part(script_parts: List[Dict], part_durations: List[float],
     
     return new_script_parts, new_part_durations, title_duration, title_audio_duration - title_duration
 
-def remap_timeline_data_after_title_split(
-    query_data_list_all: Dict[int, Any],
-    text_parts_list_all: Dict[int, Any],
-    duration_list_all: Dict[int, List[float]],
-    title_duration: float,
-    title_audio_duration: float,
-) -> tuple:
-    """
-    split_title_part 後に、音声/字幕タイミング辞書のキーを script_parts インデックスへ合わせる。
-    - old 0(title) -> new 1(main_title)
-    - old n(n>=1) -> new n+1
-    """
-    audio_only_duration = max(0.0, title_audio_duration - title_duration)
-
-    def _normalize_key(k: Any) -> Optional[int]:
-        if isinstance(k, int):
-            return k
-        if isinstance(k, str) and k.isdigit():
-            return int(k)
-        return None
-
-    def _remap_generic(src: Dict[int, Any]) -> Dict[int, Any]:
-        if not src:
-            return {}
-        out: Dict[int, Any] = {}
-        for raw_k, v in src.items():
-            k = _normalize_key(raw_k)
-            if k is None:
-                continue
-            if k == 0:
-                if audio_only_duration > 0:
-                    out[1] = v
-            else:
-                out[k + 1] = v
-        return out
-
-    def _remap_durations(src: Dict[int, List[float]]) -> Dict[int, List[float]]:
-        if not src:
-            return {}
-        out: Dict[int, List[float]] = {}
-        for raw_k, v in src.items():
-            k = _normalize_key(raw_k)
-            if k is None:
-                continue
-
-            if k == 0:
-                if audio_only_duration <= 0:
-                    continue
-                old_durations = [float(x) for x in (v or [])]
-                old_total = sum(old_durations)
-                if not old_durations or old_total <= 0:
-                    out[1] = [audio_only_duration]
-                    continue
-                if len(old_durations) == 1:
-                    out[1] = [audio_only_duration]
-                    continue
-
-                scale = audio_only_duration / old_total
-                new_durations = [max(0.0, d * scale) for d in old_durations]
-                drift = audio_only_duration - sum(new_durations)
-                new_durations[-1] += drift
-                out[1] = new_durations
-            else:
-                out[k + 1] = [float(x) for x in (v or [])]
-        return out
-
-    remapped_query = _remap_generic(query_data_list_all or {})
-    remapped_text = _remap_generic(text_parts_list_all or {})
-    remapped_duration = _remap_durations(duration_list_all or {})
-
-    return remapped_query, remapped_text, remapped_duration
-
 # === 統一タイムライン合成方式による動画生成関数 ===
 def build_unified_timeline(script_parts: List[Dict], part_durations: List[float],
                           title_video_clip: VideoFileClip, title_duration: float,
@@ -381,31 +309,45 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 return part_durations[idx]
             return 0.0
 
-        def part_type_for_script_index(script_idx: int) -> str:
+        # script_parts と VOICEVOX の index ずれ補正（title_video挿入時に+1ずれる）
+        voice_index_offset = 1 if script_parts and script_parts[0].get("part") == "title_video" else 0
+        if voice_index_offset:
+            print(f"[TIMELINE] Detected title split: voice index offset = {voice_index_offset}")
+
+        def script_index_for_voice_index(voice_idx: int) -> int:
+            return voice_idx + voice_index_offset
+
+        def voice_index_for_script_index(script_idx: int) -> int:
+            return script_idx - voice_index_offset
+
+        def part_type_for_voice_index(voice_idx: int) -> str:
+            script_idx = script_index_for_voice_index(voice_idx)
             if 0 <= script_idx < len(script_parts):
                 return script_parts[script_idx].get("part", "")
             return ""
 
-        # owner_comment の script_parts インデックスを特定
-        owner_comment_script_index = None
+        # owner_commentのVOICE_PARTS内でのインデックスを特定
+        owner_comment_voice_index = None
         for i, part in enumerate(script_parts):
             if part.get("part") == "owner_comment":
-                owner_comment_script_index = i
-                print(f"[TIMELINE] Found owner_comment at script_parts index: {i}")
+                owner_comment_voice_index = voice_index_for_script_index(i)
+                if owner_comment_voice_index < 0:
+                    owner_comment_voice_index = None
+                print(f"[TIMELINE] Found owner_comment at script_parts index: {i} (voice_index={owner_comment_voice_index})")
                 break
 
         # modulation開始時間 = title終了 + owner_comment直前まで（reaction含む）
-        if owner_comment_script_index is not None:
+        if owner_comment_voice_index is not None:
             # reactionを含めた全パートの時間を加算
-            # owner_comment の直前まで加算
+            # owner_commentはVOICE_PARTS内でのインデックスなので、その直前まで
             modulation_start_time = title_duration + sum(
-                get_part_duration(script_idx)
-                for script_idx in valid_voice_parts
-                if script_idx < owner_comment_script_index
+                get_part_duration(voice_idx)
+                for voice_idx in valid_voice_parts
+                if voice_idx < owner_comment_voice_index
             )
             print("[DEBUG] Modulation calculation (owner_comment):")
-            print(f"  - Owner comment script index: {owner_comment_script_index}")
-            print(f"  - Valid voice parts before owner_comment: {[v for v in valid_voice_parts if v < owner_comment_script_index]}")
+            print(f"  - Owner comment voice index: {owner_comment_voice_index}")
+            print(f"  - Valid voice parts before owner_comment: {[v for v in valid_voice_parts if v < owner_comment_voice_index]}")
             print(f"  - Modulation starts at: {modulation_start_time:.2f}s")
         else:
             # owner_commentがない場合は全パート終了後
@@ -565,7 +507,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             # このパートの絶対開始時間を取得
             # modulation挿入分を反映（owner_comment以降の音声・字幕は後ろにずらす）
             modulation_gap = 0.0
-            if owner_comment_script_index is not None and part_index >= owner_comment_script_index:
+            if owner_comment_voice_index is not None and part_index >= owner_comment_voice_index:
                 modulation_gap = modulation_duration
             absolute_start_time = title_duration + part_start_times.get(part_index, 0.0) + modulation_gap
             
@@ -584,7 +526,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             # 完全なテキスト（表示用）
             full_text = "".join(chunks)
             
-            part_type = part_type_for_script_index(part_index)
+            part_type = part_type_for_voice_index(part_index)
 
             # 各チャンクの字幕を生成
             for chunk_index, chunk_duration in enumerate(chunk_durations):
@@ -784,9 +726,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
         # part_durations = VOICEVOX音声のみ、audio_src_cursor = 0.0始まり
         # modulation/titleは音声とは別レイヤーとして処理
         if audio_clip:
-            # title動画内に含まれる分は埋め込み音声を使うため、合成音声側をスキップ。
-            # title読み上げがtitle動画より短い場合の音声欠落を防ぐため、短い方を採用する。
-            audio_src_cursor = max(0.0, min(title_duration, title_audio_duration))
+            audio_src_cursor = 0.0  # VOICEVOX音声のみを前提
 
             # 実際に合成された音声（duration_list_all）を順に消費
             eps = 1e-3
@@ -795,7 +735,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 if duration <= 0:
                     continue
 
-                # 浮動小数誤差で最終パート（owner_comment等）が丸ごと落ちるのを防ぐ
+                # 浮動小数誤差で末尾パート（owner_comment等）が丸ごと落ちるのを防ぐ
                 remaining = max(0.0, audio_clip.duration - audio_src_cursor)
                 if remaining <= eps:
                     break
@@ -812,7 +752,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
                 if part_index in valid_voice_parts:
                     modulation_gap = 0.0
-                    if owner_comment_script_index is not None and part_index >= owner_comment_script_index:
+                    if owner_comment_voice_index is not None and part_index >= owner_comment_voice_index:
                         modulation_gap = modulation_duration
                     audio_start = part_start_times.get(part_index, 0.0) + title_duration + modulation_gap
                     audio_elements.append(part_audio.with_start(audio_start))
@@ -5377,17 +5317,15 @@ async def build_video_with_subtitles(
 
         # 統一タイムラインを使用して動画を生成
         try:
-            # title音声の総尺（title_video + main_title）を計算
-            title_audio_duration = title_duration
-            if len(script_parts) > 1 and script_parts[1].get("part") == "main_title" and len(part_durations) > 1:
-                title_audio_duration = title_duration + max(0.0, part_durations[1])
+            # title_audio_durationを定義
+            title_audio_duration = part_durations[0] if part_durations else title_duration
 
             video = build_unified_timeline(
                 script_parts=script_parts,
                 part_durations=part_durations,
                 title_video_clip=title_video_clip,
                 title_duration=title_duration,
-                title_audio_duration=title_audio_duration,
+                title_audio_duration=title_audio_duration if part_durations else title_duration,
                 modulation_video_clip=modulation_video_clip,
                 modulation_duration=modulation_duration,
                 audio_clip=audio_clip,
@@ -5742,13 +5680,6 @@ async def main() -> None:
         
         script_parts, part_durations, title_video_duration, title_audio_only_duration = split_title_part(
             script_parts, part_durations, title_duration, title_audio_duration
-        )
-        query_data_list_all, text_parts_list_all, duration_list_all = remap_timeline_data_after_title_split(
-            query_data_list_all=query_data_list_all,
-            text_parts_list_all=text_parts_list_all,
-            duration_list_all=duration_list_all,
-            title_duration=title_duration,
-            title_audio_duration=title_audio_duration,
         )
 
             # 3. Video 合成
