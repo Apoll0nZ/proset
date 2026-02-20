@@ -789,14 +789,26 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
             audio_src_cursor = max(0.0, min(title_duration, title_audio_duration))
 
             # 実際に合成された音声（duration_list_all）を順に消費
+            eps = 1e-3
             for part_index in sorted(duration_list_all.keys()):
                 duration = get_part_duration(part_index)
                 if duration <= 0:
                     continue
-                if audio_src_cursor + duration > audio_clip.duration:
-                    break
 
-                part_audio = audio_clip.subclipped(audio_src_cursor, audio_src_cursor + duration)
+                # 浮動小数誤差で最終パート（owner_comment等）が丸ごと落ちるのを防ぐ
+                remaining = max(0.0, audio_clip.duration - audio_src_cursor)
+                if remaining <= eps:
+                    break
+                clip_duration = duration if (audio_src_cursor + duration) <= (audio_clip.duration + eps) else remaining
+                if clip_duration <= eps:
+                    break
+                if clip_duration + eps < duration:
+                    print(
+                        f"[TIMELINE] Audio tail clamped for part {part_index}: "
+                        f"requested={duration:.3f}s, available={clip_duration:.3f}s"
+                    )
+
+                part_audio = audio_clip.subclipped(audio_src_cursor, audio_src_cursor + clip_duration)
 
                 if part_index in valid_voice_parts:
                     modulation_gap = 0.0
@@ -806,7 +818,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     audio_elements.append(part_audio.with_start(audio_start))
 
                 # 字幕と両方揃っていないパートは音声もスキップ（時間を詰める）
-                audio_src_cursor += duration
+                audio_src_cursor += clip_duration
 
         # BGM（main_titleから開始、owner_comment終了まで）
         if bgm_clip:
@@ -5365,15 +5377,17 @@ async def build_video_with_subtitles(
 
         # 統一タイムラインを使用して動画を生成
         try:
-            # title_audio_durationを定義
-            title_audio_duration = part_durations[0] if part_durations else title_duration
+            # title音声の総尺（title_video + main_title）を計算
+            title_audio_duration = title_duration
+            if len(script_parts) > 1 and script_parts[1].get("part") == "main_title" and len(part_durations) > 1:
+                title_audio_duration = title_duration + max(0.0, part_durations[1])
 
             video = build_unified_timeline(
                 script_parts=script_parts,
                 part_durations=part_durations,
                 title_video_clip=title_video_clip,
                 title_duration=title_duration,
-                title_audio_duration=title_audio_duration if part_durations else title_duration,
+                title_audio_duration=title_audio_duration,
                 modulation_video_clip=modulation_video_clip,
                 modulation_duration=modulation_duration,
                 audio_clip=audio_clip,
