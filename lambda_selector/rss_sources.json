@@ -1,0 +1,34 @@
+{
+  "group_a": [
+    "https://pc.watch.impress.co.jp/data/rss/1.0/pcw/feed.rdf",
+    "https://www.gdm.or.jp/feed",
+    "https://www.theverge.com/rss/index.xml",
+    "https://www.techpowerup.com/rss/",
+    "https://www.windowscentral.com/rss.xml",
+    "https://9to5mac.com/feed/",
+    "https://9to5google.com/feed/",
+    "https://www.kitguru.net/feed/",
+    "https://www.anandtech.com/rss/",
+    "https://www.pcworld.com/feed"
+  ],
+  "group_b": [
+    "https://www.reddit.com/r/laptops/.rss",
+    "https://www.reddit.com/r/GamingLaptops/.rss",
+    "https://www.reddit.com/r/mousereview/.rss",
+    "https://www.reddit.com/r/MechanicalKeyboards/.rss",
+    "https://www.reddit.com/r/Monitors/.rss",
+    "https://www.reddit.com/r/LogitechG/.rss",
+    "https://www.reddit.com/r/Razer/.rss",
+    "https://www.reddit.com/r/Anker/.rss",
+    "https://www.reddit.com/r/apple/.rss",
+    "https://www.reddit.com/r/Surface/.rss",
+    "https://b.hatena.ne.jp/hotentry/it.rss"
+  ],
+  "support": [
+    "https://www.engadget.com/rss.xml",
+    "https://www.gizmodo.com/rss",
+    "https://www.cnet.com/rss/all/",
+    "https://www.tomshardware.com/rss.xml",
+    "https://www.digitaltrends.com/feed/"
+  ]
+}

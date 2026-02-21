@@ -2460,13 +2460,13 @@ def extract_image_keywords_list(script_data: Dict[str, Any]) -> List[str]:
             return unique_keywords
         else:
             # 動的フォールバックキーワード（タイトルの冒頭10文字）
-            fallback_keyword = title[:10] if title else "technology"
+            fallback_keyword = title[:10] if title else "ノートPC"
             print(f"Using fallback keyword: {fallback_keyword}")
             return [fallback_keyword]
             
     except Exception as e:
         print(f"Failed to extract keywords: {e}")
-        return [title[:10] if title else "technology"]  # 最終フォールバック
+        return [title[:10] if title else "ノートPC"]  # 最終フォールバック
 
 
 def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
@@ -2531,13 +2531,13 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
             return selected_keyword
         else:
             # 動的フォールバックキーワード（タイトルの冒頭10文字）
-            fallback_keyword = title[:10] if title else "technology"
+            fallback_keyword = title[:10] if title else "ノートPC"
             print(f"Using fallback keyword: {fallback_keyword}")
             return fallback_keyword
             
     except Exception as e:
         print(f"Failed to extract keywords: {e}")
-        return title[:10] if title else "technology"  # 最終フォールバック
+        return title[:10] if title else "ノートPC"  # 最終フォールバック
 
 
 def load_keyword_prompt() -> str:
@@ -2662,7 +2662,7 @@ def evaluate_images_batch_with_gemini_improved(images_list: List[Dict], keyword:
         
         # バッチ評価プロンプト（画像を直接分析するよう変更）
         prompt = f"""
-IT・ガジェット解説動画に適した画像を選択してください。
+PC周辺機器・ノートPC解説動画に適した画像を選択してください。
 
 ### 動画情報
 - キーワード: {keyword}
@@ -2672,7 +2672,7 @@ IT・ガジェット解説動画に適した画像を選択してください。
 {images_info_text}
 
 ### 選択指示
-**各画像のURLにアクセスして実際の画像内容を視覚的に分析し、IT・ガジェットなのか別ジャンルなのかをあなた自身の判断で選択してください**:
+**各画像のURLにアクセスして実際の画像内容を視覚的に分析し、PC周辺機器・ノートPC関連か別ジャンルかをあなた自身の判断で選択してください**:
 
 1. **画像の視覚的分析**:
    - 画像に写っているものが何か（デバイス、ロゴ、人物、アニメキャラクター等）
@@ -2681,12 +2681,12 @@ IT・ガジェット解説動画に適した画像を選択してください。
 
 2. **URL・タイトルの分析**:
    - どのようなジャンルの画像か推測してください
-   - IT・ガジェット関連か、アニメ・キャラクター関連か、その他エンターテイメントか
-   - Android17のような固有名詞は、文脈からOSかキャラクターかを判断
-   - IT・ガジェット関連の画像のみを採用すること。
+   - PC周辺機器・ノートPC関連か、アニメ・キャラクター関連か、その他エンターテイメントか
+   - スマホ・家電・自動車・ゲーム等は、動画文脈でPC周辺機器・ノートPCに直接関係しないなら不採用
+   - PC周辺機器・ノートPC関連の画像のみを採用すること。
 
 3. **動画との適合性判断**:
-   - 動画の内容（IT・ガジェット解説）に合致するか
+   - 動画の内容（PC周辺機器・ノートPC解説）に合致するか
    - 視聴者が期待する技術的な情報か、それとも無関係なコンテンツか
 
 4. **品質評価**:
@@ -2695,13 +2695,13 @@ IT・ガジェット解説動画に適した画像を選択してください。
 
 ### 重要な注意点
 - **必ず各画像URLにアクセスして実際の画像内容を確認してください**
-- IT・ガジェットチャンネルとしての専門性を維持してください
+- PC周辺機器・ノートPCチャンネルとしての専門性を維持してください
 - 些細な迷いよりも、明確な不適合を優先的に除外してください
-- Android17のようなケースでは、OS解説なら技術画像を使用すること。
+- ノートPC本体、キーボード、マウス、モニター、ドッキングステーション、SSDなどの関連性を重視してください。
 
 ### 回答形式
 JSON: {{"selected_indices": [適切な番号,適切な番号,...], "reason": "あなたの分析に基づく詳細な選択理由"}}
-該当なし: {{"selected_indices": [], "reason": "すべてがIT・ガジェット解説に不適合"}}
+該当なし: {{"selected_indices": [], "reason": "すべてがPC周辺機器・ノートPC解説に不適合"}}
 不明確: {{"selected_indices": [], "reason": "判断が困難なため不採用"}}
 """
         
@@ -2772,11 +2772,11 @@ def evaluate_image_with_gemini(image_info: Dict, keyword: str, script_text: str)
         
         # 画像評価プロンプト
         prompt = f"""
-IT・ガジェット解説動画にこの画像が適しているか評価してください。
+PC周辺機器・ノートPC解説動画にこの画像が適しているか評価してください。
 **著作権・肖像権リスクを最優先で厳格に判定してください。**
 
 ### 動画情報
-- タイトル: {script_data.get('title', 'N/A')}
+- タイトル: N/A
 - キーワード: {keyword}
 - 内容: {script_text[:300]}...
 
@@ -2814,11 +2814,11 @@ IT・ガジェット解説動画にこの画像が適しているか評価して
 
 6. **ジャンルの推測**:
    - どのようなジャンルの画像か推測してください
-   - IT・ガジェット関連か、アニメ・キャラクター関連か、その他か
-   - Android17のような固有名詞は、文脈からOSかキャラクターかを判断
+   - PC周辺機器・ノートPC関連か、アニメ・キャラクター関連か、その他か
+   - ノートPC本体/PC周辺機器（キーボード・マウス・モニター・外部ストレージ等）との関連を明示
 
 7. **動画との適合性**:
-   - IT・ガジェット解説動画にふさわしいか
+   - PC周辺機器・ノートPC解説動画にふさわしいか
    - 技術的な価値を提供する画像か、それとも無関係なコンテンツか
 
 8. **品質と信頼性**:
@@ -2830,9 +2830,9 @@ IT・ガジェット解説動画にこの画像が適しているか評価して
 - **人物が写っているものはすべて不適合**
 - **透かし（ウォーターマーク）が入っているものはすべて不適合**
 - **ブログ・ニュースのスクリーンショットはすべて不適合**
-- IT・ガジェットチャンネルの専門性を最優先してください
+- PC周辺機器・ノートPCチャンネルの専門性を最優先してください
 - 明確な不適合は積極的に除外してください
-- Android17のようなケースでは、動画内容に応じて適切に判断
+- スマホ単体・家電単体・自動車単体など、PC文脈と離れる画像は除外してください
 - 人物画像・顔写真・ポートレートは除外する
 
 ### 回答形式
@@ -2856,12 +2856,12 @@ IT・ガジェット解説動画にこの画像が適しているか評価して
     "suitable": true/false,
     "reason": "あなたの分析に基づく詳細な評価理由",
     "copyright_risk": "low/medium/high",
-    "genre_classification": "ITガジェット/アニメ・キャラクター/その他",
-    "it_gadget_relevance": "high/medium/low"
+    "genre_classification": "PC周辺機器・ノートPC/アニメ・キャラクター/その他",
+    "pc_device_relevance": "high/medium/low"
   }}
 }}
 
-不採用: {{"suitable": false, "reason": "IT・ガジェット解説に不適合"}}
+不採用: {{"suitable": false, "reason": "PC周辺機器・ノートPC解説に不適合"}}
 不明確: {{"suitable": false, "reason": "判断が困難なため不採用"}}
 """
         
@@ -2945,7 +2945,7 @@ IT・ガジェット解説動画にこの画像が適しているか評価して
                 print(f"[EVALUATION] 理由: {evaluation.get('reason', 'N/A')}")
                 print(f"[EVALUATION] 著作権リスク: {evaluation.get('copyright_risk', 'N/A')}")
                 print(f"[EVALUATION] ジャンル分類: {evaluation.get('genre_classification', 'N/A')}")
-                print(f"[EVALUATION] ITガジェット関連性: {evaluation.get('it_gadget_relevance', 'N/A')}")
+                print(f"[EVALUATION] PC関連性: {evaluation.get('pc_device_relevance', evaluation.get('it_gadget_relevance', 'N/A'))}")
             
             return result
         except json.JSONDecodeError:
