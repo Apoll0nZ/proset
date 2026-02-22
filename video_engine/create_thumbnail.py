@@ -520,8 +520,16 @@ def create_thumbnail(
     
     # フォント読み込み（日本語フォントを優先）
     try:
-        main_font_size = 72
-        print(f"[DEBUG] Loading main font from: {FONT_PATH_MAIN}")
+        # テキスト長に応じてフォントサイズを動的に調整
+        main_text_length = len(thumbnail_data.get("main_text", title))
+        if main_text_length > 30:
+            main_font_size = 56  # 長いテキストは小さめ
+        elif main_text_length > 20:
+            main_font_size = 64
+        else:
+            main_font_size = 72  # 短いテキストは大きめ
+            
+        print(f"[DEBUG] Loading main font from: {FONT_PATH_MAIN}, size={main_font_size}")
         main_font = ImageFont.truetype(FONT_PATH_MAIN, main_font_size)
         print(f"[DEBUG] Main font loaded successfully")
     except Exception as e:
@@ -552,37 +560,79 @@ def create_thumbnail(
             sub_font = ImageFont.load_default()
     
     # メイン字幕（下部中央、2chスレタイ風）
-    main_text = thumbnail_data.get("main_text", title[:20])
+    main_text = thumbnail_data.get("main_text", title)
     if not main_text:
-        main_text = title[:20]
-    main_text = main_text[:20]
+        main_text = title
+    
+    # テキストが長すぎる場合は2行に分割
+    if len(main_text) > 20:
+        # 20文字前後で2行に分割
+        mid_point = len(main_text) // 2
+        # 空白や句読点で分割を試みる
+        for i in range(mid_point, max(0, mid_point-5), -1):
+            if main_text[i] in [' ', '、', '。', '・', ' ']:
+                main_text_line1 = main_text[:i]
+                main_text_line2 = main_text[i+1:]
+                break
+        else:
+            # 適切な分割点がなければ均等に分割
+            main_text_line1 = main_text[:mid_point]
+            main_text_line2 = main_text[mid_point:]
+    else:
+        main_text_line1 = main_text
+        main_text_line2 = ""
     
     # テキスト色をランダムに選択（黒・赤・青）
     main_colors = ["black", "red", "blue"]
     main_color = random.choice(main_colors)
     
-    # テキストサイズを調整
-    bbox = draw.textbbox((0, 0), main_text, font=main_font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
+    # テキストサイズを調整（2行対応）
+    if main_text_line2:
+        # 2行の場合は各行のサイズを計算
+        bbox1 = draw.textbbox((0, 0), main_text_line1, font=main_font)
+        bbox2 = draw.textbbox((0, 0), main_text_line2, font=main_font)
+        text_width = max(bbox1[2] - bbox1[0], bbox2[2] - bbox2[0])
+        text_height = (bbox1[3] - bbox1[1]) + (bbox2[3] - bbox2[1]) + 10  # 行間10px
+    else:
+        # 1行の場合
+        bbox = draw.textbbox((0, 0), main_text_line1, font=main_font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
     
     # 中央配置（上に寄せる）
     text_x = (THUMBNAIL_WIDTH - text_width) // 2
     text_y = TOP_AREA_HEIGHT + (BOTTOM_AREA_HEIGHT - text_height) // 3  # 1/3の位置に配置して上に寄せる
     
-    # 極太ゴシック風に描画（縁取り付き）
-    draw_text_with_outline(
-        draw, main_text, (text_x, text_y), main_font,
-        fill=main_color, outline_color="white", outline_width=4
-    )
+    # 極太ゴシック風に描画（縁取り付き、2行対応）
+    if main_text_line2:
+        # 2行で描画
+        line1_y = text_y
+        line2_y = text_y + (draw.textbbox((0, 0), main_text_line1, font=main_font)[3] - draw.textbbox((0, 0), main_text_line1, font=main_font)[1]) + 10
+        
+        draw_text_with_outline(
+            draw, main_text_line1, (text_x, line1_y), main_font,
+            fill=main_color, outline_color="white", outline_width=4
+        )
+        draw_text_with_outline(
+            draw, main_text_line2, (text_x, line2_y), main_font,
+            fill=main_color, outline_color="white", outline_width=4
+        )
+    else:
+        # 1行で描画
+        draw_text_with_outline(
+            draw, main_text_line1, (text_x, text_y), main_font,
+            fill=main_color, outline_color="white", outline_width=4
+        )
     
     # サブ/煽り字幕（条件付き表示）
     sub_texts = thumbnail_data.get("sub_texts")
     
     # sub_textsが空またはNoneの場合は描画を完全にスキップ
     if sub_texts and len(sub_texts) > 0:
-        # 最初の1つのみ使用
-        sub_text = sub_texts[0][:15]
+        # 最初の1つのみ使用（最大20文字に設定）
+        sub_text = sub_texts[0]
+        if len(sub_text) > 20:
+            sub_text = sub_text[:20]
         
         try:
             # 高解像度での描画準備（2倍サイズで作成して後で縮小することでアンチエイリアスを効かせる）
