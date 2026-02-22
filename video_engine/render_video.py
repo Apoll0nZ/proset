@@ -5639,7 +5639,7 @@ async def main() -> None:
         data = script_obj["data"]
 
         # JSONデータのバリデーションとデフォルト値設定
-        title = data.get("title", "PCニュース解説")
+        title = data.get("title", "テックニュース解説")
         description = normalize_description(data.get("description", ""))
         content = data.get("content", {})
         topic_summary = content.get("topic_summary", "")

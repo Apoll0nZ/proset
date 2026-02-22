@@ -6,7 +6,7 @@ import requests
 from io import BytesIO
 
 """
-PC猫スタイル（2chスレタイ風）サムネイル生成スクリプト。
+テックガジェットスタイル（2chスレタイ風）サムネイル生成スクリプト。
 
 レイアウト:
 - 上部70%: 記事関連画像2枚を6:4〜3:7のランダム比率で並列配置
@@ -92,7 +92,7 @@ def calculate_image_score(image_path: str) -> int:
     basename = os.path.basename(image_path).lower()
 
     # キーワードスコア
-    if 'iphone' in basename or 'apple' in basename:
+    if any(kw in basename for kw in ['iphone', 'android', 'samsung', 'google', 'apple', 'xiaomi', 'oppo', 'vivo', 'huawei', 'honor']):
         score += 5
     if any(kw in basename for kw in ['product', 'official', 'device', 'pro']):
         score += 3
@@ -473,7 +473,7 @@ def create_thumbnail(
     max_image_retries: int = 3,
 ) -> None:
     """
-    PC猫スタイル（2chスレタイ風）サムネイルを生成。
+    テックガジェットスタイル（2chスレタイ風）サムネイルを生成。
     
     Args:
         title: 動画タイトル
