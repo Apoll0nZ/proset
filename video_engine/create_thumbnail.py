@@ -1,5 +1,8 @@
 import os
 import random
+import json
+import time
+import base64
 from typing import List, Dict, Any, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont, ImageFilter  # type: ignore
 import requests
@@ -65,6 +68,173 @@ def resolve_thumbnail_font(env_key: str) -> str:
 # フォントパス（クロスプラットフォーム対応）
 FONT_PATH_MAIN = resolve_thumbnail_font("THUMBNAIL_FONT_MAIN")
 FONT_PATH_SUB = resolve_thumbnail_font("THUMBNAIL_FONT_SUB")
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash-lite")
+GEMINI_API_VERSION = os.environ.get("GEMINI_API_VERSION", "v1")
+THUMBNAIL_GEMINI_TEXT_FILTER = os.environ.get("THUMBNAIL_GEMINI_TEXT_FILTER", "1").lower() not in ("0", "false", "off")
+THUMBNAIL_GEMINI_MAX_CANDIDATES = max(2, int(os.environ.get("THUMBNAIL_GEMINI_MAX_CANDIDATES", "8")))
+THUMBNAIL_GEMINI_RANDOM_POOL = max(2, int(os.environ.get("THUMBNAIL_GEMINI_RANDOM_POOL", "4")))
+
+
+def _get_mime_type_from_path(image_path: str) -> Optional[str]:
+    ext = os.path.splitext(image_path.lower())[1]
+    if ext in [".jpg", ".jpeg"]:
+        return "image/jpeg"
+    if ext == ".png":
+        return "image/png"
+    if ext == ".webp":
+        return "image/webp"
+    if ext == ".gif":
+        return "image/gif"
+    if ext == ".bmp":
+        return "image/bmp"
+    return None
+
+
+def _analyze_image_text_density_with_gemini(image_path: str) -> Optional[Dict[str, Any]]:
+    if not THUMBNAIL_GEMINI_TEXT_FILTER:
+        return None
+    if not GEMINI_API_KEY:
+        return None
+    if not os.path.exists(image_path):
+        return None
+
+    mime_type = _get_mime_type_from_path(image_path)
+    if not mime_type:
+        return None
+
+    try:
+        with open(image_path, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode("utf-8")
+    except Exception as e:
+        print(f"[THUMBNAIL] Failed to read image for Gemini text check: {image_path} ({e})")
+        return None
+
+    url = (
+        f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/"
+        f"{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+    )
+    prompt = (
+        "この画像がYouTubeサムネ背景に向くか判定してください。"
+        "文字・ロゴ・UI・スクリーンショット・看板など、読める文字情報が目立つ画像は不適です。"
+        "JSONのみで返答: "
+        "{\"text_ratio\": 0-100の整数, \"text_heavy\": true/false, \"keep\": true/false}"
+    )
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime_type, "data": image_b64}},
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.0,
+            "max_output_tokens": 120,
+            "response_mime_type": "application/json",
+        },
+    }
+
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, json=payload, timeout=(5, 20))
+            if response.status_code in (429, 503):
+                if attempt < max_retries - 1:
+                    time.sleep(1.2)
+                    continue
+                return None
+            if response.status_code != 200:
+                print(f"[THUMBNAIL] Gemini text check failed: {response.status_code}")
+                return None
+
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return None
+            parts = candidates[0].get("content", {}).get("parts", [])
+            raw_text = "\n".join(p.get("text", "") for p in parts if p.get("text")).strip()
+            if not raw_text:
+                return None
+
+            try:
+                parsed = json.loads(raw_text)
+            except Exception:
+                start = raw_text.find("{")
+                end = raw_text.rfind("}")
+                if start == -1 or end == -1 or end <= start:
+                    return None
+                parsed = json.loads(raw_text[start : end + 1])
+
+            text_ratio = int(parsed.get("text_ratio", 50))
+            text_ratio = max(0, min(100, text_ratio))
+            text_heavy = bool(parsed.get("text_heavy", text_ratio >= 35))
+            keep = bool(parsed.get("keep", not text_heavy))
+            return {
+                "text_ratio": text_ratio,
+                "text_heavy": text_heavy,
+                "keep": keep,
+            }
+        except Exception as e:
+            print(f"[THUMBNAIL] Gemini text check error: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1.0)
+            else:
+                return None
+
+    return None
+
+
+def _select_thumbnail_image_paths(candidate_paths: List[str], count: int = 2) -> List[str]:
+    unique_paths: List[str] = []
+    seen = set()
+    for path in candidate_paths:
+        if not path or path in seen or not os.path.exists(path):
+            continue
+        seen.add(path)
+        unique_paths.append(path)
+
+    if not unique_paths:
+        return []
+    if len(unique_paths) <= count:
+        return unique_paths
+
+    # 先に軽量なヒューリスティックで候補を絞り、Gemini評価コストを抑える
+    ranked_by_basic = sorted(unique_paths, key=lambda p: calculate_image_score(p), reverse=True)
+    gemini_targets = ranked_by_basic[: min(len(ranked_by_basic), THUMBNAIL_GEMINI_MAX_CANDIDATES)]
+
+    scored: List[Tuple[str, float, bool, int]] = []
+    for path in gemini_targets:
+        base_score = float(calculate_image_score(path))
+        analysis = _analyze_image_text_density_with_gemini(path)
+        if analysis:
+            text_ratio = int(analysis.get("text_ratio", 50))
+            text_heavy = bool(analysis.get("text_heavy", text_ratio >= 35))
+            # 文字が少ないほど加点、文字だらけは大きく減点
+            final_score = base_score + (100 - text_ratio) / 20.0 - (6.0 if text_heavy else 0.0)
+        else:
+            text_ratio = 50
+            text_heavy = False
+            final_score = base_score
+        scored.append((path, final_score, text_heavy, text_ratio))
+
+    scored.sort(key=lambda x: (x[2], -x[1], x[3]))
+
+    # 上位候補からランダムに選び、毎回同じ組み合わせになりにくくする
+    pool_size = min(len(scored), max(count, THUMBNAIL_GEMINI_RANDOM_POOL))
+    top_pool = [path for path, _, _, _ in scored[:pool_size]]
+    selected = random.sample(top_pool, count) if len(top_pool) >= count else top_pool[:]
+    if len(selected) < count:
+        for path in ranked_by_basic:
+            if path not in selected:
+                selected.append(path)
+                if len(selected) >= count:
+                    break
+
+    print(f"[THUMBNAIL] Selected {len(selected)} images from top-{pool_size} pool after Gemini text-density filter")
+    return selected[:count]
 
 
 def download_image(url: str, max_size: tuple = (640, 480)) -> Optional[Image.Image]:
@@ -136,10 +306,10 @@ def select_images_from_video(image_schedule: List[Dict], s3_bucket: str = None) 
         if os.path.exists(local_path):
             local_images.append(local_path)
 
-    # ランダムに2枚を選択
+    # 文字量の少ない画像を優先して2枚を選択
     if len(local_images) >= 2:
-        selected_images = random.sample(local_images, 2)
-        print(f"[SUCCESS] Randomly selected {len(selected_images)} local images for thumbnail")
+        selected_images = _select_thumbnail_image_paths(local_images, 2)
+        print(f"[SUCCESS] Selected {len(selected_images)} local images for thumbnail")
         return selected_images
     elif len(local_images) == 1:
         print(f"[SUCCESS] Using 1 available local image for thumbnail")
@@ -177,11 +347,11 @@ def select_images_from_video(image_schedule: List[Dict], s3_bucket: str = None) 
                     print(f"[S3] Download failed for {s3_key}: {e}")
                     continue
 
-            # S3からダウンロードした画像も含めてランダムに選択
+            # S3からダウンロードした画像も含めて、文字量の少ない画像を優先選択
             all_available_images = local_images + s3_images
             if len(all_available_images) >= 2:
-                selected_images = random.sample(all_available_images, 2)
-                print(f"[SUCCESS] Randomly selected {len(selected_images)} images for thumbnail")
+                selected_images = _select_thumbnail_image_paths(all_available_images, 2)
+                print(f"[SUCCESS] Selected {len(selected_images)} images for thumbnail")
                 return selected_images
             elif len(all_available_images) == 1:
                 print(f"[SUCCESS] Using 1 available image for thumbnail")
@@ -346,10 +516,8 @@ def get_article_images(
             print(f"[THUMBNAIL] Error in independent image search (attempt {attempt}/{max_retries}): {e}")
             continue
     
-    # 動画生成で使用した画像からフォールバック（完全にランダムに選択）
+    # 動画生成で使用した画像からフォールバック（文字量の少ない画像を優先）
     if image_paths and (img1 is None or img2 is None):
-        import random
-        
         # 存在する画像パスのみを収集（重複を避ける）
         available_paths = []
         used_paths = set()  # 使用済みパスを追跡
@@ -365,26 +533,19 @@ def get_article_images(
             
             available_paths.append(path)
             used_paths.add(path)  # 使用済みとしてマーク
-        
-        # 完全にランダムに2枚を選択
-        if len(available_paths) >= 2:
-            selected_paths = random.sample(available_paths, 2)
-        elif len(available_paths) == 1:
-            selected_paths = available_paths
-        else:
-            selected_paths = []
-        
-        print(f"[DEBUG] Randomly selected {len(selected_paths)} images from {len(available_paths)} available images")
+
+        selected_paths = _select_thumbnail_image_paths(available_paths, 2)
+        print(f"[DEBUG] Selected {len(selected_paths)} images from {len(available_paths)} available images")
         
         for path in selected_paths:
             try:
                 loaded = Image.open(path).convert("RGBA")
                 if img1 is None:
                     img1 = loaded
-                    print(f"[DEBUG] Randomly loaded video image 1: {path}")
+                    print(f"[DEBUG] Loaded video image 1: {path}")
                 elif img2 is None:
                     img2 = loaded
-                    print(f"[DEBUG] Randomly loaded video image 2: {path}")
+                    print(f"[DEBUG] Loaded video image 2: {path}")
             except Exception as e:
                 print(f"[DEBUG] Failed to load video image: {e}")
     
@@ -544,7 +705,8 @@ def create_thumbnail(
             main_font = ImageFont.load_default()
     
     try:
-        sub_font_size = 36
+        # サブ字幕サイズはメインと同サイズに揃える
+        sub_font_size = main_font_size
         print(f"[DEBUG] Loading sub font from: {FONT_PATH_SUB}")
         sub_font = ImageFont.truetype(FONT_PATH_SUB, sub_font_size)
         print(f"[DEBUG] Sub font loaded successfully")
@@ -675,14 +837,19 @@ def create_thumbnail(
                 Image.Resampling.LANCZOS
             )
             
-            # --- 【修正ポイント】配置位置の計算 ---
+            # 配置位置の計算
             # 横軸(X): 画面の左右端100pxを空けた範囲でランダム
             x_min = 100
             x_max = max(x_min + 1, THUMBNAIL_WIDTH - final_sub_img.width - 100)
             sub_x_random = random.randint(x_min, x_max)
-            
-            # 縦軸(Y): メイン字幕の上端から200px上に配置
-            adjusted_sub_y = text_y - 200
+
+            # 縦軸(Y): 下部のメイン背景(黄色帯)にかからない上部エリア内でランダム
+            y_min = 20
+            y_max = TOP_AREA_HEIGHT - final_sub_img.height - 20
+            if y_max < y_min:
+                adjusted_sub_y = max(0, TOP_AREA_HEIGHT - final_sub_img.height)
+            else:
+                adjusted_sub_y = random.randint(y_min, y_max)
             
             # 貼り付け
             img.paste(final_sub_img, (sub_x_random, adjusted_sub_y), final_sub_img)
