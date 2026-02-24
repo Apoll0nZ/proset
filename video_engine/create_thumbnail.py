@@ -71,7 +71,27 @@ FONT_PATH_SUB = resolve_thumbnail_font("THUMBNAIL_FONT_SUB")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash-lite")
-GEMINI_API_VERSION = os.environ.get("GEMINI_API_VERSION", "v1")
+def resolve_gemini_api_version(model_name: str, configured_version: Optional[str]) -> str:
+    """
+    Gemini APIバージョンをモデルに合わせて決定する。
+    gemini-2.x 系は v1beta を使う。
+    """
+    version = (configured_version or "").strip()
+    if not version:
+        return "v1beta" if model_name.startswith("gemini-2.") else "v1"
+    if version == "v1" and model_name.startswith("gemini-2."):
+        print(
+            f"[THUMBNAIL] GEMINI_API_VERSION=v1 is incompatible with {model_name}. "
+            "Using v1beta instead."
+        )
+        return "v1beta"
+    return version
+
+
+GEMINI_API_VERSION = resolve_gemini_api_version(
+    GEMINI_MODEL_NAME,
+    os.environ.get("GEMINI_API_VERSION"),
+)
 THUMBNAIL_GEMINI_TEXT_FILTER = os.environ.get("THUMBNAIL_GEMINI_TEXT_FILTER", "1").lower() not in ("0", "false", "off")
 THUMBNAIL_GEMINI_MAX_CANDIDATES = max(2, int(os.environ.get("THUMBNAIL_GEMINI_MAX_CANDIDATES", "8")))
 THUMBNAIL_GEMINI_RANDOM_POOL = max(2, int(os.environ.get("THUMBNAIL_GEMINI_RANDOM_POOL", "4")))
