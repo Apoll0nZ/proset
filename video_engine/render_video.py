@@ -1221,7 +1221,7 @@ def create_main_content_segment(part: Dict, duration: float, audio_clip: AudioFi
                            title_text: str = "") -> VideoFileClip:
     """メインコンテンツセグメントを生成"""
     part_type = part.get("part", "")
-    text = part.get("text", "")
+    text = sanitize_script_text(part.get("text", ""))
     
     print(f"[MAIN SEGMENT] Creating {part_type} segment: {duration:.2f}s")
     print(f"[MAIN SEGMENT DEBUG] start_time: {start_time:.2f}s, end_time: {start_time + duration:.2f}s")
@@ -4030,6 +4030,39 @@ def calculate_measured_chunk_durations(query_data_list: List[Dict], text_parts: 
 
 
 
+def sanitize_script_text(text: str) -> str:
+    """
+    台本テキストからメタ情報・プレースホルダーを除去する
+    
+    除去対象:
+    - "speaker_id :2" "speaker_id: 3" などのspeaker_id記述
+    - "（250〜450文字の事実報道。〜）" などのプレースホルダー指示文
+    - "2|8|10|12|13|14" などのID候補リスト
+    - "[事実ソース]" などのタグ記述
+    """
+    if not text:
+        return text
+
+    # speaker_id の記述を除去（例: "speaker_id :2", "speaker_id: 3", "speaker_id :2|8|10"）
+    text = re.sub(r'speaker_id\s*[:|：]\s*[\d|]+', '', text)
+
+    # 「（数字〜数字文字の〜）」形式のプレースホルダー指示文を除去
+    text = re.sub(r'[（(]\d+〜\d+文字[^）)]*[）)]', '', text)
+
+    # "[事実ソース]" "[〜]" 形式のタグを除去
+    text = re.sub(r'\[[^\]]{1,20}\]', '', text)
+
+    # 行頭の "数字|数字|数字" 形式のIDリストを除去（例: "2|8|10|12|13|14,"）
+    text = re.sub(r'^\s*[\d|,\s]+\s*', '', text)
+
+    # 連続スペース・空行を整理
+    text = re.sub(r'[ 　]{2,}', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = text.strip()
+
+    return text
+
+
 def split_text_unified(text: str, max_chars: int = 120, merge_small_chunks: bool = False, merge_threshold: int = 150) -> List[str]:
     """
     テキスト分割の統一ロジック - 音声合成と字幕生成の両方に使用
@@ -4409,7 +4442,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     
     for i, part in enumerate(script_parts):
         part_name = part.get("part", "")
-        text = part.get("text", "")
+        text = sanitize_script_text(part.get("text", ""))
         
         # ★空テキストの場合は0.0を記録してスキップ（インデックス維持）
         if not text:
@@ -4810,7 +4843,7 @@ async def build_video_with_subtitles(
             if not part_type.startswith("article_"):
                 continue
             
-            part_text = part.get("text", "")
+            part_text = sanitize_script_text(part.get("text", ""))
             part_keywords = get_segment_keywords(part_text, title, topic_summary)
             all_keywords.extend(part_keywords)
             
