@@ -3676,6 +3676,42 @@ def split_network_reactions(text: str, max_chars: int) -> List[str]:
     return chunks if chunks else [text.strip()]
 
 
+def normalize_reaction_script_parts(script_parts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """改行で連結されたreactionを複数パートに展開する。"""
+    reaction_speaker_ids = [2, 8, 10, 12, 13, 14]
+    normalized_parts: List[Dict[str, Any]] = []
+    split_count = 0
+
+    for part in script_parts:
+        if part.get("part") != "reaction":
+            normalized_parts.append(part)
+            continue
+
+        text = part.get("text", "")
+        if not isinstance(text, str):
+            normalized_parts.append(part)
+            continue
+
+        # 空行を除いた行単位で分割（writerが改行列挙で返したケースを吸収）
+        lines = [line.strip() for line in re.split(r"\n+", text) if line.strip()]
+        if len(lines) <= 1:
+            normalized_parts.append(part)
+            continue
+
+        for line in lines:
+            new_part = dict(part)
+            new_part["text"] = line
+            # 各コメントごとに3以外の許可IDをランダム付与
+            new_part["speaker_id"] = random.choice(reaction_speaker_ids)
+            normalized_parts.append(new_part)
+        split_count += 1
+
+    if split_count:
+        print(f"[NORMALIZE] Expanded multi-line reaction blocks: {split_count}")
+
+    return normalized_parts
+
+
 async def get_ai_selected_image(script_data: Dict[str, Any]) -> List[str]:
     """AIによる動的選別・自動取得で最適な画像を取得（複数キーワード対応）"""
     try:
@@ -4466,7 +4502,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 elif part_name == "reaction":
                     speaker_id = part.get("speaker_id", 1)
                     if speaker_id == 3:
-                        speaker_id = random.choice([1, 2, 8, 10, 14])
+                        speaker_id = random.choice([2, 8, 10, 12, 13, 14])
                 else:
                     speaker_id = part.get("speaker_id", 3)
                 
@@ -5677,6 +5713,7 @@ async def main() -> None:
         content = data.get("content", {})
         topic_summary = content.get("topic_summary", "")
         script_parts = content.get("script_parts", [])
+        script_parts = normalize_reaction_script_parts(script_parts)
         thumbnail_data = data.get("thumbnail", {})
         meta = data.get("meta", {})
         url = meta.get("url")
