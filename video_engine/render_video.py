@@ -865,7 +865,7 @@ def _build_subtitle_clip(
     """字幕用テキストをパディング付き背景で描画（文字幅に合わせた背景）"""
     # 画面内収まるようにフォントサイズを事前調整
     max_allowed_height = max(1, VIDEO_HEIGHT - 40)
-    content_width = max(100, int(max_width - (padding * 2)))
+    content_width = max(100, min(int(max_width - (padding * 2)), VIDEO_WIDTH - padding * 2 - 20))
     temp_clip = TextClip(
         text=text,
         font_size=font_size,
@@ -1046,8 +1046,8 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                     text_color="black",
                     stroke_color="black",
                     stroke_width=2,
-                    max_width=1600,
-                    padding=60,
+                    max_width=VIDEO_WIDTH,  # 1600 → VIDEO_WIDTH
+                    padding=20,             # 60 → 20
                     bg_color=(255, 255, 255),
                     text_align="left",
                 )
@@ -1056,7 +1056,7 @@ def create_subtitles_with_absolute_timing(text: str, duration: float, absolute_s
                 txt_clip = subtitle_slide_scale_animation(txt_clip)
 
                 # 絶対時間で配置（y座標が負にならない対策）
-                y_pos = max(0, VIDEO_HEIGHT - 100)
+                y_pos = max(0, VIDEO_HEIGHT - txt_clip.h - 20)
                 txt_clip = txt_clip.with_start(absolute_chunk_start).with_duration(chunk_duration)
                 txt_clip = txt_clip.with_position(('center', y_pos))
 
