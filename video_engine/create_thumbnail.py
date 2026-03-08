@@ -144,7 +144,8 @@ def _analyze_image_text_density_with_gemini(image_path: str) -> Optional[Dict[st
     )
     prompt = (
         "この画像がYouTubeサムネ背景に向くか判定してください。"
-        "文字・ロゴ・UI・スクリーンショット・看板など、読める文字情報が目立つ画像は不適です。"
+        "製品・実物・風景・人物など、文字情報が少ない画像が適です。"
+        "ロゴ・UI・スクリーンショット・看板・文字が多い画像は不適です。"
         "JSONのみで返答: "
         "{\"text_ratio\": 0-100の整数, \"text_heavy\": true/false, \"keep\": true/false}"
     )
@@ -239,12 +240,16 @@ def _select_thumbnail_image_paths(candidate_paths: List[str], count: int = 2) ->
         if analysis:
             text_ratio = int(analysis.get("text_ratio", 50))
             text_heavy = bool(analysis.get("text_heavy", text_ratio >= 35))
-            # 文字が少ないほど加点、文字だらけは大きく減点
-            final_score = base_score + (100 - text_ratio) / 20.0 - (6.0 if text_heavy else 0.0)
+            keep = bool(analysis.get("keep", True))
+            # 製品画像を優先：text_heavyな画像に大幅なペナルティ
+            if text_heavy:
+                final_score = base_score + (100 - text_ratio) / 20.0 - 15.0  # ロゴ・文字多い画像に大ペナルティ
+            elif not keep:
+                final_score = base_score - 20.0  # keep=falseの画像にもペナルティ
+            else:
+                final_score = base_score + (100 - text_ratio) / 40.0  # 製品画像は軽いボーナスのみ
         else:
-            text_ratio = 50
-            text_heavy = False
-            final_score = base_score
+            text_ratio, text_heavy, final_score = 50, False, base_score
         scored.append((path, final_score, text_heavy, text_ratio))
 
     scored.sort(key=lambda x: (x[2], -x[1], x[3]))
@@ -419,7 +424,14 @@ def _select_best_image(candidate_paths: List[str]) -> Optional[str]:
         if analysis:
             tr = int(analysis.get("text_ratio", 50))
             th = bool(analysis.get("text_heavy", tr >= 35))
-            final = base + (100 - tr) / 20.0 - (6.0 if th else 0.0)
+            keep = bool(analysis.get("keep", True))
+            # 製品画像を優先：text_heavyな画像に大幅なペナルティ
+            if th:
+                final = base + (100 - tr) / 20.0 - 15.0  # ロゴ・文字多い画像に大ペナルティ
+            elif not keep:
+                final = base - 20.0  # keep=falseの画像にもペナルティ
+            else:
+                final = base + (100 - tr) / 40.0  # 製品画像は軽いボーナスのみ
         else:
             tr, th, final = 50, False, base
         scored.append((path, final, th, tr))
