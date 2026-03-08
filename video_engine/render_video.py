@@ -5731,6 +5731,13 @@ async def main() -> None:
             print("ERROR: meta.url が存在しません。アップロード前に処理を中止します。")
             return None  # 処理を中止してNoneを返す
 
+        # VOICEVOX辞書同期
+        from voicevox_auto_dict import sync_pronunciation_dict
+        sync_pronunciation_dict(
+            pronunciation_dict=data.get("pronunciation_dict", {}),
+            api_url=VOICEVOX_API_URL,
+        )
+
         # 0. タイトル読み上げパートを先頭に追加（ずんだもん: ID 3）
         title_part = {
             "part": "title",
