@@ -254,9 +254,15 @@ def _select_thumbnail_image_paths(candidate_paths: List[str], count: int = 2) ->
 
     scored.sort(key=lambda x: (x[2], -x[1], x[3]))
 
+    # text_heavy=True の画像を候補から完全除外
+    clean_pool = [path for path, score, th, tr in scored if not th]
+    if not clean_pool:
+        clean_pool = [path for path, *_ in scored]  # 全部text_heavyな場合のみフォールバック
+        print("[THUMBNAIL] All images are text_heavy, using fallback pool for 2-image selection")
+
     # 上位候補からランダムに選び、毎回同じ組み合わせになりにくくする
-    pool_size = min(len(scored), max(count, THUMBNAIL_GEMINI_RANDOM_POOL))
-    top_pool = [path for path, _, _, _ in scored[:pool_size]]
+    pool_size = min(len(clean_pool), max(count, THUMBNAIL_GEMINI_RANDOM_POOL))
+    top_pool = clean_pool[:pool_size]
     selected = random.sample(top_pool, count) if len(top_pool) >= count else top_pool[:]
     if len(selected) < count:
         for path in ranked_by_basic:
@@ -265,7 +271,7 @@ def _select_thumbnail_image_paths(candidate_paths: List[str], count: int = 2) ->
                 if len(selected) >= count:
                     break
 
-    print(f"[THUMBNAIL] Selected {len(selected)} images from top-{pool_size} pool after Gemini text-density filter")
+    print(f"[THUMBNAIL] Selected {len(selected)} images from clean pool-{pool_size} after text_heavy filter")
     return selected[:count]
 
 
@@ -439,10 +445,16 @@ def _select_best_image(candidate_paths: List[str]) -> Optional[str]:
     # 文字密度が低い順・スコア高い順に並べる
     scored.sort(key=lambda x: (x[2], -x[1], x[3]))
 
-    pool_size = min(len(scored), max(1, THUMBNAIL_GEMINI_RANDOM_POOL))
-    top_pool = [p for p, *_ in scored[:pool_size]]
+    # text_heavy=True の画像を候補から完全除外
+    clean_pool = [p for p, score, th, tr in scored if not th]
+    if not clean_pool:
+        clean_pool = [p for p, *_ in scored]  # 全部text_heavyな場合のみフォールバック
+        print("[THUMBNAIL] All images are text_heavy, using fallback pool")
+    
+    pool_size = min(len(clean_pool), max(1, THUMBNAIL_GEMINI_RANDOM_POOL))
+    top_pool = clean_pool[:pool_size]
     selected = random.choice(top_pool)
-    print(f"[THUMBNAIL] Selected image from top-{pool_size} pool: {os.path.basename(selected)}")
+    print(f"[THUMBNAIL] Selected image from clean pool-{pool_size}: {os.path.basename(selected)}")
     return selected
 
 
