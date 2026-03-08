@@ -23,6 +23,13 @@ THUMBNAIL_HEIGHT = 720
 TOP_AREA_HEIGHT = int(THUMBNAIL_HEIGHT * 0.7)  # 上部70%
 BOTTOM_AREA_HEIGHT = THUMBNAIL_HEIGHT - TOP_AREA_HEIGHT  # 下部30%
 
+# メインタイトルカラー: 赤・黄を交互に使う
+# color_index % 2 == 0 → 赤, == 1 → 黄
+MAIN_TEXT_COLORS = [
+    (255, 40, 40),   # 赤
+    (255, 220, 0),   # 黄
+]
+
 # クロスプラットフォーム対応のフォント検出
 def find_japanese_font() -> str:
     """日本語対応フォントをクロスプラットフォームで検出"""
@@ -386,10 +393,173 @@ def select_images_from_video(image_schedule: List[Dict], s3_bucket: str = None) 
     return local_images[:2]
 
 
-def create_dark_blue_background(width: int, height: int) -> Image.Image:
-    """ダークブルー (#1a1a2e) の背景画像を生成"""
-    color = (26, 26, 46)  # #1a1a2e in RGB
-    return Image.new("RGB", (width, height), color)
+def _select_best_image(candidate_paths: List[str]) -> Optional[str]:
+    """
+    候補リストから背景に最適な画像を1枚選ぶ。
+    Gemini テキスト密度フィルタ → スコアランキング → ランダムプールから1枚。
+    """
+    unique: List[str] = []
+    seen = set()
+    for p in candidate_paths:
+        if p and p not in seen and os.path.exists(p):
+            seen.add(p)
+            unique.append(p)
+    if not unique:
+        return None
+    if len(unique) == 1:
+        return unique[0]
+
+    ranked = sorted(unique, key=lambda p: calculate_image_score(p), reverse=True)
+    targets = ranked[:min(len(ranked), THUMBNAIL_GEMINI_MAX_CANDIDATES)]
+
+    scored: List[Tuple[str, float, bool, int]] = []
+    for path in targets:
+        base = float(calculate_image_score(path))
+        analysis = _analyze_image_text_density_with_gemini(path)
+        if analysis:
+            tr = int(analysis.get("text_ratio", 50))
+            th = bool(analysis.get("text_heavy", tr >= 35))
+            final = base + (100 - tr) / 20.0 - (6.0 if th else 0.0)
+        else:
+            tr, th, final = 50, False, base
+        scored.append((path, final, th, tr))
+
+    # 文字密度が低い順・スコア高い順に並べる
+    scored.sort(key=lambda x: (x[2], -x[1], x[3]))
+
+    pool_size = min(len(scored), max(1, THUMBNAIL_GEMINI_RANDOM_POOL))
+    top_pool = [p for p, *_ in scored[:pool_size]]
+    selected = random.choice(top_pool)
+    print(f"[THUMBNAIL] Selected image from top-{pool_size} pool: {os.path.basename(selected)}")
+    return selected
+
+
+def create_dark_fallback(width: int, height: int) -> Image.Image:
+    """フォールバック用ダーク背景"""
+    img = Image.new("RGB", (width, height), (15, 15, 25))
+    draw = ImageDraw.Draw(img)
+    for y in range(height):
+        t = y / height
+        r = int(15 + 20 * t)
+        g = int(15 + 15 * t)
+        b = int(25 + 30 * t)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+    return img
+
+
+# 後方互換: get_article_images 内で参照される旧関数名のエイリアス
+create_dark_blue_background = lambda w, h: create_dark_fallback(w, h)
+
+
+def get_background_image(
+    topic_summary: str,
+    meta: Optional[Dict] = None,
+    used_image_paths: List[str] = None,
+    max_retries: int = 3,
+) -> Optional[Image.Image]:
+    """
+    背景画像を1枚取得。
+    優先順: ローカル使用済み画像 → Playwright画像検索 → None
+    """
+    # ローカル画像から選択
+    if used_image_paths:
+        best = _select_best_image(used_image_paths)
+        if best:
+            try:
+                img = Image.open(best).convert("RGB")
+                print(f"[THUMBNAIL] Background image: {os.path.basename(best)}")
+                return img
+            except Exception as e:
+                print(f"[THUMBNAIL] Failed to open image: {e}")
+
+    # Playwright 検索フォールバック
+    for attempt in range(1, max_retries + 1):
+        try:
+            import sys
+            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+            from render_video import search_images_with_playwright, download_image_from_url
+            import asyncio
+
+            async def search():
+                keywords = []
+                if topic_summary:
+                    keywords = [w for w in topic_summary.split()[:3] if len(w) > 2]
+                if meta:
+                    url = meta.get("url") or meta.get("source_url", "")
+                    for brand in ["apple","microsoft","google","nvidia","samsung"]:
+                        if brand in url.lower():
+                            keywords.insert(0, brand.capitalize())
+                            break
+                if not keywords:
+                    keywords = ["technology"]
+                for kw in keywords[:2]:
+                    try:
+                        images = await search_images_with_playwright(kw, max_results=5)
+                        if images:
+                            for img_info in images:
+                                path = download_image_from_url(img_info["url"])
+                                if path and os.path.exists(path):
+                                    return Image.open(path).convert("RGB")
+                    except Exception as e:
+                        print(f"[THUMBNAIL] Search error for '{kw}': {e}")
+                return None
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    result = ex.submit(lambda: asyncio.run(search())).result()
+            else:
+                result = asyncio.run(search())
+
+            if result:
+                return result
+        except Exception as e:
+            print(f"[THUMBNAIL] Playwright search error (attempt {attempt}): {e}")
+
+    return None
+
+
+def wrap_text_to_lines(draw: ImageDraw.Draw, text: str, font, max_width: int) -> List[str]:
+    """max_width を超えないよう1文字ずつ折り返す"""
+    lines, current = [], ""
+    for char in text:
+        test = current + char
+        bbox = draw.textbbox((0, 0), test, font=font)
+        if bbox[2] - bbox[0] > max_width and current:
+            lines.append(current)
+            current = char
+        else:
+            current = test
+    if current:
+        lines.append(current)
+    return lines
+
+
+def get_font_and_lines(
+    draw: ImageDraw.Draw,
+    text: str,
+    font_path: str,
+    max_width: int,
+    max_size: int = 88,
+    min_size: int = 48,
+) -> Tuple[ImageFont.FreeTypeFont, int, List[str]]:
+    """テキストが2行以内に収まる最大フォントサイズとその行リストを返す"""
+    for size in range(max_size, min_size - 1, -4):
+        try:
+            font = ImageFont.truetype(font_path, size)
+        except Exception:
+            continue
+        lines = wrap_text_to_lines(draw, text, font, max_width)
+        if len(lines) <= 2:
+            return font, size, lines
+    font = ImageFont.truetype(font_path, min_size)
+    lines = wrap_text_to_lines(draw, text, font, max_width)
+    return font, min_size, lines[:2]
 
 
 def create_placeholder_image(width: int, height: int, color: tuple = (200, 200, 200)) -> Image.Image:
@@ -652,238 +822,163 @@ def create_thumbnail(
     used_image_paths: List[str] = None,
     require_images: bool = False,
     max_image_retries: int = 3,
+    color_index: int = 0,
 ) -> None:
     """
-    テックガジェットスタイル（2chスレタイ風）サムネイルを生成。
+    サムネイル生成（v2 レイアウト）
     
     Args:
         title: 動画タイトル
-        topic_summary: トピック要約
-        thumbnail_data: Geminiから生成されたサムネイルデータ
-            - main_text: メイン字幕（2chスレタイ風）
-            - sub_texts: サブ/煽り字幕のリスト
-        output_path: 出力画像パス
-        meta: メタ情報（source_url等を含む）
+        topic_summary: トピック要約（画像検索キーワードに使用）
+        thumbnail_data: {"main_text": str, "sub_texts": [str, ...]}
+        output_path: 出力ファイルパス
+        meta: メタ情報（url 等）
+        used_image_paths: 動画生成で使用した画像パスリスト
+        require_images: True の場合、画像取得失敗時に例外を送出
+        max_image_retries: 画像検索リトライ回数
+        color_index: 0=赤, 1=黄（外部で管理して交互に渡すこと）
     """
-    # キャンバス作成
-    img = Image.new("RGB", (THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT), (255, 255, 255))
-    draw = ImageDraw.Draw(img)
-    
-    # 上部70%エリア: 画像2枚をランダム比率で配置
-    ratio = random.uniform(0.3, 0.7)  # 3:7 〜 7:3 の範囲でランダム
-    left_width = int(THUMBNAIL_WIDTH * ratio)
-    right_width = THUMBNAIL_WIDTH - left_width
-    
-    img1, img2 = get_article_images(
-        topic_summary,
-        meta,
-        used_image_paths,
-        require_images=require_images,
+    # === 1. 背景画像の取得 ===
+    bg_img = get_background_image(
+        topic_summary=topic_summary,
+        meta=meta,
+        used_image_paths=used_image_paths or [],
         max_retries=max_image_retries,
     )
-    
-    # 画像をリサイズして配置
-    img1_resized = img1.resize((left_width, TOP_AREA_HEIGHT), Image.Resampling.LANCZOS)
-    img2_resized = img2.resize((right_width, TOP_AREA_HEIGHT), Image.Resampling.LANCZOS)
-    print(f"[DEBUG] Resized images: img1={img1_resized.size}, img2={img2_resized.size}")
-    
-    # 透過画像を正しく貼り付け（第3引数にmaskを指定）
-    img.paste(img1_resized, (0, 0), img1_resized)
-    img.paste(img2_resized, (left_width, 0), img2_resized)
-    print(f"[DEBUG] Pasted images at positions: (0,0) and ({left_width},0)")
-    
-    # 下部30%エリア: 黄色背景（座布団）
-    yellow_color = (255, 220, 0)  # 鮮やかな黄色
-    draw.rectangle(
-        [(0, TOP_AREA_HEIGHT), (THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT)],
-        fill=yellow_color
-    )
-    
-    # フォント読み込み（日本語フォントを優先）
-    try:
-        # テキスト長に応じてフォントサイズを動的に調整
-        main_text_length = len(thumbnail_data.get("main_text", title))
-        if main_text_length > 30:
-            main_font_size = 56  # 長いテキストは小さめ
-        elif main_text_length > 20:
-            main_font_size = 64
-        else:
-            main_font_size = 72  # 短いテキストは大きめ
-            
-        print(f"[DEBUG] Loading main font from: {FONT_PATH_MAIN}, size={main_font_size}")
-        main_font = ImageFont.truetype(FONT_PATH_MAIN, main_font_size)
-        print(f"[DEBUG] Main font loaded successfully")
-    except Exception as e:
-        print(f"[DEBUG] Failed to load main font: {e}")
-        try:
-            fallback_path = "/System/Library/Fonts/Hiragino Sans GB.ttc"
-            print(f"[DEBUG] Trying fallback font: {fallback_path}")
-            main_font = ImageFont.truetype(fallback_path, main_font_size)
-            print(f"[DEBUG] Fallback main font loaded")
-        except Exception:
-            print(f"[DEBUG] Using default font")
-            main_font = ImageFont.load_default()
-    
-    try:
-        # サブ字幕サイズはメインと同サイズに揃える
-        sub_font_size = main_font_size
-        print(f"[DEBUG] Loading sub font from: {FONT_PATH_SUB}")
-        sub_font = ImageFont.truetype(FONT_PATH_SUB, sub_font_size)
-        print(f"[DEBUG] Sub font loaded successfully")
-    except Exception as e:
-        print(f"[DEBUG] Failed to load sub font: {e}")
-        try:
-            fallback_path = "/System/Library/Fonts/Hiragino Sans GB.ttc"
-            print(f"[DEBUG] Trying fallback font: {fallback_path}")
-            sub_font = ImageFont.truetype(fallback_path, sub_font_size)
-            print(f"[DEBUG] Fallback sub font loaded")
-        except Exception:
-            print(f"[DEBUG] Using default font")
-            sub_font = ImageFont.load_default()
-    
-    # メイン字幕（下部中央、2chスレタイ風）
-    main_text = thumbnail_data.get("main_text", title)
-    if not main_text:
-        main_text = title
-    
-    # テキストが長すぎる場合は2行に分割
-    if len(main_text) > 20:
-        # 20文字前後で2行に分割
-        mid_point = len(main_text) // 2
-        # 空白や句読点で分割を試みる
-        for i in range(mid_point, max(0, mid_point-5), -1):
-            if main_text[i] in [' ', '、', '。', '・', ' ']:
-                main_text_line1 = main_text[:i]
-                main_text_line2 = main_text[i+1:]
-                break
-        else:
-            # 適切な分割点がなければ均等に分割
-            main_text_line1 = main_text[:mid_point]
-            main_text_line2 = main_text[mid_point:]
-    else:
-        main_text_line1 = main_text
-        main_text_line2 = ""
-    
-    # テキスト色をランダムに選択（黒・赤・青）
-    main_colors = ["black", "red", "blue"]
-    main_color = random.choice(main_colors)
-    
-    # テキストサイズを調整（2行対応）
-    if main_text_line2:
-        # 2行の場合は各行のサイズを計算
-        bbox1 = draw.textbbox((0, 0), main_text_line1, font=main_font)
-        bbox2 = draw.textbbox((0, 0), main_text_line2, font=main_font)
-        text_width = max(bbox1[2] - bbox1[0], bbox2[2] - bbox2[0])
-        text_height = (bbox1[3] - bbox1[1]) + (bbox2[3] - bbox2[1]) + 10  # 行間10px
-    else:
-        # 1行の場合
-        bbox = draw.textbbox((0, 0), main_text_line1, font=main_font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-    
-    # 中央配置（上に寄せる）
-    text_x = (THUMBNAIL_WIDTH - text_width) // 2
-    text_y = TOP_AREA_HEIGHT + (BOTTOM_AREA_HEIGHT - text_height) // 3  # 1/3の位置に配置して上に寄せる
-    
-    # 極太ゴシック風に描画（縁取り付き、2行対応）
-    if main_text_line2:
-        # 2行で描画
-        line1_y = text_y
-        line2_y = text_y + (draw.textbbox((0, 0), main_text_line1, font=main_font)[3] - draw.textbbox((0, 0), main_text_line1, font=main_font)[1]) + 10
-        
-        draw_text_with_outline(
-            draw, main_text_line1, (text_x, line1_y), main_font,
-            fill=main_color, outline_color="white", outline_width=4
-        )
-        draw_text_with_outline(
-            draw, main_text_line2, (text_x, line2_y), main_font,
-            fill=main_color, outline_color="white", outline_width=4
-        )
-    else:
-        # 1行で描画
-        draw_text_with_outline(
-            draw, main_text_line1, (text_x, text_y), main_font,
-            fill=main_color, outline_color="white", outline_width=4
-        )
-    
-    # サブ/煽り字幕（条件付き表示）
-    sub_texts = thumbnail_data.get("sub_texts")
-    
-    # sub_textsが空またはNoneの場合は描画を完全にスキップ
-    if sub_texts and len(sub_texts) > 0:
-        # 最初の1つのみ使用（最大20文字に設定）
-        sub_text = sub_texts[0]
-        if len(sub_text) > 20:
-            sub_text = sub_text[:20]
-        
-        try:
-            # 高解像度での描画準備（2倍サイズで作成して後で縮小することでアンチエイリアスを効かせる）
-            sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
-            sub_text_width = sub_bbox[2] - sub_bbox[0]
-            sub_text_height = sub_bbox[3] - sub_bbox[1]
-            
-            padding = 12
-            bg_width = sub_text_width + padding * 2
-            bg_height = sub_text_height + padding * 2
-            
-            scale_factor = 2
-            high_res_width = bg_width * scale_factor
-            high_res_height = bg_height * scale_factor
-            
-            sub_img = Image.new("RGBA", (high_res_width, high_res_height), (0, 0, 0, 0))
-            sub_draw = ImageDraw.Draw(sub_img)
-            
-            high_res_font_size = sub_font.size * scale_factor
-            high_res_font = ImageFont.truetype(FONT_PATH_SUB, high_res_font_size)
-            
-            # 座布団（白背景）と枠線の描画
-            sub_draw.rectangle([(0, 0), (high_res_width, high_res_height)], fill="white")
-            border_color = (100, 150, 255)
-            sub_draw.rectangle([(0, 0), (high_res_width, high_res_height)], outline=border_color, width=2)
-            
-            text_color = random.choice(["black", "red"])
-            high_res_padding = padding * scale_factor
-            sub_draw.text((high_res_padding, high_res_padding), sub_text, font=high_res_font, fill=text_color, encoding='unic')
-            
-            # --- 【修正ポイント】角度を -10度 or 10度 に設定 ---
-            angle = random.choice([-10, 10])
-            
-            # 回転処理
-            rotated_sub_img = sub_img.rotate(angle, expand=True, fillcolor=(0, 0, 0, 0), resample=Image.Resampling.BICUBIC)
-            
-            # リサイズして元のスケールに戻す
-            final_sub_img = rotated_sub_img.resize(
-                (rotated_sub_img.width // scale_factor, rotated_sub_img.height // scale_factor), 
-                Image.Resampling.LANCZOS
-            )
-            
-            # 配置位置の計算
-            # 横軸(X): 画面の左右端100pxを空けた範囲でランダム
-            x_min = 100
-            x_max = max(x_min + 1, THUMBNAIL_WIDTH - final_sub_img.width - 100)
-            sub_x_random = random.randint(x_min, x_max)
 
-            # 縦軸(Y): 下部のメイン背景(黄色帯)にかからない上部エリア内でランダム
-            y_min = 20
-            y_max = TOP_AREA_HEIGHT - final_sub_img.height - 20
-            if y_max < y_min:
-                adjusted_sub_y = max(0, TOP_AREA_HEIGHT - final_sub_img.height)
-            else:
-                adjusted_sub_y = random.randint(y_min, y_max)
-            
-            # 貼り付け
-            img.paste(final_sub_img, (sub_x_random, adjusted_sub_y), final_sub_img)
-            
-            print(f"[DEBUG] Subtitle placed: angle={angle}, pos=({sub_x_random}, {adjusted_sub_y})")
-            
-        except Exception as e:
-            print(f"[DEBUG] Subtitle rendering error: {e}")
+    if bg_img is None:
+        # フォールバック: assets/background.png or ダーク背景
+        fallback_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "background.png")
+        if os.path.exists(fallback_path):
+            try:
+                bg_img = Image.open(fallback_path).convert("RGB")
+            except Exception:
+                bg_img = None
+        if bg_img is None:
+            if require_images:
+                raise RuntimeError("Failed to obtain required background image")
+            bg_img = create_dark_fallback(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT)
+
+    # === 2. フルブリード配置（クロップしてキャンバス全体を埋める）===
+    bg_ratio = bg_img.width / bg_img.height
+    target_ratio = THUMBNAIL_WIDTH / THUMBNAIL_HEIGHT
+
+    if bg_ratio > target_ratio:
+        new_h = THUMBNAIL_HEIGHT
+        new_w = int(THUMBNAIL_HEIGHT * bg_ratio)
     else:
-        print("[DEBUG] No sub_texts provided, skipping subtitle rendering")
-    
-    # 保存
-    img.save(output_path, "PNG", quality=95)
-    print(f"サムネイルを生成しました: {output_path}")
+        new_w = THUMBNAIL_WIDTH
+        new_h = int(THUMBNAIL_WIDTH / bg_ratio)
+
+    bg_img = bg_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    x_off = (new_w - THUMBNAIL_WIDTH) // 2
+    y_off = (new_h - THUMBNAIL_HEIGHT) // 2
+    bg_img = bg_img.crop((x_off, y_off, x_off + THUMBNAIL_WIDTH, y_off + THUMBNAIL_HEIGHT))
+
+    canvas = bg_img.copy()
+
+    # === 3. 上部グラデーションオーバーレイ（文字読みやすさのため）===
+    overlay = Image.new("RGBA", (THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT), (0, 0, 0, 0))
+    ov_draw = ImageDraw.Draw(overlay)
+    ov_height = int(THUMBNAIL_HEIGHT * 0.50)
+    for y in range(ov_height):
+        t = 1.0 - (y / ov_height)
+        alpha = int(175 * t * t)
+        ov_draw.line([(0, y), (THUMBNAIL_WIDTH, y)], fill=(0, 0, 0, alpha))
+
+    canvas = canvas.convert("RGBA")
+    canvas = Image.alpha_composite(canvas, overlay)
+    canvas = canvas.convert("RGB")
+
+    draw = ImageDraw.Draw(canvas)
+
+    # === 4. メインタイトル（上部・中央揃え）===
+    main_text = thumbnail_data.get("main_text") or title
+    main_color = MAIN_TEXT_COLORS[color_index % 2]
+    padding_x = 55
+
+    try:
+        font, font_size, lines = get_font_and_lines(
+            draw, main_text, FONT_PATH_MAIN,
+            max_width=THUMBNAIL_WIDTH - padding_x * 2,
+        )
+    except Exception:
+        font = ImageFont.load_default()
+        font_size = 40
+        lines = [main_text]
+
+    line_height = font_size + 18
+    total_text_h = len(lines) * line_height
+
+    # 上部30%エリアの中心に配置（最低でも上から30px）
+    center_y = int(THUMBNAIL_HEIGHT * 0.22)
+    y_start = max(30, center_y - total_text_h // 2)
+
+    for i, line in enumerate(lines):
+        try:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_w = bbox[2] - bbox[0]
+        except Exception:
+            line_w = len(line) * font_size // 2
+        x = (THUMBNAIL_WIDTH - line_w) // 2
+        y = y_start + i * line_height
+        draw_text_with_outline(
+            draw, line, (x, y), font,
+            fill=main_color,
+            outline_color=(0, 0, 0),
+            outline_width=9,
+        )
+
+    # === 5. サブタイトル（下部・白・黒縁のみ・帯なし）===
+    sub_texts = thumbnail_data.get("sub_texts") or []
+    sub_text = sub_texts[0] if sub_texts else None
+
+    if sub_text:
+        try:
+            sub_font_size = 52
+            sub_font = ImageFont.truetype(FONT_PATH_SUB, sub_font_size)
+            sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
+            sub_w = sub_bbox[2] - sub_bbox[0]
+            sub_h = sub_bbox[3] - sub_bbox[1]
+            sub_x = (THUMBNAIL_WIDTH - sub_w) // 2
+            sub_y = THUMBNAIL_HEIGHT - sub_h - 38
+
+            draw_text_with_outline(
+                draw, sub_text, (sub_x, sub_y), sub_font,
+                fill=(255, 255, 255),
+                outline_color=(0, 0, 0),
+                outline_width=7,
+            )
+        except Exception as e:
+            print(f"[THUMBNAIL] Sub text rendering failed: {e}")
+
+    # === 6. 保存 ===
+    canvas.save(output_path, "PNG", quality=95)
+    print(f"[THUMBNAIL] Saved: {output_path}")
+
+
+# ------------------------------------------------------------------ #
+#  color_index 管理ヘルパー
+# ------------------------------------------------------------------ #
+
+class ThumbnailColorRotator:
+    """
+    動画ごとに赤・黄を必ず交互に使うためのカウンタ管理クラス。
+
+    使い方:
+        rotator = ThumbnailColorRotator()
+        color_index = rotator.next()  # 0, 1, 0, 1 ...
+    """
+    def __init__(self, start: int = 0):
+        self._index = start % 2
+
+    def next(self) -> int:
+        idx = self._index
+        self._index = 1 - self._index
+        return idx
+
+    def current(self) -> int:
+        return self._index
 
 
 if __name__ == "__main__":
