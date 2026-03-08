@@ -939,8 +939,14 @@ def create_thumbnail(
 
     if sub_text:
         try:
-            sub_font_size = 52
-            sub_font = ImageFont.truetype(FONT_PATH_SUB, sub_font_size)
+            # サブテキストも動的にフォントサイズを決定
+            sub_font, sub_font_size, sub_lines = get_font_and_lines(
+                draw, sub_text, FONT_PATH_SUB,
+                max_width=THUMBNAIL_WIDTH - 80,  # 左右に40pxずつマージン
+                max_size=60,  # サブテキストは少し大きめ
+                min_size=40,
+            )
+            sub_text = sub_lines[0] if sub_lines else sub_text  # 1行に制限
             sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
             sub_w = sub_bbox[2] - sub_bbox[0]
             sub_h = sub_bbox[3] - sub_bbox[1]
