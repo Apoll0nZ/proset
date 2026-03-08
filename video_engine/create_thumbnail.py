@@ -929,6 +929,8 @@ def create_thumbnail(
         font, font_size, lines = get_font_and_lines(
             draw, main_text, FONT_PATH_MAIN,
             max_width=THUMBNAIL_WIDTH - padding_x * 2,
+            max_size=96,
+            min_size=56,
         )
     except Exception:
         font = ImageFont.load_default()
@@ -967,8 +969,8 @@ def create_thumbnail(
             sub_font, sub_font_size, sub_lines = get_font_and_lines(
                 draw, sub_text, FONT_PATH_SUB,
                 max_width=THUMBNAIL_WIDTH - 80,  # 左右に40pxずつマージン
-                max_size=60,  # サブテキストは少し大きめ
-                min_size=40,
+                max_size=96,
+                min_size=56,
             )
             sub_text = sub_lines[0] if sub_lines else sub_text  # 1行に制限
             sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
