@@ -654,17 +654,27 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                     composite_clips.append(owner_bg.with_start(owner_bg_start))
                     print(f"[BACKGROUND] Owner background: {owner_bg_duration:.2f}s from {owner_bg_start:.2f}s to {owner_bg_end:.2f}s")
 
-        # 10b. ビデオ（背景の上に配置）
+        # 10b. ビデオ（背景の上に配置）※modulationは後で最前面に追加するため除外
+        modulation_video_items = []
         for item in all_clips_by_layer['videos']:
             clip = item['clip'].with_duration(item['duration'])
             start = item['start']
-            composite_clips.append(clip.with_start(start))
+            # modulationクリップは画像より上にしたいため別リストに分離
+            if abs(start - modulation_start_time) < 0.01:
+                modulation_video_items.append((clip, start))
+            else:
+                composite_clips.append(clip.with_start(start))
 
-        # 10c. 画像（ヘディングの上に配置）
+        # 10c. 画像（ビデオの上に配置）
         for item in all_clips_by_layer['images']:
             clip = item['clip'].with_duration(item['duration'])
             start = item['start']
             composite_clips.append(clip.with_start(start))
+
+        # 10c'. modulation動画を画像より上（最前面）に配置
+        for clip, start in modulation_video_items:
+            composite_clips.append(clip.with_start(start))
+            print(f"[TIMELINE] Modulation video placed above image layer at {start:.2f}s")
 
         # 10d. 字幕（最上レイヤーに配置）
         last_subtitle_end = 0.0  # 最後の字幕の終了時刻を追跡
