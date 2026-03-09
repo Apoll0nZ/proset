@@ -1588,6 +1588,8 @@ _PRONUNCIATION_MAP_BASE = {
     "Razer":        "レイザー",
     "Corsair":      "コルセア",
     "Motorola":     "モトローラ",
+    "Iiyama":       "イイヤマ",
+    "EIZO":         "イイゾー",
     # スマートフォン
     "Pixel":        "ピクセル",
     "Fold":         "フォールド",
