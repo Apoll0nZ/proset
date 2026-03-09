@@ -4614,7 +4614,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 # 分割済みテキストを音声合成
                 print(f"[REORDER] Part {i}: Synthesizing {len(subtitle_text_parts)} chunks...")
                 audio_file, query_data_list, text_parts_from_synthesis, duration_list = synthesize_precut_speech_voicevox(
-                    subtitle_text_parts, speaker_id, audio_path, pronunciation_dict=script_data.get("pronunciation_dict", {})
+                    subtitle_text_parts, speaker_id, audio_path, pronunciation_dict=(script_data or {}).get("pronunciation_dict", {})
                 )
 
                 if os.path.exists(audio_path):
