@@ -1548,6 +1548,88 @@ DDB_TABLE_NAME = os.environ.get("MY_DDB_TABLE_NAME", "VideoHistory")
 YOUTUBE_AUTH_JSON = os.environ.get("YOUTUBE_AUTH_JSON", "")
 VOICEVOX_API_URL = os.environ.get("VOICEVOX_API_URL", "http://localhost:50021")
 
+# ── 固定読み仮名辞書（定番テック用語）──
+_PRONUNCIATION_MAP_BASE = {
+    # ストレージ
+    "FireCuda":     "ファイアクーダ",
+    "BarraCuda":    "バラクーダ",
+    "SkyHawk":      "スカイホーク",
+    "IronWolf":     "アイアンウルフ",
+    "Seagate":      "シーゲート",
+    "NVMe":         "エヌブイエムイー",
+    # GPU / CPU
+    "GeForce":      "ジーフォース",
+    "Radeon":       "レイディオン",
+    "Ryzen":        "ライゼン",
+    "Blackwell":    "ブラックウェル",
+    "Snapdragon":   "スナップドラゴン",
+    "Dimensity":    "ダイメンシティ",
+    "Exynos":       "エクシノス",
+    "Tensor":       "テンサー",
+    "Geekbench":    "ギークベンチ",
+    "GDDR7":        "ジーディーディーアールセブン",
+    "GDDR6X":       "ジーディーディーアールシックスエックス",
+    "RTX":          "アールティーエックス",
+    "GTX":          "ジーティーエックス",
+    "Extreme":      "エクストリーム",
+    # PC・周辺機器
+    "MacBook":      "マックブック",
+    "Zenbook":      "ゼンブック",
+    "ThinkBook":    "シンクブック",
+    "Think":        "シンク",
+    "Book":         "ブック",
+    "Swift":        "スウィフト",
+    "Thunderbolt":  "サンダーボルト",
+    "DisplayPort":  "ディスプレイポート",
+    "Keychron":     "キークロン",
+    "Acer":         "エイサー",
+    "ASUS":         "エイスース",
+    "Lenovo":       "レノボ",
+    "Razer":        "レイザー",
+    "Corsair":      "コルセア",
+    "Motorola":     "モトローラ",
+    # スマートフォン
+    "Pixel":        "ピクセル",
+    "Fold":         "フォールド",
+    "Find":         "ファインド",
+    "Phone":        "フォン",
+    "Xiaomi":       "シャオミ",
+    "Redmi":        "レッドミー",
+    "OPPO":         "オッポ",
+    "Vivo":         "ビボ",
+    "OnePlus":      "ワンプラス",
+    "Nothing":      "ナッシング",
+    # OS・ソフトウェア
+    "Copilot":      "コパイロット",
+    "Gemini":       "ジェミナイ",
+    "ChatGPT":      "チャットジーピーティー",
+    # ディスプレイ・接続
+    "OLED":         "オーレッド",
+    "AMOLED":       "アモレッド",
+    "MagSafe":      "マグセーフ",
+    "AirDrop":      "エアドロップ",
+    "AirPlay":      "エアプレイ",
+    "FaceID":       "フェイスアイディー",
+    "TouchID":      "タッチアイディー",
+    "USB-C":        "ユーエスビーシー",
+}
+
+def normalize_text_for_voicevox(
+    text: str,
+    pronunciation_dict: dict = None,
+) -> str:
+    """
+    VOICEVOX音声合成前にテキストの読み仮名を正規化する。
+    固定辞書 + 台本JSONのpronunciation_dictをマージして適用。
+    字幕には影響しない（音声合成用テキストにのみ使用）。
+    """
+    # 固定辞書に台本固有の単語をマージ（台本側が優先）
+    merged = {**_PRONUNCIATION_MAP_BASE, **(pronunciation_dict or {})}
+
+    for surface, pronunciation in merged.items():
+        text = text.replace(surface, pronunciation)
+    return text
+
 BACKGROUND_IMAGE_PATH = os.environ.get(
     "BACKGROUND_IMAGE_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "background.png"),
@@ -4210,7 +4292,7 @@ def split_subtitle_text(text: str, max_chars: int = 80, part_type: str = None) -
     merge_enabled = (part_type != "reaction")
     return split_text_unified(text, max_chars=80, merge_small_chunks=merge_enabled, merge_threshold=120)
 
-def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tuple:
+def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str, pronunciation_dict: dict = None) -> tuple:
     """
     VOICEVOX API を用いて日本語音声を生成し、音声ファイルとして保存。
     長いテキストは自動的に分割して合成し、結合する。
@@ -4259,7 +4341,7 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tup
                     print(f"Generating audio query for part {i}, attempt {attempt}/3")
                     query_url = f"{VOICEVOX_API_URL}/audio_query"
                     query_params = {
-                        "text": part_text,
+                        "text": normalize_text_for_voicevox(part_text, pronunciation_dict),
                         "speaker": speaker_id
                     }
                     query_resp = requests.post(query_url, params=query_params, timeout=30)
@@ -4336,7 +4418,7 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str) -> tup
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, out_path: str) -> tuple:
+def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, out_path: str, pronunciation_dict: dict = None) -> tuple:
     """
     字幕チャンク単位で分割済みテキストを音声合成。
     text_parts と query_data_list の1対1対応を保証。
@@ -4386,7 +4468,7 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
                 try:
                     query_url = f"{VOICEVOX_API_URL}/audio_query"
                     query_params = {
-                        "text": part_text,
+                        "text": normalize_text_for_voicevox(part_text, pronunciation_dict),
                         "speaker": speaker_id
                     }
                     query_resp = requests.post(query_url, params=query_params, timeout=30)
@@ -4530,7 +4612,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 # 分割済みテキストを音声合成
                 print(f"[REORDER] Part {i}: Synthesizing {len(subtitle_text_parts)} chunks...")
                 audio_file, query_data_list, text_parts_from_synthesis, duration_list = synthesize_precut_speech_voicevox(
-                    subtitle_text_parts, speaker_id, audio_path
+                    subtitle_text_parts, speaker_id, audio_path, pronunciation_dict=data.get("pronunciation_dict", {})
                 )
 
                 if os.path.exists(audio_path):
@@ -5731,13 +5813,7 @@ async def main() -> None:
             print("ERROR: meta.url が存在しません。アップロード前に処理を中止します。")
             return None  # 処理を中止してNoneを返す
 
-        # VOICEVOX辞書同期
-        from voicevox_auto_dict import sync_pronunciation_dict
-        sync_pronunciation_dict(
-            pronunciation_dict=data.get("pronunciation_dict", {}),
-            api_url=VOICEVOX_API_URL,
-        )
-
+        
         # 0. タイトル読み上げパートを先頭に追加（ずんだもん: ID 3）
         title_part = {
             "part": "title",
