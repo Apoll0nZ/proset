@@ -4552,7 +4552,7 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str) -> tuple:
+def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str, script_data: Dict[str, Any] = None) -> tuple:
     """
     複数のセリフを順番に音声合成し、結合した音声ファイルを生成。
     ★インデックスの完全一致を保証
@@ -5836,7 +5836,7 @@ async def main() -> None:
 
         # 2. VOICEVOX で音声生成（複数セリフ対応）
         print("Generating audio...")
-        audio_path, part_durations, query_data_list_all, text_parts_list_all, duration_list_all = synthesize_multiple_speeches(script_parts, tmpdir)
+        audio_path, part_durations, query_data_list_all, text_parts_list_all, duration_list_all = synthesize_multiple_speeches(script_parts, tmpdir, script_data=data)
 
         # 2.5. Titleパートを動画部分と音声部分に分割
         print("Splitting title part into video and audio sections...")
