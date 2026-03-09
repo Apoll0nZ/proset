@@ -552,8 +552,8 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                         text_color="white",
                         stroke_color="black",
                         stroke_width=3,
-                        max_width=1600,
-                        padding=40,
+                        max_width=VIDEO_WIDTH,  # 1600 → VIDEO_WIDTH
+                        padding=20,             # 40 → 20
                         bg_color=(0, 0, 0, 180),
                         text_align="left",
                     )
@@ -563,7 +563,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                         txt_clip = subtitle_slide_scale_animation(txt_clip)
                     except Exception as anim_error:
                         print(f"[DEBUG] Animation failed, using static positioning: {anim_error}")
-                        txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
+                        txt_clip = txt_clip.with_position(("center", max(0, VIDEO_HEIGHT - txt_clip.h - 20)))
                     
                     # 絶対時間で配置
                     txt_clip = txt_clip.with_start(chunk_start).with_duration(chunk_duration).with_opacity(1.0).with_fps(FPS)
@@ -1400,7 +1400,7 @@ def create_subtitles_for_segment(text: str, duration: float, segment_start_time:
             try:
                 txt_clip = subtitle_slide_scale_animation(txt_clip)
             except:
-                txt_clip = txt_clip.with_position(("center", VIDEO_HEIGHT - 420))
+                txt_clip = txt_clip.with_position(("center", max(0, VIDEO_HEIGHT - txt_clip.h - 20)))
             
             # セグメント内の相対時間で配置
             txt_clip = txt_clip.with_start(chunk_start).with_duration(chunk_duration).with_fps(FPS)
