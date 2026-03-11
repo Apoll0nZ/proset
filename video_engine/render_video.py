@@ -1574,6 +1574,8 @@ _PRONUNCIATION_MAP_BASE = {
     "Extreme":      "エクストリーム",
     # PC・周辺機器
     "MacBook":      "マックブック",
+    "Neo":          "ネオ",
+    "neo":          "ネオ",
     "Zenbook":      "ゼンブック",
     "ThinkBook":    "シンクブック",
     "Think":        "シンク",
