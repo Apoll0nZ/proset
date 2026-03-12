@@ -3808,7 +3808,14 @@ def normalize_reaction_script_parts(script_parts: List[Dict[str, Any]]) -> List[
         # 空行を除いた行単位で分割（writerが改行列挙で返したケースを吸収）
         lines = [line.strip() for line in re.split(r"\n+", text) if line.strip()]
         if len(lines) <= 1:
-            normalized_parts.append(part)
+            # 単一行でも speaker_id=2（固定値）や未指定ならランダム付与
+            speaker_id = part.get("speaker_id")
+            if speaker_id in (None, 2, 3):
+                new_part = dict(part)
+                new_part["speaker_id"] = random.choice(reaction_speaker_ids)
+                normalized_parts.append(new_part)
+            else:
+                normalized_parts.append(part)
             continue
 
         for line in lines:
@@ -4613,9 +4620,10 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 if part_name.startswith("article_"):
                     speaker_id = 3
                 elif part_name == "reaction":
-                    speaker_id = part.get("speaker_id", 1)
-                    if speaker_id == 3:
-                        speaker_id = random.choice([2, 8, 10, 12, 13, 14])
+                    reaction_speaker_ids = [2, 8, 10, 12, 13, 14]
+                    speaker_id = part.get("speaker_id")
+                    if speaker_id in (None, 2, 3):
+                        speaker_id = random.choice(reaction_speaker_ids)
                 else:
                     speaker_id = part.get("speaker_id", 3)
                 
