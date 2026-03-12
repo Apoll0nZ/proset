@@ -2720,7 +2720,13 @@ def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List
 
 
 
-def evaluate_images_batch_with_gemini_improved(images_list: List[Dict], keyword: str, script_text: str) -> List[Dict]:
+def evaluate_images_batch_with_gemini_improved(
+    images_list: List[Dict],
+    keyword: str,
+    script_text: str,
+    target_product: str = "",
+    strict_mode: bool = False,
+) -> List[Dict]:
     """Geminiで複数の画像を分割評価（負荷軽減版：10枚ずつ評価）"""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -2757,12 +2763,23 @@ def evaluate_images_batch_with_gemini_improved(images_list: List[Dict], keyword:
 """
         
         # バッチ評価プロンプト（画像を直接分析するよう変更）
+        product_check = ""
+        if strict_mode and target_product:
+            product_check = f"""
+### 製品一致チェック（サムネイル用・最重要）
+- この動画で紹介している製品は「{target_product}」である
+- 明らかに別ブランド・別製品の画像は即座に不適合とせよ
+- 例：OnePlus 13の動画にMotorolaの画像 → 不適合
+- ブランドが判別できない汎用的な技術画像は適合とせよ
+"""
         prompt = f"""
 IT・ガジェット解説動画に適した画像を選択してください。
 
 ### 動画情報
 - キーワード: {keyword}
 - 内容: {script_text[:300]}...
+
+{product_check}
 
 ### 画像リスト（バッチ{batch_number}/{total_batches}）
 {images_info_text}
@@ -5579,6 +5596,8 @@ async def build_video_with_subtitles(
         except Exception as e:
             print(f"[DEBUG] Failed to save final frame: {e}")
 
+        return all_keywords
+
     except Exception as e:
         print(f"Error in video generation: {e}")
         raise
@@ -5852,7 +5871,7 @@ async def main() -> None:
             # 3. Video 合成
         print("Generating video...")
         video_path = os.path.join(tmpdir, "video.mp4")
-        await build_video_with_subtitles(
+        extracted_keywords = await build_video_with_subtitles(
             background_path=BACKGROUND_IMAGE_PATH,
             font_path=FONT_PATH,
             script_parts=script_parts,
@@ -5863,7 +5882,7 @@ async def main() -> None:
             query_data_list_all=query_data_list_all,
             text_parts_list_all=text_parts_list_all,
             duration_list_all=duration_list_all,
-        )
+        ) or []
         # 動画ファイルの存在確認（生成失敗を早期検知）
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found after generation: {video_path}")
@@ -5883,6 +5902,11 @@ async def main() -> None:
                 if len(selected_images) < 2:
                     print("[WARNING] 動画から十分な画像を取得できませんでした。Bing検索にフォールバックします。")
 
+                thumbnail_keywords = [
+                    kw for kw in extracted_keywords
+                    if not any(x in kw.lower() for x in ["logo", "ロゴ", "icon", "アイコン"])
+                ]
+
                 create_thumbnail(
                     title=title,
                     topic_summary=topic_summary,
@@ -5892,6 +5916,7 @@ async def main() -> None:
                     used_image_paths=selected_images,
                     require_images=True,
                     max_image_retries=3,
+                    preferred_keywords=thumbnail_keywords[:3],
                 )
 
                 if not os.path.exists(thumbnail_path):

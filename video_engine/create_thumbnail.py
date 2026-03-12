@@ -480,6 +480,7 @@ def get_background_image(
     meta: Optional[Dict] = None,
     used_image_paths: List[str] = None,
     max_retries: int = 3,
+    preferred_keywords: List[str] = None,
 ) -> Optional[Image.Image]:
     """
     背景画像を1枚取得。
@@ -501,12 +502,15 @@ def get_background_image(
         try:
             import sys
             sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            from render_video import search_images_with_playwright, download_image_from_url
+            from render_video import search_images_with_playwright, download_image_from_url, evaluate_images_batch_with_gemini_improved
             import asyncio
 
             async def search():
                 keywords = []
-                if topic_summary:
+                if preferred_keywords:
+                    keywords = preferred_keywords[:2]
+                    print(f"[THUMBNAIL] Using preferred keywords: {keywords}")
+                elif topic_summary:
                     keywords = [w for w in topic_summary.split()[:3] if len(w) > 2]
                 if meta:
                     url = meta.get("url") or meta.get("source_url", "")
@@ -520,6 +524,20 @@ def get_background_image(
                     try:
                         images = await search_images_with_playwright(kw, max_results=5)
                         if images:
+                            target_product = preferred_keywords[0] if preferred_keywords else ""
+                            suitable_images = evaluate_images_batch_with_gemini_improved(
+                                images[:30],
+                                kw,
+                                topic_summary,
+                                target_product=target_product,
+                                strict_mode=True,
+                            )
+                            if suitable_images:
+                                images = suitable_images
+                                print(f"[THUMBNAIL] Gemini approved {len(images)} images for keyword: {kw}")
+                            else:
+                                print(f"[THUMBNAIL] Gemini rejected all images for keyword: {kw}")
+                                continue
                             for img_info in images:
                                 path = download_image_from_url(img_info["url"])
                                 if path and os.path.exists(path):
@@ -604,6 +622,7 @@ def get_article_images(
     used_image_paths: List[str] = None,
     require_images: bool = False,
     max_retries: int = 3,
+    preferred_keywords: List[str] = None,
 ) -> Tuple[Image.Image, Image.Image]:
     """
     記事関連画像を2枚取得（サムネイル生成時に独立して画像検索を行う）。
@@ -636,13 +655,16 @@ def get_article_images(
         try:
             import sys
             sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            from render_video import search_images_with_playwright, download_image_from_url
+            from render_video import search_images_with_playwright, download_image_from_url, evaluate_images_batch_with_gemini_improved
             import asyncio
 
             async def search_thumbnail_images():
                 # トピック要約からキーワードを抽出して画像検索
                 keywords = []
-                if topic_summary:
+                if preferred_keywords:
+                    keywords = preferred_keywords[:2]
+                    print(f"[THUMBNAIL] Using preferred keywords: {keywords}")
+                elif topic_summary:
                     # 簡単なキーワード抽出
                     words = topic_summary.split()[:3]  # 最初の3単語を使用
                     keywords = [word for word in words if len(word) > 2]
@@ -669,6 +691,20 @@ def get_article_images(
                         images = await search_images_with_playwright(keyword, max_results=3)
                         if images:
                             print(f"[THUMBNAIL] Found {len(images)} images for keyword: {keyword}")
+                            target_product = preferred_keywords[0] if preferred_keywords else ""
+                            suitable_images = evaluate_images_batch_with_gemini_improved(
+                                images[:30],
+                                keyword,
+                                topic_summary,
+                                target_product=target_product,
+                                strict_mode=True,
+                            )
+                            if suitable_images:
+                                images = suitable_images
+                                print(f"[THUMBNAIL] Gemini approved {len(images)} images for keyword: {keyword}")
+                            else:
+                                print(f"[THUMBNAIL] Gemini rejected all images for keyword: {keyword}")
+                                continue
 
                             # 最初の2枚をダウンロード
                             downloaded_paths = []
@@ -847,6 +883,7 @@ def create_thumbnail(
     require_images: bool = False,
     max_image_retries: int = 3,
     color_index: int = 0,
+    preferred_keywords: List[str] = None,
 ) -> None:
     """
     サムネイル生成（v2 レイアウト）
@@ -868,6 +905,7 @@ def create_thumbnail(
         meta=meta,
         used_image_paths=used_image_paths or [],
         max_retries=max_image_retries,
+        preferred_keywords=preferred_keywords,
     )
 
     if bg_img is None:
