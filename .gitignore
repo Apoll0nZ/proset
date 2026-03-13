@@ -20,9 +20,7 @@ build/
 thumbnail.png
 *.png
 
-# Lambda functions - PROTECTED: Do not delete these files
-# These contain the latest deployed code from AWS Lambda
-lambda/
+
 
 # Lambda functions (private)
 lambda/

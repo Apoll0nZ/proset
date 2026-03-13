@@ -3809,7 +3809,8 @@ def normalize_reaction_script_parts(script_parts: List[Dict[str, Any]]) -> List[
             continue
 
         # 空行を除いた行単位で分割（writerが改行列挙で返したケースを吸収）
-        lines = [line.strip() for line in re.split(r"\n+", text) if line.strip()]
+        normalized_text = text.replace("\\n", "\n")
+        lines = [line.strip() for line in re.split(r"\n+", normalized_text) if line.strip()]
         if len(lines) <= 1:
             # 単一行でも speaker_id=2（固定値）や未指定ならランダム付与
             speaker_id = part.get("speaker_id")
