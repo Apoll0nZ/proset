@@ -2841,6 +2841,7 @@ JSON: {{"selected_indices": [適切な番号,適切な番号,...], "reason": "�
                 # ```json```コードブロックを除去
                 cleaned_response = re.sub(r'```json\s*', '', raw_response)
                 cleaned_response = re.sub(r'```\s*$', '', cleaned_response)
+                cleaned_response = re.sub(r'^JSON:\s*', '', cleaned_response)  # 追加
                 cleaned_response = cleaned_response.strip()
                 
                 result = json.loads(cleaned_response)
