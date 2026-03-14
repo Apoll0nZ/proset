@@ -5285,12 +5285,12 @@ async def build_video_with_subtitles(
                             img = img.convert("RGB")
                             original_width, original_height = img.size
 
-                            # ランダムなサイズ範囲を計算（画面の50-80%に拡大）
-                            # 50-80% of 1920x1080 で、より大きく目立つサイズ
-                            min_width = int(VIDEO_WIDTH * 0.50)   # 960px
-                            max_width = int(VIDEO_WIDTH * 0.80)   # 1536px
-                            min_height = int(VIDEO_HEIGHT * 0.50) # 540px
-                            max_height = int(VIDEO_HEIGHT * 0.80) # 864px
+                            # ランダムなサイズ範囲を計算（画面の75-95%に拡大）
+                            # 75-95% of 1920x1080 で、より大きく目立つサイズ
+                            min_width = int(VIDEO_WIDTH * 0.75)   # 1440px
+                            max_width = int(VIDEO_WIDTH * 0.95)   # 1824px
+                            min_height = int(VIDEO_HEIGHT * 0.75) # 810px
+                            max_height = int(VIDEO_HEIGHT * 0.95) # 1026px（画面外はクランプされる）
 
                             # ランダムにサイズを選択（整数値）
                             target_width = random.randint(min_width, max_width)
@@ -5362,10 +5362,10 @@ async def build_video_with_subtitles(
             max_x = max(0, VIDEO_WIDTH - img_width)
             max_y = max(0, VIDEO_HEIGHT - img_height)
 
-            random_x = random.randint(0, max_x) if max_x > 0 else (VIDEO_WIDTH - img_width) // 2
-            random_y = random.randint(0, max_y) if max_y > 0 else (VIDEO_HEIGHT - img_height) // 2
+            random_x = (VIDEO_WIDTH - img_width) // 2
+            random_y = (VIDEO_HEIGHT - img_height) // 2
 
-            print(f"[DEBUG] Image positioned randomly: x={random_x}px, y={random_y}px (image: {img_width}x{img_height}, screen: {VIDEO_WIDTH}x{VIDEO_HEIGHT})")
+            print(f"[DEBUG] Image positioned centered: x={random_x}px, y={random_y}px (image: {img_width}x{img_height}, screen: {VIDEO_WIDTH}x{VIDEO_HEIGHT})")
             clip = clip.with_position((random_x, random_y))
 
             # 画像を90%-100%で拡大縮小アニメーションで表示
