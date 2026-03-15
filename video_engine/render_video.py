@@ -1620,6 +1620,7 @@ _PRONUNCIATION_MAP_BASE = {
     # ディスプレイ・接続
     "OLED":         "オーレッド",
     "AMOLED":       "アモレッド",
+    "GorillaArmor": "ゴリラアーマー",
     "MagSafe":      "マグセーフ",
     "AirDrop":      "エアドロップ",
     "AirPlay":      "エアプレイ",
