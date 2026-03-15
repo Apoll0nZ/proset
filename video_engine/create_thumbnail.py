@@ -956,11 +956,7 @@ def create_thumbnail(
 
     # === 4. メインタイトル（上部・中央揃え）===
     main_text = thumbnail_data.get("main_text") or title
-    # メインテキストの色をランダムに選択
-    main_color_index = random.randint(0, 1)  # 0=赤, 1=黄
-    main_color = MAIN_TEXT_COLORS[main_color_index]
-    # サブテキスト用の色（メインで選ばれなかった方）
-    sub_color = MAIN_TEXT_COLORS[1 - main_color_index]
+    main_color = MAIN_TEXT_COLORS[color_index % 2]
     padding_x = 55
 
     try:
@@ -1019,7 +1015,7 @@ def create_thumbnail(
 
             draw_text_with_outline(
                 draw, sub_text, (sub_x, sub_y), sub_font,
-                fill=sub_color,  # メインで選ばれなかった色を使用
+                fill=(255, 255, 255),
                 outline_color=(0, 0, 0),
                 outline_width=7,
             )
