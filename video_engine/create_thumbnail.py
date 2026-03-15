@@ -442,7 +442,8 @@ def get_article_images(
             all_candidates: List[Dict] = []
             for keyword, max_n in search_plan:
                 try:
-                    images = await search_images_with_playwright(keyword, max_results=max_n)
+                    cache_bust = random.randint(0, 3)
+                    images = await search_images_with_playwright(keyword, max_results=max_n + cache_bust)
                     if images:
                         print(f"[THUMBNAIL] Found {len(images)} images for keyword: '{keyword}'")
                         all_candidates.extend(images)
@@ -452,7 +453,19 @@ def get_article_images(
                     print(f"[THUMBNAIL] Search failed for keyword '{keyword}': {e}")
 
             if not all_candidates:
-                print(f"[THUMBNAIL] No candidates found across all keywords")
+                simple_keywords = [kw.split()[0] for kw in keywords[:2] if kw.split()]
+                print(f"[THUMBNAIL] No candidates found, retrying with simplified keywords: {simple_keywords}")
+                for keyword in simple_keywords:
+                    try:
+                        images = await search_images_with_playwright(keyword, max_results=16)
+                        if images:
+                            print(f"[THUMBNAIL] Simplified search found {len(images)} images for '{keyword}'")
+                            all_candidates.extend(images)
+                    except Exception as e:
+                        print(f"[THUMBNAIL] Simplified search failed for '{keyword}': {e}")
+
+            if not all_candidates:
+                print(f"[THUMBNAIL] No candidates found even after simplified search")
                 return None
 
             # URL重複を除去
