@@ -546,16 +546,16 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
                 # 字幕クリップを作成
                 try:
                     txt_clip = _build_subtitle_clip(
-                        text=chunk_text,  # wrap_subtitle_text の呼び出しを削除
+                        text=chunk_text,
                         font_path=font_path,
-                        font_size=60,
-                        text_color="white",
+                        font_size=44,
+                        text_color="black",
                         stroke_color="black",
-                        stroke_width=3,
-                        max_width=VIDEO_WIDTH,  # 1600 → VIDEO_WIDTH
-                        padding=20,             # 40 → 20
-                        bg_color=(0, 0, 0, 180),
-                        text_align="left",
+                        stroke_width=1,
+                        max_width=int(VIDEO_WIDTH * 0.85),
+                        padding=16,
+                        bg_color=(255, 255, 255, 230),
+                        text_align="center",
                     )
                     
                     # アニメーションを適用
@@ -910,17 +910,27 @@ def _build_subtitle_clip(
         print(f"[WARNING] Subtitle height is large: {bg_height}px (may not fit on screen)")
     print(f"[DEBUG] Text size: {actual_text_width}x{actual_text_height}, BG size: {bg_width}x{bg_height}")
 
-    # RGBA対応の背景
-    if len(bg_color) == 4:
-        bg_clip = ColorClip(
-            size=(bg_width, bg_height),
-            color=bg_color[:3],
-        ).with_duration(txt_clip.duration).with_opacity(bg_color[3] / 255.0)
-    else:
-        bg_clip = ColorClip(
-            size=(bg_width, bg_height),
-            color=bg_color,
-        ).with_duration(txt_clip.duration)
+    # 角丸白背景（PIL で描画して ImageClip に変換）
+    try:
+        from PIL import Image as _PILImage, ImageDraw as _PILDraw
+        import numpy as _np
+        radius = 18
+        alpha = bg_color[3] if len(bg_color) == 4 else 255
+        rgb = bg_color[:3] if len(bg_color) >= 3 else (255, 255, 255)
+        pil_bg = _PILImage.new("RGBA", (bg_width, bg_height), (0, 0, 0, 0))
+        d = _PILDraw.Draw(pil_bg)
+        d.rounded_rectangle([(0, 0), (bg_width - 1, bg_height - 1)], radius=radius, fill=(*rgb, alpha))
+        bg_array = _np.array(pil_bg)
+        bg_clip = (
+            ImageClip(bg_array, is_mask=False)
+            .with_duration(txt_clip.duration)
+        )
+    except Exception as _e:
+        print(f"[SUBTITLE] Rounded rect fallback: {_e}")
+        if len(bg_color) == 4:
+            bg_clip = ColorClip(size=(bg_width, bg_height), color=bg_color[:3]).with_duration(txt_clip.duration).with_opacity(bg_color[3] / 255.0)
+        else:
+            bg_clip = ColorClip(size=(bg_width, bg_height), color=bg_color).with_duration(txt_clip.duration)
 
     txt_clip = txt_clip.with_position(("center", "center"))
     final_clip = CompositeVideoClip([bg_clip, txt_clip], size=(bg_width, bg_height))
@@ -4311,7 +4321,7 @@ def split_text_for_voicevox(text: str, part_type: str = None) -> List[str]:
     """
     # reactionパートは結合を無効化
     merge_enabled = (part_type != "reaction")
-    return split_text_unified(text, max_chars=80, merge_small_chunks=merge_enabled, merge_threshold=120)
+    return split_text_unified(text, max_chars=26, merge_small_chunks=merge_enabled, merge_threshold=40)
 
 def split_subtitle_text(text: str, max_chars: int = 80, part_type: str = None) -> List[str]:
     """字幕用テキスト分割
@@ -4323,7 +4333,7 @@ def split_subtitle_text(text: str, max_chars: int = 80, part_type: str = None) -
     """
     # reactionパートは結合を無効化
     merge_enabled = (part_type != "reaction")
-    return split_text_unified(text, max_chars=80, merge_small_chunks=merge_enabled, merge_threshold=120)
+    return split_text_unified(text, max_chars=26, merge_small_chunks=merge_enabled, merge_threshold=40)
 
 def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str, pronunciation_dict: dict = None) -> tuple:
     """
@@ -4636,7 +4646,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
 
                 # テキストを字幕チャンク単位で分割
                 print(f"[REORDER] Part {i} ({part_name}): Splitting text into subtitle chunks...")
-                subtitle_text_parts = split_subtitle_text(text, max_chars=120, part_type=part.get("part"))
+                subtitle_text_parts = split_subtitle_text(text, max_chars=26, part_type=part.get("part"))
 
                 if not subtitle_text_parts:
                     raise RuntimeError(f"Failed to split text for part {i}")
@@ -5911,22 +5921,10 @@ async def main() -> None:
         for attempt in range(1, max_thumbnail_retries + 1):
             try:
                 print(f"[THUMBNAIL] Attempt {attempt}/{max_thumbnail_retries}")
-
-                # amazon_keyword があればそれ1本だけ渡す（8枚取得モード）
-                # 空の場合は動画キーワード上位2つを渡す（7枚×2キーワードモード）
-                amazon_keyword = data.get("amazon_keyword", "") or content.get("amazon_keyword", "")
-                if amazon_keyword:
-                    thumbnail_keywords = [amazon_keyword]
-                    print(f"[THUMBNAIL] keyword mode: amazon_keyword='{amazon_keyword}'")
-                else:
-                    clean_video_kws = [
-                        kw for kw in extracted_keywords
-                        if not any(x in kw.lower() for x in ["logo", "ロゴ", "icon", "アイコン"])
-                    ]
-                    thumbnail_keywords = clean_video_kws[:2]
-                    print(f"[THUMBNAIL] fallback mode: video keywords={thumbnail_keywords}")
-
-                print(f"[THUMBNAIL] preferred_keywords: {thumbnail_keywords}")
+                thumbnail_keywords = [
+                    kw for kw in extracted_keywords
+                    if not any(x in kw.lower() for x in ["logo", "ロゴ", "icon", "アイコン"])
+                ]
 
                 create_thumbnail(
                     title=title,
@@ -5934,7 +5932,7 @@ async def main() -> None:
                     thumbnail_data=thumbnail_data,
                     output_path=thumbnail_path,
                     meta=meta,
-                    used_image_paths=list(_used_image_paths),  # 検索失敗時のフォールバック用
+                    used_image_paths=[],
                     require_images=True,
                     max_image_retries=3,
                     preferred_keywords=thumbnail_keywords[:3],
