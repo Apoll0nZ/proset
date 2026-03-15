@@ -5911,14 +5911,22 @@ async def main() -> None:
         for attempt in range(1, max_thumbnail_retries + 1):
             try:
                 print(f"[THUMBNAIL] Attempt {attempt}/{max_thumbnail_retries}")
-                selected_images = select_images_from_video(_latest_image_schedule, S3_BUCKET)
-                if len(selected_images) < 2:
-                    print("[WARNING] 動画から十分な画像を取得できませんでした。Bing検索にフォールバックします。")
 
-                thumbnail_keywords = [
-                    kw for kw in extracted_keywords
-                    if not any(x in kw.lower() for x in ["logo", "ロゴ", "icon", "アイコン"])
-                ]
+                # amazon_keyword があればそれ1本だけ渡す（8枚取得モード）
+                # 空の場合は動画キーワード上位2つを渡す（7枚×2キーワードモード）
+                amazon_keyword = data.get("amazon_keyword", "") or content.get("amazon_keyword", "")
+                if amazon_keyword:
+                    thumbnail_keywords = [amazon_keyword]
+                    print(f"[THUMBNAIL] keyword mode: amazon_keyword='{amazon_keyword}'")
+                else:
+                    clean_video_kws = [
+                        kw for kw in extracted_keywords
+                        if not any(x in kw.lower() for x in ["logo", "ロゴ", "icon", "アイコン"])
+                    ]
+                    thumbnail_keywords = clean_video_kws[:2]
+                    print(f"[THUMBNAIL] fallback mode: video keywords={thumbnail_keywords}")
+
+                print(f"[THUMBNAIL] preferred_keywords: {thumbnail_keywords}")
 
                 create_thumbnail(
                     title=title,
@@ -5926,7 +5934,7 @@ async def main() -> None:
                     thumbnail_data=thumbnail_data,
                     output_path=thumbnail_path,
                     meta=meta,
-                    used_image_paths=selected_images,
+                    used_image_paths=list(_used_image_paths),  # 検索失敗時のフォールバック用
                     require_images=True,
                     max_image_retries=3,
                     preferred_keywords=thumbnail_keywords[:3],

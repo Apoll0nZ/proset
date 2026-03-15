@@ -74,7 +74,7 @@ GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash-lite")
 GEMINI_API_VERSION = os.environ.get("GEMINI_API_VERSION", "v1")
 THUMBNAIL_GEMINI_TEXT_FILTER = os.environ.get("THUMBNAIL_GEMINI_TEXT_FILTER", "1").lower() not in ("0", "false", "off")
 THUMBNAIL_GEMINI_MAX_CANDIDATES = max(2, int(os.environ.get("THUMBNAIL_GEMINI_MAX_CANDIDATES", "8")))
-THUMBNAIL_GEMINI_RANDOM_POOL = max(2, int(os.environ.get("THUMBNAIL_GEMINI_RANDOM_POOL", "4")))
+THUMBNAIL_GEMINI_RANDOM_POOL = max(2, int(os.environ.get("THUMBNAIL_GEMINI_RANDOM_POOL", "8")))
 
 
 def _get_mime_type_from_path(image_path: str) -> Optional[str]:
@@ -117,7 +117,12 @@ def _analyze_image_text_density_with_gemini(image_path: str) -> Optional[Dict[st
     )
     prompt = (
         "この画像がYouTubeサムネ背景に向くか判定してください。"
-        "文字・ロゴ・UI・スクリーンショット・看板など、読める文字情報が目立つ画像は不適です。"
+        "製品の実機写真・公式プレス画像・製品レンダリングが最適です。"
+        "以下は即座に keep=false にしてください："
+        "ロゴのみ・アイコンのみの白背景画像、"
+        "他のYouTube動画・ブログ・ニュースサイトのサムネイル画像、"
+        "タイトルテキスト・チャンネル名・再生時間が写り込んでいる画像、"
+        "UI・スクリーンショット・看板・文字が多い画像。"
         "JSONのみで返答: "
         "{\"text_ratio\": 0-100の整数, \"text_heavy\": true/false, \"keep\": true/false}"
     )
@@ -223,7 +228,7 @@ def _select_thumbnail_image_paths(candidate_paths: List[str], count: int = 2) ->
     scored.sort(key=lambda x: (x[2], -x[1], x[3]))
 
     # 上位候補からランダムに選び、毎回同じ組み合わせになりにくくする
-    pool_size = min(len(scored), max(count, THUMBNAIL_GEMINI_RANDOM_POOL))
+    pool_size = min(len(scored), max(count, max(THUMBNAIL_GEMINI_RANDOM_POOL, 6)))
     top_pool = [path for path, _, _, _ in scored[:pool_size]]
     selected = random.sample(top_pool, count) if len(top_pool) >= count else top_pool[:]
     if len(selected) < count:
@@ -390,164 +395,178 @@ def get_article_images(
     used_image_paths: List[str] = None,
     require_images: bool = False,
     max_retries: int = 3,
+    preferred_keywords: List[str] = None,
 ) -> Tuple[Image.Image, Image.Image]:
     """
-    記事関連画像を2枚取得（サムネイル生成時に独立して画像検索を行う）。
+    記事関連画像を2枚取得。
+
+    優先順位:
+    1. preferred_keywords（amazon_keyword or 動画キーワード）で新規Bing検索
+    2. 上記失敗時のみ、動画で使用した画像をフォールバックとして利用
     """
     img1 = None
     img2 = None
-
-    # 先に動画で使用した画像を優先して再利用
     image_paths = used_image_paths or []
-    if image_paths:
-        for path in image_paths:
-            if not path or not os.path.exists(path):
-                continue
-            try:
-                loaded = Image.open(path).convert("RGBA")
-            except Exception as e:
-                print(f"[THUMBNAIL] Failed to load used image: {path} ({e})")
-                continue
-            if img1 is None:
-                img1 = loaded
-                print(f"[THUMBNAIL] Using video image for img1: {path}")
-            elif img2 is None:
-                img2 = loaded
-                print(f"[THUMBNAIL] Using video image for img2: {path}")
-            if img1 is not None and img2 is not None:
-                return img1, img2
-    
-    # サムネイル生成時に独立して画像検索を行う（リトライあり）
-    for attempt in range(1, max_retries + 1):
-        try:
-            import sys
-            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            from render_video import search_images_with_playwright, download_image_from_url
-            import asyncio
 
-            async def search_thumbnail_images():
-                # トピック要約からキーワードを抽出して画像検索
-                keywords = []
-                if topic_summary:
-                    # 簡単なキーワード抽出
-                    words = topic_summary.split()[:3]  # 最初の3単語を使用
-                    keywords = [word for word in words if len(word) > 2]
+    # ── ① メイン: preferred_keywords を使って新規画像検索 ──────────────────
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from render_video import (
+            search_images_with_playwright,
+            download_image_from_url,
+        )
+        import asyncio
 
-                # メタ情報からキーワードを抽出
-                if meta and 'source_url' in meta:
-                    source_url = meta['source_url']
-                    if 'apple' in source_url.lower():
-                        keywords.insert(0, 'Apple')
-                    elif 'microsoft' in source_url.lower():
-                        keywords.insert(0, 'Microsoft')
-                    elif 'google' in source_url.lower():
-                        keywords.insert(0, 'Google')
+        async def search_thumbnail_images() -> Optional[Image.Image]:
+            """
+            ・preferred_keywords にキーワードがある → 第1キーワード1本で8枚取得
+            ・キーワードが空               → topic_summary 先頭語2つで7枚ずつ取得
+            取得後はダウンロード → Gemini文字密度フィルター → ランダム1枚返す。
+            """
+            has_preferred = bool(preferred_keywords)
 
-                # キーワードがなければデフォルトを使用
-                if not keywords:
-                    keywords = ['technology', 'innovation']
+            if has_preferred:
+                # キーワードあり: 第1キーワードのみで8枚
+                search_plan: List[tuple] = [(preferred_keywords[0], 8)]
+                print(f"[THUMBNAIL] keyword mode: '{preferred_keywords[0]}' × 8")
+            else:
+                # キーワードなし: topic_summary 先頭2単語で7枚ずつ
+                fallback_words = [w for w in (topic_summary or "").split()[:3] if len(w) > 2][:2]
+                if not fallback_words:
+                    fallback_words = ["technology"]
+                search_plan = [(kw, 7) for kw in fallback_words]
+                print(f"[THUMBNAIL] fallback mode: {[kw for kw, _ in search_plan]} × 7 each")
 
-                print(f"[THUMBNAIL] Searching images with keywords: {keywords}")
+            # 検索実行
+            all_candidates: List[Dict] = []
+            for keyword, max_n in search_plan:
+                try:
+                    images = await search_images_with_playwright(keyword, max_results=max_n)
+                    if images:
+                        print(f"[THUMBNAIL] Found {len(images)} images for keyword: '{keyword}'")
+                        all_candidates.extend(images)
+                    else:
+                        print(f"[THUMBNAIL] No images found for keyword: '{keyword}'")
+                except Exception as e:
+                    print(f"[THUMBNAIL] Search failed for keyword '{keyword}': {e}")
 
-                # 画像検索
-                for keyword in keywords[:2]:  # 最大2つのキーワードで試行
-                    try:
-                        images = await search_images_with_playwright(keyword, max_results=3)
-                        if images:
-                            print(f"[THUMBNAIL] Found {len(images)} images for keyword: {keyword}")
+            if not all_candidates:
+                print(f"[THUMBNAIL] No candidates found across all keywords")
+                return None
 
-                            # 最初の2枚をダウンロード
-                            downloaded_paths = []
-                            for img in images[:2]:
-                                try:
-                                    path = download_image_from_url(img['url'])
-                                    if path and os.path.exists(path):
-                                        downloaded_paths.append(path)
-                                        print(f"[THUMBNAIL] Downloaded image: {os.path.basename(path)}")
-                                except Exception as e:
-                                    print(f"[THUMBNAIL] Failed to download image: {e}")
-                                    continue
+            # URL重複を除去
+            seen_urls: set = set()
+            unique_candidates = []
+            for c in all_candidates:
+                url = c.get("url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    unique_candidates.append(c)
 
-                            # 画像を読み込んで返す
-                            if len(downloaded_paths) >= 2:
-                                found1 = Image.open(downloaded_paths[0]).convert("RGBA")
-                                found2 = Image.open(downloaded_paths[1]).convert("RGBA")
-                                print(f"[THUMBNAIL] Successfully loaded 2 images for thumbnail")
-                                return found1, found2
-                            elif len(downloaded_paths) == 1:
-                                found1 = Image.open(downloaded_paths[0]).convert("RGBA")
-                                print(f"[THUMBNAIL] Successfully loaded 1 image for thumbnail")
-                                return found1, None
-                    except Exception as e:
-                        print(f"[THUMBNAIL] Failed to search with keyword '{keyword}': {e}")
+            print(f"[THUMBNAIL] {len(unique_candidates)} unique candidates, downloading and filtering...")
+
+            # 全候補をダウンロードして文字密度チェック（テキスト写り込みを除外）
+            clean_images: List[Image.Image] = []
+            random.shuffle(unique_candidates)  # ダウンロード順をランダム化
+
+            for img_info in unique_candidates:
+                if len(clean_images) >= 8:  # 十分集まったら打ち切り
+                    break
+                try:
+                    path = download_image_from_url(img_info["url"])
+                    if not path or not os.path.exists(path):
                         continue
 
-                return None, None
+                    # Gemini文字密度チェック（テキスト写り込み・他サイトサムネイルを除外）
+                    analysis = _analyze_image_text_density_with_gemini(path)
+                    if analysis is not None:
+                        if not analysis.get("keep", True):
+                            print(f"[THUMBNAIL] Rejected (text-heavy): {os.path.basename(path)} "
+                                  f"text_ratio={analysis.get('text_ratio')}%")
+                            continue
+                        print(f"[THUMBNAIL] Accepted: {os.path.basename(path)} "
+                              f"text_ratio={analysis.get('text_ratio')}%")
+                    else:
+                        # GEMINI_API_KEY なし or API失敗 → 無条件で通す
+                        print(f"[THUMBNAIL] Accepted (no Gemini check): {os.path.basename(path)}")
 
-            # 非同期関数を実行（既存のイベントループがある場合は別スレッドで実行）
+                    loaded = Image.open(path).convert("RGBA")
+                    clean_images.append(loaded)
+
+                except Exception as e:
+                    print(f"[THUMBNAIL] Failed to process image: {e}")
+                    continue
+
+            if not clean_images:
+                print(f"[THUMBNAIL] No clean images after text-density filter")
+                return None
+
+            # 文字密度チェックを通った候補からランダムに1枚選択
+            selected = random.choice(clean_images)
+            print(f"[THUMBNAIL] Randomly selected 1 image from {len(clean_images)} clean candidates")
+            return selected
+
+        for attempt in range(1, max_retries + 1):
             try:
-                running_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                running_loop = None
+                try:
+                    running_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    running_loop = None
 
-            if running_loop and running_loop.is_running():
-                import concurrent.futures
+                if running_loop and running_loop.is_running():
+                    import concurrent.futures
 
-                def _run_in_thread():
-                    return asyncio.run(search_thumbnail_images())
+                    def _run_in_thread():
+                        return asyncio.run(search_thumbnail_images())
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_run_in_thread)
-                    found1, found2 = future.result()
-            else:
-                found1, found2 = asyncio.run(search_thumbnail_images())
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        found = executor.submit(_run_in_thread).result()
+                else:
+                    found = asyncio.run(search_thumbnail_images())
 
-            if found1 and img1 is None:
-                img1 = found1
-            elif found1 and img2 is None:
-                img2 = found1
-            if found2 and img2 is None:
-                img2 = found2
+                if found is not None and img1 is None:
+                    img1 = found
+                    print(f"[THUMBNAIL] Image search succeeded on attempt {attempt}")
+                    # 1枚取得できたら即返却（img2 は不要）
+                    return img1, None
 
-            if img1 is not None and img2 is not None:
-                return img1, img2
+            except Exception as e:
+                print(f"[THUMBNAIL] Error in image search (attempt {attempt}/{max_retries}): {e}")
+                continue
 
-        except Exception as e:
-            print(f"[THUMBNAIL] Error in independent image search (attempt {attempt}/{max_retries}): {e}")
-            continue
-    
-    # 動画生成で使用した画像からフォールバック（文字量の少ない画像を優先）
+    except ImportError as e:
+        print(f"[THUMBNAIL] render_video import failed: {e}")
+
+    # ── ② フォールバック: 動画で使用した画像を利用 ──────────────────────────
+    print(f"[THUMBNAIL] Falling back to video images (have {len(image_paths)} paths)")
     if image_paths and (img1 is None or img2 is None):
-        # 存在する画像パスのみを収集（重複を避ける）
         available_paths = []
-        used_paths = set()  # 使用済みパスを追跡
-        
-        for path in image_paths:
-            if path in used_paths:
-                continue  # 既に使用済みのパスはスキップ
+        seen_paths: set = set()
 
-            # 画像が削除済みの場合は除外
+        for path in image_paths:
+            if path in seen_paths or not path:
+                continue
             if not os.path.exists(path):
                 print(f"[WARNING] Image file does not exist (already deleted): {path}")
                 continue
-            
             available_paths.append(path)
-            used_paths.add(path)  # 使用済みとしてマーク
+            seen_paths.add(path)
 
         selected_paths = _select_thumbnail_image_paths(available_paths, 2)
-        print(f"[DEBUG] Selected {len(selected_paths)} images from {len(available_paths)} available images")
-        
+        print(f"[DEBUG] Selected {len(selected_paths)} fallback images from {len(available_paths)} available")
+
         for path in selected_paths:
             try:
                 loaded = Image.open(path).convert("RGBA")
                 if img1 is None:
                     img1 = loaded
-                    print(f"[DEBUG] Loaded video image 1: {path}")
+                    print(f"[DEBUG] Fallback video image 1: {path}")
                 elif img2 is None:
                     img2 = loaded
-                    print(f"[DEBUG] Loaded video image 2: {path}")
+                    print(f"[DEBUG] Fallback video image 2: {path}")
             except Exception as e:
-                print(f"[DEBUG] Failed to load video image: {e}")
+                print(f"[DEBUG] Failed to load fallback video image: {e}")
     
     if require_images and (img1 is None or img2 is None):
         raise RuntimeError("Failed to obtain required thumbnail images")
@@ -632,6 +651,7 @@ def create_thumbnail(
     used_image_paths: List[str] = None,
     require_images: bool = False,
     max_image_retries: int = 3,
+    preferred_keywords: List[str] = None,
 ) -> None:
     """
     テックガジェットスタイル（2chスレタイ風）サムネイルを生成。
@@ -644,33 +664,30 @@ def create_thumbnail(
             - sub_texts: サブ/煽り字幕のリスト
         output_path: 出力画像パス
         meta: メタ情報（source_url等を含む）
+        used_image_paths: 動画で使用した画像パス（検索失敗時のフォールバック用）
+        preferred_keywords: 優先使用する検索キーワード（amazon_keyword or 動画キーワード）
     """
     # キャンバス作成
     img = Image.new("RGB", (THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT), (255, 255, 255))
     draw = ImageDraw.Draw(img)
-    
-    # 上部70%エリア: 画像2枚をランダム比率で配置
-    ratio = random.uniform(0.3, 0.7)  # 3:7 〜 7:3 の範囲でランダム
-    left_width = int(THUMBNAIL_WIDTH * ratio)
-    right_width = THUMBNAIL_WIDTH - left_width
-    
-    img1, img2 = get_article_images(
+
+    # 上部70%エリア: 取得した1枚を全幅で配置
+    img1, _ = get_article_images(
         topic_summary,
         meta,
         used_image_paths,
         require_images=require_images,
         max_retries=max_image_retries,
+        preferred_keywords=preferred_keywords,
     )
-    
-    # 画像をリサイズして配置
-    img1_resized = img1.resize((left_width, TOP_AREA_HEIGHT), Image.Resampling.LANCZOS)
-    img2_resized = img2.resize((right_width, TOP_AREA_HEIGHT), Image.Resampling.LANCZOS)
-    print(f"[DEBUG] Resized images: img1={img1_resized.size}, img2={img2_resized.size}")
-    
+
+    # 画像を全幅にリサイズして配置
+    img1_resized = img1.resize((THUMBNAIL_WIDTH, TOP_AREA_HEIGHT), Image.Resampling.LANCZOS)
+    print(f"[DEBUG] Resized image: {img1_resized.size}")
+
     # 透過画像を正しく貼り付け（第3引数にmaskを指定）
     img.paste(img1_resized, (0, 0), img1_resized)
-    img.paste(img2_resized, (left_width, 0), img2_resized)
-    print(f"[DEBUG] Pasted images at positions: (0,0) and ({left_width},0)")
+    print(f"[DEBUG] Pasted image at position: (0, 0)")
     
     # 下部30%エリア: 黄色背景（座布団）
     yellow_color = (255, 220, 0)  # 鮮やかな黄色
@@ -683,12 +700,7 @@ def create_thumbnail(
     try:
         # テキスト長に応じてフォントサイズを動的に調整
         main_text_length = len(thumbnail_data.get("main_text", title))
-        if main_text_length > 30:
-            main_font_size = 56  # 長いテキストは小さめ
-        elif main_text_length > 20:
-            main_font_size = 64
-        else:
-            main_font_size = 72  # 短いテキストは大きめ
+        main_font_size = 88  # 13文字対応で安全なサイズ
             
         print(f"[DEBUG] Loading main font from: {FONT_PATH_MAIN}, size={main_font_size}")
         main_font = ImageFont.truetype(FONT_PATH_MAIN, main_font_size)
@@ -725,6 +737,9 @@ def create_thumbnail(
     main_text = thumbnail_data.get("main_text", title)
     if not main_text:
         main_text = title
+    # ★追加：13文字を超える場合は強制カット
+    if len(main_text) > 13:
+        main_text = main_text[:13]
     
     # テキストが長すぎる場合は2行に分割
     if len(main_text) > 20:
