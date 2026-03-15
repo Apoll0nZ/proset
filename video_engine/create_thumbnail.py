@@ -605,6 +605,41 @@ def get_article_images(
     return img1, img2
 
 
+NEWS_BADGE_LABELS = ["速報", "独自", "最新", "緊急", "注目"]
+
+def draw_news_badge(img: Image.Image, label: str = None) -> None:
+    draw = ImageDraw.Draw(img)
+    label = label or random.choice(NEWS_BADGE_LABELS)
+
+    badge_font_size = 38
+    try:
+        badge_font = ImageFont.truetype(FONT_PATH_MAIN, badge_font_size)
+    except Exception:
+        badge_font = ImageFont.load_default()
+
+    bbox = draw.textbbox((0, 0), label, font=badge_font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+
+    pad_x, pad_y = 16, 10
+    margin = 20
+    bg_w = tw + pad_x * 2
+    bg_h = th + pad_y * 2
+
+    x, y = margin, margin
+
+    # 赤背景（角丸）
+    from PIL import Image as _PI, ImageDraw as _PID
+    badge_img = _PI.new("RGBA", (bg_w, bg_h), (0, 0, 0, 0))
+    bd = _PID.Draw(badge_img)
+    bd.rounded_rectangle([(0, 0), (bg_w - 1, bg_h - 1)], radius=10, fill=(220, 30, 30, 240))
+
+    # 白文字
+    bd.text((pad_x, pad_y), label, font=badge_font, fill="white")
+
+    img.paste(badge_img, (x, y), badge_img)
+
+
 def draw_text_with_outline(
     draw: ImageDraw.Draw,
     text: str,
@@ -689,6 +724,9 @@ def create_thumbnail(
     img.paste(img1_resized, (0, 0), img1_resized)
     print(f"[DEBUG] Pasted image at position: (0, 0)")
     
+    # 速報バッジを左上に描画
+    draw_news_badge(img, label=thumbnail_data.get("news_badge"))
+    
     # 下部30%エリア: 黄色背景（座布団）
     yellow_color = (255, 220, 0)  # 鮮やかな黄色
     draw.rectangle(
@@ -700,7 +738,7 @@ def create_thumbnail(
     try:
         # テキスト長に応じてフォントサイズを動的に調整
         main_text_length = len(thumbnail_data.get("main_text", title))
-        main_font_size = 88  # 13文字対応で安全なサイズ
+        main_font_size = 58  # 2行構成に合わせて小さめのサイズ
             
         print(f"[DEBUG] Loading main font from: {FONT_PATH_MAIN}, size={main_font_size}")
         main_font = ImageFont.truetype(FONT_PATH_MAIN, main_font_size)
@@ -733,25 +771,11 @@ def create_thumbnail(
             print(f"[DEBUG] Using default font")
             sub_font = ImageFont.load_default()
     
-    # メイン字幕（下部中央、2chスレタイ風）
-    main_text = thumbnail_data.get("main_text", title)
-    if not main_text:
-        main_text = title
-    
-    # テキストが長すぎる場合は2行に分割
-    if len(main_text) > 20:
-        # 20文字前後で2行に分割
-        mid_point = len(main_text) // 2
-        # 空白や句読点で分割を試みる
-        for i in range(mid_point, max(0, mid_point-5), -1):
-            if main_text[i] in [' ', '、', '。', '・', ' ']:
-                main_text_line1 = main_text[:i]
-                main_text_line2 = main_text[i+1:]
-                break
-        else:
-            # 適切な分割点がなければ均等に分割
-            main_text_line1 = main_text[:mid_point]
-            main_text_line2 = main_text[mid_point:]
+    # メイン字幕（下部中央、ニュース引用形式）
+    # \n で1行目（情報源「内容」）と2行目（ネット民「反応」）に分割
+    main_text = thumbnail_data.get("main_text", title) or title
+    if "\n" in main_text:
+        main_text_line1, main_text_line2 = main_text.split("\n", 1)
     else:
         main_text_line1 = main_text
         main_text_line2 = ""
@@ -797,81 +821,6 @@ def create_thumbnail(
             draw, main_text_line1, (text_x, text_y), main_font,
             fill=main_color, outline_color="white", outline_width=4
         )
-    
-    # サブ/煽り字幕（条件付き表示）
-    sub_texts = thumbnail_data.get("sub_texts")
-    
-    # sub_textsが空またはNoneの場合は描画を完全にスキップ
-    if sub_texts and len(sub_texts) > 0:
-        # 最初の1つのみ使用（最大20文字に設定）
-        sub_text = sub_texts[0]
-        if len(sub_text) > 20:
-            sub_text = sub_text[:20]
-        
-        try:
-            # 高解像度での描画準備（2倍サイズで作成して後で縮小することでアンチエイリアスを効かせる）
-            sub_bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
-            sub_text_width = sub_bbox[2] - sub_bbox[0]
-            sub_text_height = sub_bbox[3] - sub_bbox[1]
-            
-            padding = 12
-            bg_width = sub_text_width + padding * 2
-            bg_height = sub_text_height + padding * 2
-            
-            scale_factor = 2
-            high_res_width = bg_width * scale_factor
-            high_res_height = bg_height * scale_factor
-            
-            sub_img = Image.new("RGBA", (high_res_width, high_res_height), (0, 0, 0, 0))
-            sub_draw = ImageDraw.Draw(sub_img)
-            
-            high_res_font_size = sub_font.size * scale_factor
-            high_res_font = ImageFont.truetype(FONT_PATH_SUB, high_res_font_size)
-            
-            # 座布団（白背景）と枠線の描画
-            sub_draw.rectangle([(0, 0), (high_res_width, high_res_height)], fill="white")
-            border_color = (100, 150, 255)
-            sub_draw.rectangle([(0, 0), (high_res_width, high_res_height)], outline=border_color, width=2)
-            
-            text_color = random.choice(["black", "red"])
-            high_res_padding = padding * scale_factor
-            sub_draw.text((high_res_padding, high_res_padding), sub_text, font=high_res_font, fill=text_color, encoding='unic')
-            
-            # --- 【修正ポイント】角度を -10度 or 10度 に設定 ---
-            angle = random.choice([-10, 10])
-            
-            # 回転処理
-            rotated_sub_img = sub_img.rotate(angle, expand=True, fillcolor=(0, 0, 0, 0), resample=Image.Resampling.BICUBIC)
-            
-            # リサイズして元のスケールに戻す
-            final_sub_img = rotated_sub_img.resize(
-                (rotated_sub_img.width // scale_factor, rotated_sub_img.height // scale_factor), 
-                Image.Resampling.LANCZOS
-            )
-            
-            # 配置位置の計算
-            # 横軸(X): 画面の左右端100pxを空けた範囲でランダム
-            x_min = 100
-            x_max = max(x_min + 1, THUMBNAIL_WIDTH - final_sub_img.width - 100)
-            sub_x_random = random.randint(x_min, x_max)
-
-            # 縦軸(Y): 下部のメイン背景(黄色帯)にかからない上部エリア内でランダム
-            y_min = 20
-            y_max = TOP_AREA_HEIGHT - final_sub_img.height - 20
-            if y_max < y_min:
-                adjusted_sub_y = max(0, TOP_AREA_HEIGHT - final_sub_img.height)
-            else:
-                adjusted_sub_y = random.randint(y_min, y_max)
-            
-            # 貼り付け
-            img.paste(final_sub_img, (sub_x_random, adjusted_sub_y), final_sub_img)
-            
-            print(f"[DEBUG] Subtitle placed: angle={angle}, pos=({sub_x_random}, {adjusted_sub_y})")
-            
-        except Exception as e:
-            print(f"[DEBUG] Subtitle rendering error: {e}")
-    else:
-        print("[DEBUG] No sub_texts provided, skipping subtitle rendering")
     
     # 保存
     img.save(output_path, "PNG", quality=95)
