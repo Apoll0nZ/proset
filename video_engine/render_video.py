@@ -5922,10 +5922,21 @@ async def main() -> None:
         for attempt in range(1, max_thumbnail_retries + 1):
             try:
                 print(f"[THUMBNAIL] Attempt {attempt}/{max_thumbnail_retries}")
-                thumbnail_keywords = [
-                    kw for kw in extracted_keywords
-                    if not any(x in kw.lower() for x in ["logo", "ロゴ", "icon", "アイコン"])
-                ]
+                # amazon_keyword を最優先、なければ動画キーワードで補完
+                amazon_keyword = data.get("amazon_keyword", "") or content.get("amazon_keyword", "")
+                if amazon_keyword:
+                    thumbnail_keywords = [amazon_keyword]
+                    print(f"[THUMBNAIL] keyword mode: amazon_keyword='{amazon_keyword}'")
+                else:
+                    thumbnail_keywords = [
+                        kw for kw in extracted_keywords
+                        if not any(x in kw.lower() for x in ["logo", "ロゴ", "icon", "アイコン"])
+                    ][:2]
+                    print(f"[THUMBNAIL] fallback mode: video keywords={thumbnail_keywords}")
+
+                # thumbnail_data の main_text に含まれる \\n を \n に正規化
+                if isinstance(thumbnail_data.get("main_text"), str):
+                    thumbnail_data["main_text"] = thumbnail_data["main_text"].replace("\\n", "\n")
 
                 create_thumbnail(
                     title=title,
@@ -5933,7 +5944,7 @@ async def main() -> None:
                     thumbnail_data=thumbnail_data,
                     output_path=thumbnail_path,
                     meta=meta,
-                    used_image_paths=[],
+                    used_image_paths=list(_used_image_paths),
                     require_images=True,
                     max_image_retries=3,
                     preferred_keywords=thumbnail_keywords[:3],

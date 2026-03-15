@@ -653,6 +653,34 @@ def draw_news_badge(img: Image.Image, label: str = None) -> None:
     img.paste(badge_img, (x, y), badge_img)
 
 
+def draw_headline_banner(img: Image.Image, headline: str) -> None:
+    """右上に赤背景の興味煽り見出しバナーを描画"""
+    from PIL import Image as _PI, ImageDraw as _PID
+    draw = ImageDraw.Draw(img)
+    headline = headline[:16] if len(headline) > 16 else headline
+
+    font_size = 42
+    try:
+        font = ImageFont.truetype(FONT_PATH_MAIN, font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    bbox = draw.textbbox((0, 0), headline, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    pad_x, pad_y = 20, 12
+
+    bg_w = tw + pad_x * 2
+    bg_h = th + pad_y * 2
+    x = THUMBNAIL_WIDTH - bg_w - 24
+    y = 24
+
+    banner = _PI.new("RGBA", (bg_w, bg_h), (0, 0, 0, 0))
+    bd = _PID.Draw(banner)
+    bd.rounded_rectangle([(0, 0), (bg_w - 1, bg_h - 1)], radius=8, fill=(210, 20, 20, 245))
+    bd.text((pad_x, pad_y), headline, font=font, fill="white")
+    img.paste(banner, (x, y), banner)
+
+
 def draw_text_with_outline(
     draw: ImageDraw.Draw,
     text: str,
@@ -739,6 +767,11 @@ def create_thumbnail(
     
     # 速報バッジを左上に描画
     draw_news_badge(img, label=thumbnail_data.get("news_badge"))
+
+    # 右上ニュース見出しバナー
+    headline = thumbnail_data.get("headline", "")
+    if headline:
+        draw_headline_banner(img, headline)
     
     # 下部30%エリア: 黄色背景（座布団）
     yellow_color = (255, 220, 0)  # 鮮やかな黄色
