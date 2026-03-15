@@ -737,9 +737,6 @@ def create_thumbnail(
     main_text = thumbnail_data.get("main_text", title)
     if not main_text:
         main_text = title
-    # ★追加：13文字を超える場合は強制カット
-    if len(main_text) > 13:
-        main_text = main_text[:13]
     
     # テキストが長すぎる場合は2行に分割
     if len(main_text) > 20:
