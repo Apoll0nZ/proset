@@ -3175,26 +3175,6 @@ def is_risky_domain(image_url: str) -> bool:
     """危険ドメイン（著作権リスクが高いため不採用）"""
     # 中程度リスクのドメインをブロックドメインに移動したため、この関数は使用しない
     return False
-def _get_hostname(image_url: str) -> str:
-    """URLからホスト名を取得する"""
-    try:
-        from urllib.parse import urlparse
-        if not image_url.startswith(('http://', 'https://')):
-            image_url = 'https://' + image_url
-        return urlparse(image_url).hostname or ''
-    except Exception:
-        return ''
-
-
-def _hostname_matches(hostname: str, domain: str) -> bool:
-    """
-    ホスト名がドメインに一致するか確認する。
-    完全一致またはサブドメイン一致のみ許可。
-    部分一致（applefans.today が apple.com にマッチ）を防ぐ。
-    """
-    return hostname == domain or hostname.endswith('.' + domain)
-
-
 
 
 def is_blocked_domain(image_url: str) -> bool:
@@ -3216,11 +3196,9 @@ def is_blocked_domain(image_url: str) -> bool:
         
         # 主要テック企業公式サイト
         'apple.com',
-        'cdn-apple.com',        # Apple CDN (store.storeimages.cdn-apple.com)
         'microsoft.com',
         'google.com',
         'amazon.com',
-        'media-amazon.com',     # Amazon CDN (m.media-amazon.com)
         'meta.com',
         'tesla.com',
         'nvidia.com',
@@ -3292,9 +3270,9 @@ def is_blocked_domain(image_url: str) -> bool:
         'go.jp'
     ]
     
-    hostname = _get_hostname(image_url)
+    url_lower = image_url.lower()
     for domain in safe_domains:
-        if _hostname_matches(hostname, domain):
+        if domain in url_lower:
             print(f"[SAFE] Safe domain detected: {domain} in {image_url}")
             return True
     return False
@@ -3517,9 +3495,9 @@ def is_blocked_domain(image_url: str) -> bool:
         'amazon.co.jp'
     ]
     
-    hostname = _get_hostname(image_url)
+    url_lower = image_url.lower()
     for domain in blocked_domains:
-        if _hostname_matches(hostname, domain):
+        if domain in url_lower:
             print(f"[BLOCK] Blocked high-risk domain: {domain} in {image_url}")
             return True
     return False
@@ -3544,11 +3522,9 @@ def is_safe_domain(image_url: str) -> bool:
         
         # 主要テック企業公式サイト
         'apple.com',
-        'cdn-apple.com',        # Apple CDN (store.storeimages.cdn-apple.com)
         'microsoft.com',
         'google.com',
         'amazon.com',
-        'media-amazon.com',     # Amazon CDN (m.media-amazon.com)
         'meta.com',
         'tesla.com',
         'nvidia.com',
@@ -3620,9 +3596,9 @@ def is_safe_domain(image_url: str) -> bool:
         'go.jp'
     ]
     
-    hostname = _get_hostname(image_url)
+    url_lower = image_url.lower()
     for domain in safe_domains:
-        if _hostname_matches(hostname, domain):
+        if domain in url_lower:
             print(f"[SAFE] Safe domain detected: {domain} in {image_url}")
             return True
     return False
@@ -5883,6 +5859,24 @@ async def main() -> None:
         if not url:
             print("ERROR: meta.url が存在しません。アップロード前に処理を中止します。")
             return None  # 処理を中止してNoneを返す
+
+        # amazon_keyword を概要欄の「おすすめ商品」セクション先頭（固定リストより前）に動的挿入
+        amazon_keyword = data.get("amazon_keyword", "").strip()
+        if amazon_keyword:
+            import urllib.parse
+            amazon_search_url = f"https://www.amazon.co.jp/s?k={urllib.parse.quote(amazon_keyword)}"
+            amazon_line = f"{amazon_search_url} ・{amazon_keyword}"
+            insert_marker = "おすすめ商品はこちらからご購入いただけます："
+            if insert_marker in description:
+                description = description.replace(
+                    insert_marker,
+                    insert_marker + "\n" + amazon_line
+                )
+                print(f"[DESCRIPTION] Amazon関連商品リンクを挿入: {amazon_line}")
+            else:
+                print(f"[DESCRIPTION] 挿入マーカーが見つからないためスキップ: '{insert_marker}'")
+        else:
+            print("[DESCRIPTION] amazon_keyword が空のため概要欄への挿入をスキップ")
 
         
         # 0. タイトル読み上げパートを先頭に追加（ずんだもん: ID 3）
