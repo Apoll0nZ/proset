@@ -3102,9 +3102,11 @@ def pre_filter_image_metadata(image_info: Dict) -> Dict:
     if is_blocked_domain(url):
         return {'suitable': False, 'reason': 'Blocked domain', 'risk_score': 100}
     
-    # 2. 安全ドメインチェック
+    # 2. 安全ドメインチェック（即通過はしない。リスクスコアを下げるだけにして後続チェックを継続）
+    # ※ 安全ドメインでもテキスト入りサムネイル等が混入するため、Gemini評価は必ず通す
     if is_safe_domain(url):
-        return {'suitable': True, 'reason': 'Safe domain', 'risk_score': 0}
+        risk_score -= 20  # リスクを下げるが即returnはしない
+        reasons.append('Safe domain (risk reduced)')
     
     # 3. タイトルによるリスク判定
     high_risk_keywords = [
@@ -3387,8 +3389,8 @@ def detect_watermark_and_issues(image_path: str) -> dict:
         problem_count = 0
         if issues['has_watermark']:
             problem_count += 1
-        if issues['text_ratio'] > 0.4:  # 文字占有率閾値を30%→40%に緩和
-            problem_count += 1
+        if issues['text_ratio'] > 0.25:  # 文字占有率25%超は単独で即拒否
+            problem_count += 2  # 単独で閾値を超えるよう2点加算
             issues['rejected'] = True
             issues['reason'] += f'文字占有率{issues["text_ratio"]:.1%};'
         if issues['has_people']:
@@ -3396,8 +3398,8 @@ def detect_watermark_and_issues(image_path: str) -> dict:
         if issues['is_screenshot']:
             problem_count += 1
             
-        # 3つ以上の問題が重なった場合のみ拒否
-        if problem_count >= 3:
+        # 2つ以上の問題が重なった場合も拒否（テキスト単独でも2点で即拒否）
+        if problem_count >= 2:
             issues['rejected'] = True
             issues['reason'] = f'複数問題検出({problem_count}個);' + issues['reason']
         
