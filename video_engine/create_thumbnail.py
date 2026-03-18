@@ -825,24 +825,46 @@ def create_thumbnail(
     else:
         main_text_line1 = main_text
         main_text_line2 = ""
-    
+
     # テキスト色をランダムに選択（黒・赤・青）
     main_colors = ["black", "red", "blue"]
     main_color = random.choice(main_colors)
-    
-    # テキストサイズを調整（2行対応）
-    if main_text_line2:
-        # 2行の場合は各行のサイズを計算
-        bbox1 = draw.textbbox((0, 0), main_text_line1, font=main_font)
-        bbox2 = draw.textbbox((0, 0), main_text_line2, font=main_font)
-        text_width = max(bbox1[2] - bbox1[0], bbox2[2] - bbox2[0])
-        text_height = (bbox1[3] - bbox1[1]) + (bbox2[3] - bbox2[1]) + 10  # 行間10px
-    else:
-        # 1行の場合
-        bbox = draw.textbbox((0, 0), main_text_line1, font=main_font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-    
+
+    # テキストが収まるまでフォントサイズを自動縮小（最小28px）
+    MAX_TEXT_WIDTH = THUMBNAIL_WIDTH - 20  # 左右10pxずつ余白
+    MIN_FONT_SIZE = 28
+    current_font_size = main_font_size
+    current_font = main_font
+
+    while current_font_size >= MIN_FONT_SIZE:
+        if main_text_line2:
+            bbox1 = draw.textbbox((0, 0), main_text_line1, font=current_font)
+            bbox2 = draw.textbbox((0, 0), main_text_line2, font=current_font)
+            text_width = max(bbox1[2] - bbox1[0], bbox2[2] - bbox2[0])
+            text_height = (bbox1[3] - bbox1[1]) + (bbox2[3] - bbox2[1]) + 10
+        else:
+            bbox = draw.textbbox((0, 0), main_text_line1, font=current_font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+        if text_width <= MAX_TEXT_WIDTH:
+            break
+
+        # 収まらない場合はフォントサイズを2px縮小して再試行
+        current_font_size -= 2
+        if current_font_size < MIN_FONT_SIZE:
+            current_font_size = MIN_FONT_SIZE
+            break
+        try:
+            current_font = ImageFont.truetype(FONT_PATH_MAIN, current_font_size)
+        except Exception:
+            current_font = ImageFont.load_default()
+
+    if current_font_size != main_font_size:
+        print(f"[DEBUG] main_font shrunk: {main_font_size}px -> {current_font_size}px (text_width={text_width})")
+
+    main_font = current_font
+
     # 中央配置（上に寄せる）
     text_x = (THUMBNAIL_WIDTH - text_width) // 2
     text_y = TOP_AREA_HEIGHT + (BOTTOM_AREA_HEIGHT - text_height) // 3  # 1/3の位置に配置して上に寄せる
