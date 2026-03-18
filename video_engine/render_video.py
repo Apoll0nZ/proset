@@ -5709,39 +5709,43 @@ def fetch_amazon_product_url(keyword: str) -> str:
         host = "webservices.amazon.co.jp"
         region = "us-east-1"
         service = "ProductAdvertisingAPI"
-        endpoint = f"https://{host}/paapi5/searchitems"
+        path = "/paapi5/searchitems"
+        endpoint = f"https://{host}{path}"
+        target = "com.amazon.paapi5.v1.ProductAdvertisingAPIv1.SearchItems"
+        content_type = "application/json; charset=utf-8"
 
         payload = {
             "Keywords": keyword,
             "Marketplace": "www.amazon.co.jp",
             "PartnerTag": associate_tag,
             "PartnerType": "Associates",
-            "Resources": ["ItemInfo.Title", "Offers.Listings.Price"],
+            "Resources": ["ItemInfo.Title"],
             "SearchIndex": "All",
             "ItemCount": 1,
-            "LanguagesOfResult": ["ja_JP"]
         }
-        payload_json = json.dumps(payload, ensure_ascii=False)
+        # separators指定でスペースなし・キーソート済みのJSON
+        payload_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
         # AWS Signature Version 4
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         amz_date = now.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = now.strftime("%Y%m%d")
 
+        # 署名対象ヘッダー（アルファベット順・小文字）
+        signed_headers = "content-encoding;content-type;host;x-amz-date;x-amz-target"
         canonical_headers = (
             f"content-encoding:amz-1.0\n"
-            f"content-type:application/json; charset=utf-8\n"
+            f"content-type:{content_type}\n"
             f"host:{host}\n"
             f"x-amz-date:{amz_date}\n"
-            f"x-amz-target:com.amazon.paapi5.v1.ProductAdvertisingAPIv1.SearchItems\n"
+            f"x-amz-target:{target}\n"
         )
-        signed_headers = "content-encoding;content-type;host;x-amz-date;x-amz-target"
 
-        payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        payload_hash = hashlib.sha256(payload_bytes).hexdigest()
         canonical_request = "\n".join([
             "POST",
-            "/paapi5/searchitems",
-            "",
+            path,
+            "",                   # クエリストリングなし
             canonical_headers,
             signed_headers,
             payload_hash,
@@ -5755,18 +5759,18 @@ def fetch_amazon_product_url(keyword: str) -> str:
             hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
         ])
 
-        def _sign(key, msg):
+        def _sign(key: bytes, msg: str) -> bytes:
             return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
 
         signing_key = _sign(
             _sign(
                 _sign(
                     _sign(f"AWS4{secret_key}".encode("utf-8"), date_stamp),
-                    region
+                    region,
                 ),
-                service
+                service,
             ),
-            "aws4_request"
+            "aws4_request",
         )
         signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -5777,18 +5781,18 @@ def fetch_amazon_product_url(keyword: str) -> str:
 
         headers = {
             "content-encoding": "amz-1.0",
-            "content-type": "application/json; charset=utf-8",
+            "content-type": content_type,
             "host": host,
             "x-amz-date": amz_date,
-            "x-amz-target": "com.amazon.paapi5.v1.ProductAdvertisingAPIv1.SearchItems",
+            "x-amz-target": target,
             "Authorization": authorization,
         }
 
         import requests as _req
-        response = _req.post(endpoint, headers=headers, data=payload_json.encode("utf-8"), timeout=10)
+        response = _req.post(endpoint, headers=headers, data=payload_bytes, timeout=10)
 
         if response.status_code != 200:
-            print(f"[AMAZON] PA-API error: {response.status_code} {response.text[:200]}")
+            print(f"[AMAZON] PA-API error: {response.status_code} {response.text[:300]}")
             return fallback_url
 
         result = response.json()
