@@ -825,47 +825,72 @@ def create_thumbnail(
     else:
         main_text_line1 = main_text
         main_text_line2 = ""
-    
+
     # テキスト色をランダムに選択（黒・赤・青）
     main_colors = ["black", "red", "blue"]
     main_color = random.choice(main_colors)
-    
-    # テキストサイズを調整（2行対応）
+
+    # 幅・高さ両方が下部エリアに収まるまでフォントサイズを自動縮小（最小24px）
+    MAX_TEXT_WIDTH = THUMBNAIL_WIDTH - 20   # 左右10pxずつ余白
+    MAX_TEXT_HEIGHT = BOTTOM_AREA_HEIGHT - 10  # 上下5pxずつ余白
+    LINE_GAP = 8
+    MIN_FONT_SIZE = 24
+    current_font_size = main_font_size
+    current_font = main_font
+
+    while current_font_size >= MIN_FONT_SIZE:
+        b1 = draw.textbbox((0, 0), main_text_line1, font=current_font)
+        cw1, ch1 = b1[2] - b1[0], b1[3] - b1[1]
+        if main_text_line2:
+            b2 = draw.textbbox((0, 0), main_text_line2, font=current_font)
+            cw2, ch2 = b2[2] - b2[0], b2[3] - b2[1]
+            total_w = max(cw1, cw2)
+            total_h = ch1 + LINE_GAP + ch2
+        else:
+            total_w, total_h = cw1, ch1
+
+        if total_w <= MAX_TEXT_WIDTH and total_h <= MAX_TEXT_HEIGHT:
+            break
+
+        current_font_size -= 2
+        if current_font_size < MIN_FONT_SIZE:
+            current_font_size = MIN_FONT_SIZE
+            break
+        try:
+            current_font = ImageFont.truetype(FONT_PATH_MAIN, current_font_size)
+        except Exception:
+            current_font = ImageFont.load_default()
+
+    if current_font_size != main_font_size:
+        print(f"[DEBUG] main_font shrunk: {main_font_size}px -> {current_font_size}px")
+
+    main_font = current_font
+
+    # 各行のサイズを再計算
+    b1 = draw.textbbox((0, 0), main_text_line1, font=main_font)
+    w1, h1 = b1[2] - b1[0], b1[3] - b1[1]
     if main_text_line2:
-        # 2行の場合は各行のサイズを計算
-        bbox1 = draw.textbbox((0, 0), main_text_line1, font=main_font)
-        bbox2 = draw.textbbox((0, 0), main_text_line2, font=main_font)
-        text_width = max(bbox1[2] - bbox1[0], bbox2[2] - bbox2[0])
-        text_height = (bbox1[3] - bbox1[1]) + (bbox2[3] - bbox2[1]) + 10  # 行間10px
+        b2 = draw.textbbox((0, 0), main_text_line2, font=main_font)
+        w2, h2 = b2[2] - b2[0], b2[3] - b2[1]
+        total_height = h1 + LINE_GAP + h2
     else:
-        # 1行の場合
-        bbox = draw.textbbox((0, 0), main_text_line1, font=main_font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-    
-    # 中央配置（上に寄せる）
-    text_x = (THUMBNAIL_WIDTH - text_width) // 2
-    text_y = TOP_AREA_HEIGHT + (BOTTOM_AREA_HEIGHT - text_height) // 3  # 1/3の位置に配置して上に寄せる
-    
-    # 極太ゴシック風に描画（縁取り付き、2行対応）
+        w2, h2 = 0, 0
+        total_height = h1
+
+    # 2行ブロック全体を下部エリア内で垂直中央揃え
+    block_y = TOP_AREA_HEIGHT + (BOTTOM_AREA_HEIGHT - total_height) // 2
+
+    # 各行を個別に水平中央揃えで描画
+    draw_text_with_outline(
+        draw, main_text_line1,
+        ((THUMBNAIL_WIDTH - w1) // 2, block_y),
+        main_font, fill=main_color, outline_color="white", outline_width=4
+    )
     if main_text_line2:
-        # 2行で描画
-        line1_y = text_y
-        line2_y = text_y + (draw.textbbox((0, 0), main_text_line1, font=main_font)[3] - draw.textbbox((0, 0), main_text_line1, font=main_font)[1]) + 10
-        
         draw_text_with_outline(
-            draw, main_text_line1, (text_x, line1_y), main_font,
-            fill=main_color, outline_color="white", outline_width=4
-        )
-        draw_text_with_outline(
-            draw, main_text_line2, (text_x, line2_y), main_font,
-            fill=main_color, outline_color="white", outline_width=4
-        )
-    else:
-        # 1行で描画
-        draw_text_with_outline(
-            draw, main_text_line1, (text_x, text_y), main_font,
-            fill=main_color, outline_color="white", outline_width=4
+            draw, main_text_line2,
+            ((THUMBNAIL_WIDTH - w2) // 2, block_y + h1 + LINE_GAP),
+            main_font, fill=main_color, outline_color="white", outline_width=4
         )
     
     # 保存
