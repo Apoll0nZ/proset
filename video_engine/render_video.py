@@ -3102,11 +3102,9 @@ def pre_filter_image_metadata(image_info: Dict) -> Dict:
     if is_blocked_domain(url):
         return {'suitable': False, 'reason': 'Blocked domain', 'risk_score': 100}
     
-    # 2. 安全ドメインチェック（即通過はしない。リスクスコアを下げるだけにして後続チェックを継続）
-    # ※ 安全ドメインでもテキスト入りサムネイル等が混入するため、Gemini評価は必ず通す
+    # 2. 安全ドメインチェック
     if is_safe_domain(url):
-        risk_score -= 20  # リスクを下げるが即returnはしない
-        reasons.append('Safe domain (risk reduced)')
+        return {'suitable': True, 'reason': 'Safe domain', 'risk_score': 0}
     
     # 3. タイトルによるリスク判定
     high_risk_keywords = [
@@ -3177,6 +3175,26 @@ def is_risky_domain(image_url: str) -> bool:
     """危険ドメイン（著作権リスクが高いため不採用）"""
     # 中程度リスクのドメインをブロックドメインに移動したため、この関数は使用しない
     return False
+def _get_hostname(image_url: str) -> str:
+    """URLからホスト名を取得する"""
+    try:
+        from urllib.parse import urlparse
+        if not image_url.startswith(('http://', 'https://')):
+            image_url = 'https://' + image_url
+        return urlparse(image_url).hostname or ''
+    except Exception:
+        return ''
+
+
+def _hostname_matches(hostname: str, domain: str) -> bool:
+    """
+    ホスト名がドメインに一致するか確認する。
+    完全一致またはサブドメイン一致のみ許可。
+    部分一致（applefans.today が apple.com にマッチ）を防ぐ。
+    """
+    return hostname == domain or hostname.endswith('.' + domain)
+
+
 
 
 def is_blocked_domain(image_url: str) -> bool:
@@ -3198,9 +3216,11 @@ def is_blocked_domain(image_url: str) -> bool:
         
         # 主要テック企業公式サイト
         'apple.com',
+        'cdn-apple.com',        # Apple CDN (store.storeimages.cdn-apple.com)
         'microsoft.com',
         'google.com',
         'amazon.com',
+        'media-amazon.com',     # Amazon CDN (m.media-amazon.com)
         'meta.com',
         'tesla.com',
         'nvidia.com',
@@ -3272,9 +3292,9 @@ def is_blocked_domain(image_url: str) -> bool:
         'go.jp'
     ]
     
-    url_lower = image_url.lower()
+    hostname = _get_hostname(image_url)
     for domain in safe_domains:
-        if domain in url_lower:
+        if _hostname_matches(hostname, domain):
             print(f"[SAFE] Safe domain detected: {domain} in {image_url}")
             return True
     return False
@@ -3389,8 +3409,8 @@ def detect_watermark_and_issues(image_path: str) -> dict:
         problem_count = 0
         if issues['has_watermark']:
             problem_count += 1
-        if issues['text_ratio'] > 0.25:  # 文字占有率25%超は単独で即拒否
-            problem_count += 2  # 単独で閾値を超えるよう2点加算
+        if issues['text_ratio'] > 0.4:  # 文字占有率閾値を30%→40%に緩和
+            problem_count += 1
             issues['rejected'] = True
             issues['reason'] += f'文字占有率{issues["text_ratio"]:.1%};'
         if issues['has_people']:
@@ -3398,8 +3418,8 @@ def detect_watermark_and_issues(image_path: str) -> dict:
         if issues['is_screenshot']:
             problem_count += 1
             
-        # 2つ以上の問題が重なった場合も拒否（テキスト単独でも2点で即拒否）
-        if problem_count >= 2:
+        # 3つ以上の問題が重なった場合のみ拒否
+        if problem_count >= 3:
             issues['rejected'] = True
             issues['reason'] = f'複数問題検出({problem_count}個);' + issues['reason']
         
@@ -3497,9 +3517,9 @@ def is_blocked_domain(image_url: str) -> bool:
         'amazon.co.jp'
     ]
     
-    url_lower = image_url.lower()
+    hostname = _get_hostname(image_url)
     for domain in blocked_domains:
-        if domain in url_lower:
+        if _hostname_matches(hostname, domain):
             print(f"[BLOCK] Blocked high-risk domain: {domain} in {image_url}")
             return True
     return False
@@ -3524,9 +3544,11 @@ def is_safe_domain(image_url: str) -> bool:
         
         # 主要テック企業公式サイト
         'apple.com',
+        'cdn-apple.com',        # Apple CDN (store.storeimages.cdn-apple.com)
         'microsoft.com',
         'google.com',
         'amazon.com',
+        'media-amazon.com',     # Amazon CDN (m.media-amazon.com)
         'meta.com',
         'tesla.com',
         'nvidia.com',
@@ -3598,9 +3620,9 @@ def is_safe_domain(image_url: str) -> bool:
         'go.jp'
     ]
     
-    url_lower = image_url.lower()
+    hostname = _get_hostname(image_url)
     for domain in safe_domains:
-        if domain in url_lower:
+        if _hostname_matches(hostname, domain):
             print(f"[SAFE] Safe domain detected: {domain} in {image_url}")
             return True
     return False
