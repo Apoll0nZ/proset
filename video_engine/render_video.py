@@ -1565,9 +1565,13 @@ def normalize_text_for_voicevox(
     """
     VOICEVOX音声合成前にテキストの読み仮名を正規化する。
     台本JSONのpronunciation_dictをそのまま適用。
+    長いキーから順に置換することで部分一致による誤置換を防ぐ。
+    （例: "Apple" が "Apple Maps" より先に置換されるのを防ぐ）
     字幕には影響しない（音声合成用テキストにのみ使用）。
     """
-    for surface, pronunciation in (pronunciation_dict or {}).items():
+    # キーを長さの降順でソートして置換（長いキーを優先）
+    sorted_items = sorted((pronunciation_dict or {}).items(), key=lambda x: len(x[0]), reverse=True)
+    for surface, pronunciation in sorted_items:
         text = text.replace(surface, pronunciation)
     return text
 
