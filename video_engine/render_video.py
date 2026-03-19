@@ -2584,6 +2584,9 @@ def extract_image_keywords_list(script_data: Dict[str, Any]) -> List[str]:
         title = script_data.get("title", "")
         content = script_data.get("content", {})
         topic_summary = content.get("topic_summary", "")
+        # topic_summary に ｟｠ が混入していた場合は除去
+        import re as _re_ts
+        topic_summary = _re_ts.sub(r'｟[^｠]*｠', '', topic_summary)
         script_parts = content.get("script_parts", [])
         
         # 台本のテキストを結合
@@ -2648,6 +2651,9 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
         title = script_data.get("title", "")
         content = script_data.get("content", {})
         topic_summary = content.get("topic_summary", "")
+        # topic_summary に ｟｠ が混入していた場合は除去
+        import re as _re_ts
+        topic_summary = _re_ts.sub(r'｟[^｠]*｠', '', topic_summary)
         script_parts = content.get("script_parts", [])
         
         # 台本のテキストを結合
@@ -5078,6 +5084,9 @@ async def build_video_with_subtitles(
         title = script_data.get("title", "")
         content = script_data.get("content", {})
         topic_summary = content.get("topic_summary", "")
+        # topic_summary に ｟｠ が混入していた場合は除去
+        import re as _re_ts
+        topic_summary = _re_ts.sub(r'｟[^｠]*｠', '', topic_summary)
         total_images_collected = 0
         downloaded_image_paths: List[str] = []
 
@@ -6069,6 +6078,9 @@ async def main() -> None:
         description = normalize_description(data.get("description", ""))
         content = data.get("content", {})
         topic_summary = content.get("topic_summary", "")
+        # topic_summary に ｟｠ が混入していた場合は除去
+        import re as _re_ts
+        topic_summary = _re_ts.sub(r'｟[^｠]*｠', '', topic_summary)
         script_parts = content.get("script_parts", [])
         script_parts = normalize_reaction_script_parts(script_parts)
         thumbnail_data = data.get("thumbnail", {})
