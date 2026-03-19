@@ -4656,6 +4656,8 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     for i, part in enumerate(script_parts):
         part_name = part.get("part", "")
         text = sanitize_script_text(part.get("text", ""))
+        # tts_text があれば音声合成用テキストとして使用（字幕用の text は別途参照）
+        tts_text = sanitize_script_text(part.get("tts_text", "")) or text
         
         # ★空テキストの場合は0.0を記録してスキップ（インデックス維持）
         if not text:
@@ -4686,7 +4688,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 
                 audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
 
-                # テキストを字幕チャンク単位で分割
+                # テキストを字幕チャンク単位で分割（字幕用 text = 英字表記）
                 print(f"[REORDER] Part {i} ({part_name}): Splitting text into subtitle chunks...")
                 subtitle_text_parts = split_subtitle_text(text, max_chars=26, part_type=part.get("part"))
 
@@ -4695,10 +4697,16 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
 
                 print(f"[REORDER] Part {i}: Split into {len(subtitle_text_parts)} chunks")
 
-                # 分割済みテキストを音声合成
+                # tts_text を字幕と同じチャンク数に分割して音声合成用テキストを作成
+                tts_text_parts = split_subtitle_text(tts_text, max_chars=26, part_type=part.get("part"))
+                # チャンク数が一致しない場合は字幕テキストにフォールバック
+                if len(tts_text_parts) != len(subtitle_text_parts):
+                    tts_text_parts = subtitle_text_parts
+
+                # 分割済みテキストを音声合成（tts_text_parts = カタカナ表記）
                 print(f"[REORDER] Part {i}: Synthesizing {len(subtitle_text_parts)} chunks...")
                 audio_file, query_data_list, text_parts_from_synthesis, duration_list = synthesize_precut_speech_voicevox(
-                    subtitle_text_parts, speaker_id, audio_path, pronunciation_dict=(script_data or {}).get("pronunciation_dict", {})
+                    tts_text_parts, speaker_id, audio_path, pronunciation_dict=(script_data or {}).get("pronunciation_dict", {})
                 )
 
                 if os.path.exists(audio_path):
