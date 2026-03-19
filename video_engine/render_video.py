@@ -1558,156 +1558,16 @@ DDB_TABLE_NAME = os.environ.get("MY_DDB_TABLE_NAME", "VideoHistory")
 YOUTUBE_AUTH_JSON = os.environ.get("YOUTUBE_AUTH_JSON", "")
 VOICEVOX_API_URL = os.environ.get("VOICEVOX_API_URL", "http://localhost:50021")
 
-# ── 固定読み仮名辞書（定番テック用語）──
-_PRONUNCIATION_MAP_BASE = {
-    # ストレージ
-    "FireCuda":     "ファイアクーダ",
-    "BarraCuda":    "バラクーダ",
-    "SkyHawk":      "スカイホーク",
-    "IronWolf":     "アイアンウルフ",
-    "Seagate":      "シーゲート",
-    "NVMe":         "エヌブイエムイー",
-    # GPU / CPU
-    "GeForce":      "ジーフォース",
-    "Radeon":       "レイディオン",
-    "Ryzen":        "ライゼン",
-    "Blackwell":    "ブラックウェル",
-    "Snapdragon":   "スナップドラゴン",
-    "Dimensity":    "ダイメンシティ",
-    "Exynos":       "エクシノス",
-    "Tensor":       "テンサー",
-    "Geekbench":    "ギークベンチ",
-    "GDDR7":        "ジーディーディーアールセブン",
-    "GDDR6X":       "ジーディーディーアールシックスエックス",
-    "RTX":          "アールティーエックス",
-    "GTX":          "ジーティーエックス",
-    "Extreme":      "エクストリーム",
-    # PC・周辺機器
-    "MacBook":      "マックブック",
-    "Neo":          "ネオ",
-    "neo":          "ネオ",
-    "Zenbook":      "ゼンブック",
-    "ThinkBook":    "シンクブック",
-    "Think":        "シンク",
-    "Book":         "ブック",
-    "Swift":        "スウィフト",
-    "Thunderbolt":  "サンダーボルト",
-    "DisplayPort":  "ディスプレイポート",
-    "Keychron":     "キークロン",
-    "Acer":         "エイサー",
-    "ASUS":         "エイスース",
-    "Lenovo":       "レノボ",
-    "Razer":        "レイザー",
-    "Corsair":      "コルセア",
-    "Motorola":     "モトローラ",
-    "Iiyama":       "イイヤマ",
-    "EIZO":         "イイゾー",
-    # スマートフォン
-    "Pixel":        "ピクセル",
-    "Fold":         "フォールド",
-    "Find":         "ファインド",
-    "Phone":        "フォン",
-    "Xiaomi":       "シャオミ",
-    "Redmi":        "レッドミー",
-    "OPPO":         "オッポ",
-    "Vivo":         "ビボ",
-    "OnePlus":      "ワンプラス",
-    "Nothing":      "ナッシング",
-    # OS・ソフトウェア
-    "Copilot":      "コパイロット",
-    "Gemini":       "ジェミナイ",
-    "ChatGPT":      "チャットジーピーティー",
-    "Android":      "アンドロイド",
-    "Windows":      "ウィンドウズ",
-    "macOS":        "マックオーエス",
-    "iOS":          "アイオーエス",
-    "iPadOS":       "アイパッドオーエス",
-    "watchOS":      "ウォッチオーエス",
-    "visionOS":     "ビジョンオーエス",
-    # Apple製品
-    "iPhone":       "アイフォン",
-    "iPad":         "アイパッド",
-    "iMac":         "アイマック",
-    "AirPods":      "エアポッズ",
-    "AirTag":       "エアタグ",
-    "Apple Watch":  "アップルウォッチ",
-    "Vision Pro":   "ビジョンプロ",
-    "Apple TV":     "アップルティービー",
-    "HomePod":      "ホームポッド",
-    # ディスプレイ・接続
-    "OLED":         "オーレッド",
-    "AMOLED":       "アモレッド",
-    "mini-LED":     "ミニエルイーディー",
-    "microLED":     "マイクロエルイーディー",
-    "GorillaArmor": "ゴリラアーマー",
-    "MagSafe":      "マグセーフ",
-    "AirDrop":      "エアドロップ",
-    "AirPlay":      "エアプレイ",
-    "FaceID":       "フェイスアイディー",
-    "TouchID":      "タッチアイディー",
-    "USB-C":        "ユーエスビーシー",
-    "USB4":         "ユーエスビーフォー",
-    "Wi-Fi":        "ワイファイ",
-    "Bluetooth":    "ブルートゥース",
-    # ネットワーク・通信
-    "5G":           "ファイブジー",
-    "4G":           "フォージー",
-    "LTE":          "エルティーイー",
-    # チップ・半導体
-    "Apple Silicon": "アップルシリコン",
-    "Qualcomm":     "クアルコム",
-    "MediaTek":     "メディアテック",
-    "NVIDIA":       "エヌビディア",
-    "Intel":        "インテル",
-    "AMD":          "エーエムディー",
-    # ゲーム・その他
-    "PlayStation":  "プレイステーション",
-    "Xbox":         "エックスボックス",
-    "Steam":        "スチーム",
-    "TDP":          "ティーディーピー",
-    "RAM":          "ラム",
-    "SSD":          "エスエスディー",
-    "HDD":          "エイチディーディー",
-}
-
-
-def strip_inline_reading(text: str) -> str:
-    """
-    字幕用：｟カタカナ｠ を除去してアルファベット表記のみ残す。
-    例: "RTX｟アールティーエックス｠ 5090" → "RTX 5090"
-    カタカナ語に誤って付与された場合（例: ストリーミング｟ストリーミング｠）も除去する。
-    """
-    import re
-    return re.sub(r'｟[^｠]*｠', '', text)
-
-
-def apply_inline_reading(text: str) -> str:
-    """
-    音声用: 英語表記｟カタカナ｠ をカタカナのみに置換する。
-    例: RTX｟アールティーエックス｠ 5090 -> アールティーエックス 5090
-    カタカナ語への誤付与（例: ストリーミング｟ストリーミング｠）は ｟｠ のみ除去する。
-    """
-    import re
-    # アルファベット始まりの場合: 英語部分をカタカナで置換
-    text = re.sub(r'[A-Za-z][A-Za-z0-9_.\-]*｟([^｠]*)｠', r'\1', text)
-    # 残った ｟｠ （カタカナ語への誤付与）は除去
-    text = re.sub(r'｟[^｠]*｠', '', text)
-    return text
-
-
 def normalize_text_for_voicevox(
     text: str,
     pronunciation_dict: dict = None,
 ) -> str:
     """
     VOICEVOX音声合成前にテキストの読み仮名を正規化する。
-    固定辞書 + 台本JSONのpronunciation_dictをマージして適用。
+    台本JSONのpronunciation_dictをそのまま適用。
     字幕には影響しない（音声合成用テキストにのみ使用）。
     """
-    # 固定辞書に台本固有の単語をマージ（台本側が優先）
-    merged = {**_PRONUNCIATION_MAP_BASE, **(pronunciation_dict or {})}
-
-    for surface, pronunciation in merged.items():
+    for surface, pronunciation in (pronunciation_dict or {}).items():
         text = text.replace(surface, pronunciation)
     return text
 
@@ -2584,9 +2444,6 @@ def extract_image_keywords_list(script_data: Dict[str, Any]) -> List[str]:
         title = script_data.get("title", "")
         content = script_data.get("content", {})
         topic_summary = content.get("topic_summary", "")
-        # topic_summary に ｟｠ が混入していた場合は除去
-        import re as _re_ts
-        topic_summary = _re_ts.sub(r'｟[^｠]*｠', '', topic_summary)
         script_parts = content.get("script_parts", [])
         
         # 台本のテキストを結合
@@ -2651,9 +2508,6 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
         title = script_data.get("title", "")
         content = script_data.get("content", {})
         topic_summary = content.get("topic_summary", "")
-        # topic_summary に ｟｠ が混入していた場合は除去
-        import re as _re_ts
-        topic_summary = _re_ts.sub(r'｟[^｠]*｠', '', topic_summary)
         script_parts = content.get("script_parts", [])
         
         # 台本のテキストを結合
@@ -4299,9 +4153,6 @@ def sanitize_script_text(text: str) -> str:
     # 行頭の "数字|数字|数字" 形式のIDリストを除去（例: "2|8|10|12|13|14,"）
     text = re.sub(r'^\s*[\d|,\s]+\s*', '', text)
 
-    # バッククォートを除去（Geminiがコード記法で囲むことがあるため）
-    text = text.replace('`', '')
-
     # 連続スペース・空行を整理
     text = re.sub(r'[ 　]{2,}', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
@@ -4690,11 +4541,6 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     for i, part in enumerate(script_parts):
         part_name = part.get("part", "")
         text = sanitize_script_text(part.get("text", ""))
-        # 字幕用: ｟カタカナ｠ を除去してアルファベット表記のみ残す
-        subtitle_text = strip_inline_reading(text)
-        # 音声用: アルファベット部分を ｟カタカナ｠ で置換後、pronunciation_dict も適用
-        tts_text = apply_inline_reading(text)
-        tts_text = normalize_text_for_voicevox(tts_text, (script_data or {}).get("pronunciation_dict"))
         
         # ★空テキストの場合は0.0を記録してスキップ（インデックス維持）
         if not text:
@@ -4725,25 +4571,19 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 
                 audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
 
-                # テキストを字幕チャンク単位で分割（字幕用 subtitle_text = 英字表記）
+                # テキストを字幕チャンク単位で分割
                 print(f"[REORDER] Part {i} ({part_name}): Splitting text into subtitle chunks...")
-                subtitle_text_parts = split_subtitle_text(subtitle_text, max_chars=26, part_type=part.get("part"))
+                subtitle_text_parts = split_subtitle_text(text, max_chars=26, part_type=part.get("part"))
 
                 if not subtitle_text_parts:
                     raise RuntimeError(f"Failed to split text for part {i}")
 
                 print(f"[REORDER] Part {i}: Split into {len(subtitle_text_parts)} chunks")
 
-                # tts_text を字幕と同じチャンク数に分割して音声合成用テキストを作成
-                tts_text_parts = split_subtitle_text(tts_text, max_chars=26, part_type=part.get("part"))
-                # チャンク数が一致しない場合は字幕テキストにフォールバック
-                if len(tts_text_parts) != len(subtitle_text_parts):
-                    tts_text_parts = subtitle_text_parts
-
-                # 分割済みテキストを音声合成（tts_text_parts = カタカナ表記）
+                # 分割済みテキストを音声合成
                 print(f"[REORDER] Part {i}: Synthesizing {len(subtitle_text_parts)} chunks...")
                 audio_file, query_data_list, text_parts_from_synthesis, duration_list = synthesize_precut_speech_voicevox(
-                    tts_text_parts, speaker_id, audio_path, pronunciation_dict=(script_data or {}).get("pronunciation_dict", {})
+                    subtitle_text_parts, speaker_id, audio_path, pronunciation_dict=(script_data or {}).get("pronunciation_dict", {})
                 )
 
                 if os.path.exists(audio_path):
@@ -5084,9 +4924,6 @@ async def build_video_with_subtitles(
         title = script_data.get("title", "")
         content = script_data.get("content", {})
         topic_summary = content.get("topic_summary", "")
-        # topic_summary に ｟｠ が混入していた場合は除去
-        import re as _re_ts
-        topic_summary = _re_ts.sub(r'｟[^｠]*｠', '', topic_summary)
         total_images_collected = 0
         downloaded_image_paths: List[str] = []
 
@@ -5772,137 +5609,6 @@ def check_video_quality(video_path="video.mp4", min_size_mb=1, min_brightness=10
     return True
 
 
-
-def fetch_amazon_product_url(keyword: str) -> str:
-    """
-    Amazon PA-APIでキーワード検索し、上位商品のアソシエイトタグ付きURLを返す。
-    失敗時は検索結果URLにフォールバック。
-    """
-    import urllib.parse
-    import hmac
-    import hashlib
-    import datetime
-    import json
-
-    access_key = os.environ.get("AMAZON_ACCESS_KEY", "")
-    secret_key = os.environ.get("AMAZON_SECRET_KEY", "")
-    associate_tag = os.environ.get("AMAZON_ASSOCIATE_TAG", "")
-
-    fallback_url = f"https://www.amazon.co.jp/s?k={urllib.parse.quote(keyword)}"
-
-    if not access_key or not secret_key or not associate_tag:
-        print("[AMAZON] PA-API credentials not found, using search URL fallback")
-        return fallback_url
-
-    try:
-        host = "webservices.amazon.co.jp"
-        region = "us-east-1"
-        service = "ProductAdvertisingAPI"
-        path = "/paapi5/searchitems"
-        endpoint = f"https://{host}{path}"
-        target = "com.amazon.paapi5.v1.ProductAdvertisingAPIv1.SearchItems"
-        content_type = "application/json; charset=utf-8"
-
-        payload = {
-            "Keywords": keyword,
-            "Marketplace": "www.amazon.co.jp",
-            "PartnerTag": associate_tag,
-            "PartnerType": "Associates",
-            "Resources": ["ItemInfo.Title"],
-            "SearchIndex": "All",
-            "ItemCount": 1,
-        }
-        # separators指定でスペースなし・キーソート済みのJSON
-        payload_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-
-        # AWS Signature Version 4
-        now = datetime.datetime.now(datetime.timezone.utc)
-        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-        date_stamp = now.strftime("%Y%m%d")
-
-        # 署名対象ヘッダー（アルファベット順・小文字）
-        signed_headers = "content-encoding;content-type;host;x-amz-date;x-amz-target"
-        canonical_headers = (
-            f"content-encoding:amz-1.0\n"
-            f"content-type:{content_type}\n"
-            f"host:{host}\n"
-            f"x-amz-date:{amz_date}\n"
-            f"x-amz-target:{target}\n"
-        )
-
-        payload_hash = hashlib.sha256(payload_bytes).hexdigest()
-        canonical_request = "\n".join([
-            "POST",
-            path,
-            "",                   # クエリストリングなし
-            canonical_headers,
-            signed_headers,
-            payload_hash,
-        ])
-
-        credential_scope = f"{date_stamp}/{region}/{service}/aws4_request"
-        string_to_sign = "\n".join([
-            "AWS4-HMAC-SHA256",
-            amz_date,
-            credential_scope,
-            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
-        ])
-
-        def _sign(key: bytes, msg: str) -> bytes:
-            return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
-
-        signing_key = _sign(
-            _sign(
-                _sign(
-                    _sign(f"AWS4{secret_key}".encode("utf-8"), date_stamp),
-                    region,
-                ),
-                service,
-            ),
-            "aws4_request",
-        )
-        signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
-
-        authorization = (
-            f"AWS4-HMAC-SHA256 Credential={access_key}/{credential_scope}, "
-            f"SignedHeaders={signed_headers}, Signature={signature}"
-        )
-
-        headers = {
-            "content-encoding": "amz-1.0",
-            "content-type": content_type,
-            "host": host,
-            "x-amz-date": amz_date,
-            "x-amz-target": target,
-            "Authorization": authorization,
-        }
-
-        import requests as _req
-        response = _req.post(endpoint, headers=headers, data=payload_bytes, timeout=10)
-
-        if response.status_code != 200:
-            print(f"[AMAZON] PA-API error: {response.status_code} {response.text[:300]}")
-            return fallback_url
-
-        result = response.json()
-        items = result.get("SearchResult", {}).get("Items", [])
-        if not items:
-            print(f"[AMAZON] PA-API: no items found for '{keyword}'")
-            return fallback_url
-
-        asin = items[0].get("ASIN", "")
-        if not asin:
-            print(f"[AMAZON] PA-API: ASIN not found")
-            return fallback_url
-
-        product_url = f"https://www.amazon.co.jp/dp/{asin}?tag={associate_tag}"
-        print(f"[AMAZON] PA-API success: ASIN={asin}, URL={product_url}")
-        return product_url
-
-    except Exception as e:
-        print(f"[AMAZON] PA-API exception: {e}")
-        return fallback_url
-
 def normalize_description(description: str) -> str:
     """
     概要欄の整形:
@@ -5914,10 +5620,6 @@ def normalize_description(description: str) -> str:
 
     # エスケープされた改行/誤表記を修正
     description = description.replace("\\n", "\n").replace("/n", "\n")
-
-    # ｟｠ が description に混入していた場合は除去（script_parts 専用記号）
-    import re as _re
-    description = _re.sub(r'\uff5f[^\uff60]*\uff60', '', description)
 
     # MarkdownリンクをプレーンURLに変換
     def _md_link_to_text(match):
@@ -6072,15 +5774,9 @@ async def main() -> None:
 
         # JSONデータのバリデーションとデフォルト値設定
         title = data.get("title", "テックニュース解説")
-        # title に ｟｠ が混入していた場合は除去（script_parts 専用記号）
-        import re as _re_title
-        title = _re_title.sub(r'｟[^｠]*｠', '', title)
         description = normalize_description(data.get("description", ""))
         content = data.get("content", {})
         topic_summary = content.get("topic_summary", "")
-        # topic_summary に ｟｠ が混入していた場合は除去
-        import re as _re_ts
-        topic_summary = _re_ts.sub(r'｟[^｠]*｠', '', topic_summary)
         script_parts = content.get("script_parts", [])
         script_parts = normalize_reaction_script_parts(script_parts)
         thumbnail_data = data.get("thumbnail", {})
@@ -6089,23 +5785,6 @@ async def main() -> None:
         if not url:
             print("ERROR: meta.url が存在しません。アップロード前に処理を中止します。")
             return None  # 処理を中止してNoneを返す
-
-        # amazon_keyword を概要欄の「おすすめ商品」セクション先頭（固定リストより前）に動的挿入
-        amazon_keyword = data.get("amazon_keyword", "").strip()
-        if amazon_keyword:
-            amazon_product_url = fetch_amazon_product_url(amazon_keyword)
-            amazon_line = f"{amazon_product_url} ・{amazon_keyword}"
-            insert_marker = "おすすめ商品はこちらからご購入いただけます："
-            if insert_marker in description:
-                description = description.replace(
-                    insert_marker,
-                    insert_marker + "\n" + amazon_line
-                )
-                print(f"[DESCRIPTION] Amazon商品リンクを挿入: {amazon_line}")
-            else:
-                print(f"[DESCRIPTION] 挿入マーカーが見つからないためスキップ: '{insert_marker}'")
-        else:
-            print("[DESCRIPTION] amazon_keyword が空のため概要欄への挿入をスキップ")
 
         
         # 0. タイトル読み上げパートを先頭に追加（ずんだもん: ID 3）
