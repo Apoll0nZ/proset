@@ -5609,6 +5609,118 @@ def check_video_quality(video_path="video.mp4", min_size_mb=1, min_brightness=10
     return True
 
 
+
+def fetch_amazon_product_url(keyword: str) -> str:
+    """
+    Amazon PA-APIでキーワード検索し、上位商品のアソシエイトタグ付きURLを返す。
+    失敗時は検索結果URLにフォールバック。
+    """
+    import urllib.parse
+    import hmac
+    import hashlib
+    import datetime
+    import json
+
+    access_key = os.environ.get("AMAZON_ACCESS_KEY", "")
+    secret_key = os.environ.get("AMAZON_SECRET_KEY", "")
+    associate_tag = os.environ.get("AMAZON_ASSOCIATE_TAG", "")
+
+    fallback_url = f"https://www.amazon.co.jp/s?k={urllib.parse.quote(keyword)}"
+
+    if not access_key or not secret_key or not associate_tag:
+        print("[AMAZON] PA-API credentials not found, using search URL fallback")
+        return fallback_url
+
+    try:
+        host = "webservices.amazon.co.jp"
+        region = "us-east-1"
+        service = "ProductAdvertisingAPI"
+        path = "/paapi5/searchitems"
+        endpoint = f"https://{host}{path}"
+        target = "com.amazon.paapi5.v1.ProductAdvertisingAPIv1.SearchItems"
+        content_type = "application/json; charset=utf-8"
+
+        payload = {
+            "Keywords": keyword,
+            "Marketplace": "www.amazon.co.jp",
+            "PartnerTag": associate_tag,
+            "PartnerType": "Associates",
+            "Resources": ["ItemInfo.Title"],
+            "SearchIndex": "All",
+            "ItemCount": 1,
+        }
+        payload_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+        date_stamp = now.strftime("%Y%m%d")
+
+        signed_headers = "content-encoding;content-type;host;x-amz-date;x-amz-target"
+        canonical_headers = (
+            f"content-encoding:amz-1.0\n"
+            f"content-type:{content_type}\n"
+            f"host:{host}\n"
+            f"x-amz-date:{amz_date}\n"
+            f"x-amz-target:{target}\n"
+        )
+
+        payload_hash = hashlib.sha256(payload_bytes).hexdigest()
+        canonical_request = "\n".join([
+            "POST", path, "", canonical_headers, signed_headers, payload_hash,
+        ])
+
+        credential_scope = f"{date_stamp}/{region}/{service}/aws4_request"
+        string_to_sign = "\n".join([
+            "AWS4-HMAC-SHA256", amz_date, credential_scope,
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        ])
+
+        def _sign(key: bytes, msg: str) -> bytes:
+            return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+        signing_key = _sign(_sign(_sign(_sign(
+            f"AWS4{secret_key}".encode("utf-8"), date_stamp), region), service), "aws4_request")
+        signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        authorization = (
+            f"AWS4-HMAC-SHA256 Credential={access_key}/{credential_scope}, "
+            f"SignedHeaders={signed_headers}, Signature={signature}"
+        )
+        headers = {
+            "content-encoding": "amz-1.0",
+            "content-type": content_type,
+            "host": host,
+            "x-amz-date": amz_date,
+            "x-amz-target": target,
+            "Authorization": authorization,
+        }
+
+        import requests as _req
+        response = _req.post(endpoint, headers=headers, data=payload_bytes, timeout=10)
+
+        if response.status_code != 200:
+            print(f"[AMAZON] PA-API error: {response.status_code} {response.text[:300]}")
+            return fallback_url
+
+        result = response.json()
+        items = result.get("SearchResult", {}).get("Items", [])
+        if not items:
+            print(f"[AMAZON] PA-API: no items found for '{keyword}'")
+            return fallback_url
+
+        asin = items[0].get("ASIN", "")
+        if not asin:
+            return fallback_url
+
+        product_url = f"https://www.amazon.co.jp/dp/{asin}?tag={associate_tag}"
+        print(f"[AMAZON] PA-API success: ASIN={asin}, URL={product_url}")
+        return product_url
+
+    except Exception as e:
+        print(f"[AMAZON] PA-API exception: {e}")
+        return fallback_url
+
+
 def normalize_description(description: str) -> str:
     """
     概要欄の整形:
@@ -5790,6 +5902,33 @@ async def main() -> None:
                 _part["text"] = _bracket_pattern.sub(r'\1', _part["text"])
         topic_summary = _inline_pattern.sub("", topic_summary)
         topic_summary = _bracket_pattern.sub(r'\1', topic_summary)
+
+        # amazon_keyword を概要欄の「おすすめ商品」セクション直下に挿入
+        amazon_keyword = data.get("amazon_keyword", "").strip()
+        if amazon_keyword:
+            amazon_product_url = fetch_amazon_product_url(amazon_keyword)
+            amazon_line = f"{amazon_product_url} ・{amazon_keyword}"
+            insert_marker = "おすすめ商品はこちらからご購入いただけます："
+            if insert_marker in description:
+                description = description.replace(
+                    insert_marker,
+                    insert_marker + "\n" + amazon_line
+                )
+                print(f"[DESCRIPTION] Amazon商品リンクを挿入: {amazon_line}")
+            else:
+                print(f"[DESCRIPTION] 挿入マーカーが見つからないためスキップ")
+        else:
+            print("[DESCRIPTION] amazon_keyword が空のため挿入スキップ")
+
+        # tags を概要欄末尾に追加（(tagsフィールド〜) プレースホルダーがあれば置換、なければ末尾に追加）
+        tags_text = data.get("tags", "").strip()
+        if tags_text:
+            placeholder = "（tagsフィールドで生成した#タグを半角スペース区切りでそのまま末尾に追加せよ）"
+            if placeholder in description:
+                description = description.replace(placeholder, tags_text)
+            else:
+                description = description.rstrip() + "\n\n" + tags_text
+            print(f"[DESCRIPTION] tagsを概要欄に追加: {tags_text[:50]}...")
 
         thumbnail_data = data.get("thumbnail", {})
         meta = data.get("meta", {})
