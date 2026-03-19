@@ -5897,6 +5897,10 @@ def normalize_description(description: str) -> str:
     # エスケープされた改行/誤表記を修正
     description = description.replace("\\n", "\n").replace("/n", "\n")
 
+    # ｟｠ が description に混入していた場合は除去（script_parts 専用記号）
+    import re as _re
+    description = _re.sub(r'\uff5f[^\uff60]*\uff60', '', description)
+
     # MarkdownリンクをプレーンURLに変換
     def _md_link_to_text(match):
         text = match.group(1).strip()
