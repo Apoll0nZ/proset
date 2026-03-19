@@ -4293,6 +4293,9 @@ def sanitize_script_text(text: str) -> str:
     # 行頭の "数字|数字|数字" 形式のIDリストを除去（例: "2|8|10|12|13|14,"）
     text = re.sub(r'^\s*[\d|,\s]+\s*', '', text)
 
+    # バッククォートを除去（Geminiがコード記法で囲むことがあるため）
+    text = text.replace('`', '')
+
     # 連続スペース・空行を整理
     text = re.sub(r'[ 　]{2,}', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
