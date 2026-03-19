@@ -5780,13 +5780,16 @@ async def main() -> None:
         script_parts = content.get("script_parts", [])
         script_parts = normalize_reaction_script_parts(script_parts)
 
-        # ｟｠インライン記法が混入している場合に除去（過去の台本との互換性）
+        # ｟｠インライン記法・【】キーワード装飾が混入している場合に除去（過去の台本との互換性）
         import re as _re
         _inline_pattern = _re.compile(r'｟[^｠]*｠')
+        _bracket_pattern = _re.compile(r'【([^】]*)】')
         for _part in script_parts:
             if isinstance(_part.get("text"), str):
                 _part["text"] = _inline_pattern.sub("", _part["text"])
+                _part["text"] = _bracket_pattern.sub(r'\1', _part["text"])
         topic_summary = _inline_pattern.sub("", topic_summary)
+        topic_summary = _bracket_pattern.sub(r'\1', topic_summary)
 
         thumbnail_data = data.get("thumbnail", {})
         meta = data.get("meta", {})
