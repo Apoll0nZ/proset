@@ -6063,6 +6063,9 @@ async def main() -> None:
 
         # JSONデータのバリデーションとデフォルト値設定
         title = data.get("title", "テックニュース解説")
+        # title に ｟｠ が混入していた場合は除去（script_parts 専用記号）
+        import re as _re_title
+        title = _re_title.sub(r'｟[^｠]*｠', '', title)
         description = normalize_description(data.get("description", ""))
         content = data.get("content", {})
         topic_summary = content.get("topic_summary", "")
