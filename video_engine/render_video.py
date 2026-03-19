@@ -1670,6 +1670,25 @@ _PRONUNCIATION_MAP_BASE = {
     "HDD":          "エイチディーディー",
 }
 
+
+def strip_inline_reading(text: str) -> str:
+    """
+    字幕用：｟カタカナ｠ を除去してアルファベット表記のみ残す。
+    例: "RTX｟アールティーエックス｠ 5090" → "RTX 5090"
+    """
+    import re
+    return re.sub(r'｟[^｠]*｠', '', text)
+
+
+def apply_inline_reading(text: str) -> str:
+    """
+    音声用: 英語表記｟カタカナ｠ をカタカナのみに置換する。
+    例: RTX｟アールティーエックス｠ 5090 -> アールティーエックス 5090
+    """
+    import re
+    return re.sub(r'[A-Za-z][A-Za-z0-9_.\-]*｟([^｠]*)｠', r'\1', text)
+
+
 def normalize_text_for_voicevox(
     text: str,
     pronunciation_dict: dict = None,
@@ -4656,8 +4675,11 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
     for i, part in enumerate(script_parts):
         part_name = part.get("part", "")
         text = sanitize_script_text(part.get("text", ""))
-        # tts_text があれば音声合成用テキストとして使用（字幕用の text は別途参照）
-        tts_text = sanitize_script_text(part.get("tts_text", "")) or text
+        # 字幕用: ｟カタカナ｠ を除去してアルファベット表記のみ残す
+        subtitle_text = strip_inline_reading(text)
+        # 音声用: アルファベット部分を ｟カタカナ｠ で置換後、pronunciation_dict も適用
+        tts_text = apply_inline_reading(text)
+        tts_text = normalize_text_for_voicevox(tts_text, (script_data or {}).get("pronunciation_dict"))
         
         # ★空テキストの場合は0.0を記録してスキップ（インデックス維持）
         if not text:
@@ -4688,9 +4710,9 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 
                 audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
 
-                # テキストを字幕チャンク単位で分割（字幕用 text = 英字表記）
+                # テキストを字幕チャンク単位で分割（字幕用 subtitle_text = 英字表記）
                 print(f"[REORDER] Part {i} ({part_name}): Splitting text into subtitle chunks...")
-                subtitle_text_parts = split_subtitle_text(text, max_chars=26, part_type=part.get("part"))
+                subtitle_text_parts = split_subtitle_text(subtitle_text, max_chars=26, part_type=part.get("part"))
 
                 if not subtitle_text_parts:
                     raise RuntimeError(f"Failed to split text for part {i}")
