@@ -1675,6 +1675,7 @@ def strip_inline_reading(text: str) -> str:
     """
     字幕用：｟カタカナ｠ を除去してアルファベット表記のみ残す。
     例: "RTX｟アールティーエックス｠ 5090" → "RTX 5090"
+    カタカナ語に誤って付与された場合（例: ストリーミング｟ストリーミング｠）も除去する。
     """
     import re
     return re.sub(r'｟[^｠]*｠', '', text)
@@ -1684,9 +1685,14 @@ def apply_inline_reading(text: str) -> str:
     """
     音声用: 英語表記｟カタカナ｠ をカタカナのみに置換する。
     例: RTX｟アールティーエックス｠ 5090 -> アールティーエックス 5090
+    カタカナ語への誤付与（例: ストリーミング｟ストリーミング｠）は ｟｠ のみ除去する。
     """
     import re
-    return re.sub(r'[A-Za-z][A-Za-z0-9_.\-]*｟([^｠]*)｠', r'\1', text)
+    # アルファベット始まりの場合: 英語部分をカタカナで置換
+    text = re.sub(r'[A-Za-z][A-Za-z0-9_.\-]*｟([^｠]*)｠', r'\1', text)
+    # 残った ｟｠ （カタカナ語への誤付与）は除去
+    text = re.sub(r'｟[^｠]*｠', '', text)
+    return text
 
 
 def normalize_text_for_voicevox(
