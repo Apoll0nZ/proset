@@ -4305,17 +4305,49 @@ def split_text_for_voicevox(text: str, part_type: str = None) -> List[str]:
     merge_enabled = (part_type != "reaction")
     return split_text_unified(text, max_chars=26, merge_small_chunks=merge_enabled, merge_threshold=40)
 
-def split_subtitle_text(text: str, max_chars: int = 80, part_type: str = None) -> List[str]:
+def split_subtitle_text(text: str, max_chars: int = 80, part_type: str = None, pronunciation_dict: dict = None) -> List[str]:
     """字幕用テキスト分割
-    
+
+    辞書キー保護ロジック：
+    pronunciation_dict のキー（例: "MacBook Neo"）を一時的にプレースホルダーに
+    置換してから分割し、分割後に元のテキストに戻す。
+    これにより複合語がチャンク境界で切断されるのを防ぐ。
+
     Args:
         text: 分割するテキスト
         max_chars: 最大文字数
         part_type: パートタイプ（"reaction"の場合は結合無効化）
+        pronunciation_dict: 発音辞書（キーを分割境界から保護するために使用）
     """
-    # reactionパートは結合を無効化
     merge_enabled = (part_type != "reaction")
-    return split_text_unified(text, max_chars=26, merge_small_chunks=merge_enabled, merge_threshold=40)
+
+    if not pronunciation_dict:
+        return split_text_unified(text, max_chars=26, merge_small_chunks=merge_enabled, merge_threshold=40)
+
+    # ── 辞書キー保護 ──
+    # 長いキーから順に処理（"MacBook Neo" が "MacBook" より先にマッチするように）
+    sorted_keys = sorted(pronunciation_dict.keys(), key=len, reverse=True)
+    placeholder_map = {}  # プレースホルダー → 元テキスト
+    protected_text = text
+    for idx, key in enumerate(sorted_keys):
+        if key in protected_text:
+            # プレースホルダーは分割文字（スペース・句読点）を含まない形式にする
+            placeholder = f"§{idx}§"
+            placeholder_map[placeholder] = key
+            protected_text = protected_text.replace(key, placeholder)
+
+    # プレースホルダー込みで分割（プレースホルダーは1トークンとして扱われる）
+    chunks = split_text_unified(protected_text, max_chars=26, merge_small_chunks=merge_enabled, merge_threshold=40)
+
+    # 分割後にプレースホルダーを元のテキストに戻す
+    restored_chunks = []
+    for chunk in chunks:
+        for placeholder, original in placeholder_map.items():
+            chunk = chunk.replace(placeholder, original)
+        restored_chunks.append(chunk)
+
+    print(f"[SUBTITLE SPLIT] Protected {len(placeholder_map)} dict keys from chunk boundaries")
+    return restored_chunks
 
 def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str, pronunciation_dict: dict = None) -> tuple:
     """
@@ -4446,17 +4478,26 @@ def synthesize_speech_voicevox(text: str, speaker_id: int, out_path: str, pronun
 def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, out_path: str, pronunciation_dict: dict = None) -> tuple:
     """
     字幕チャンク単位で分割済みテキストを音声合成。
-    text_parts と query_data_list の1対1対応を保証。
-    実ファイルdurationに基づいた計測を実施。
+    text_parts と duration_list の1対1対応を保証。
+
+    ■ 辞書変換の方針
+    split_subtitle_text 側で辞書キーをプレースホルダー保護してから分割しているため、
+    チャンク境界で複合語が切断されることはない。
+    ここでは各チャンクを個別に normalize_text_for_voicevox で変換して合成する。
+    チャンク内で辞書キーが完結しているので確実に変換される。
+
+    ■ 自然な間の制御
+    チャンク末尾の句読点に応じて postPhonemeLength を調整する。
 
     Args:
-        text_parts: 既に分割済みテキスト配列（字幕チャンク）
+        text_parts: 字幕チャンク配列（元テキスト・分割済み）
         speaker_id: VOICEVOX のスピーカーID
         out_path: 出力音声ファイルパス
+        pronunciation_dict: 発音辞書
 
     Returns:
         (音声ファイルパス, query_data_list, text_parts, duration_list)
-        - 各要素が1対1対応
+        - text_parts: 入力と同じ字幕チャンク（元テキスト）
         - duration_list: 各チャンクの実ファイルduration（秒）
     """
     import time
@@ -4472,147 +4513,112 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
     if not text_parts or len(text_parts) == 0:
         raise RuntimeError("テキストパーツが空です")
 
-    # 空でないテキストのみをフィルタリング
-    valid_parts = [t for t in text_parts if t.strip()]
+    # 空でないテキストのみをフィルタリング（インデックスと元テキストを保持）
+    valid_parts = [(i, t) for i, t in enumerate(text_parts) if t.strip()]
     if not valid_parts:
         raise RuntimeError("有効なテキストパーツがありません")
 
-    # pronunciation_dictを全文ベースで適用して音声用チャンクを生成
-    # （チャンク単位の適用だと分割境界で複合語が切れる問題を回避）
-    if pronunciation_dict:
-        full_text = "".join(valid_parts)
-        full_text_converted = normalize_text_for_voicevox(full_text, pronunciation_dict)
-        # 変換後テキストを同じチャンク数に再分割
-        # 各チャンクの文字数比率を保持して分割
-        total_orig = len(full_text)
-        audio_parts = []
-        pos = 0
-        for i, chunk in enumerate(valid_parts):
-            ratio = len(chunk) / total_orig if total_orig > 0 else 1 / len(valid_parts)
-            chunk_len = round(len(full_text_converted) * ratio)
-            if i == len(valid_parts) - 1:
-                audio_parts.append(full_text_converted[pos:])
-            else:
-                audio_parts.append(full_text_converted[pos:pos + chunk_len])
-                pos += chunk_len
-    else:
-        audio_parts = valid_parts
-
     audio_clips = []
-    query_data_list = []  # 1対1対応を保証
-    duration_list = []    # 実ファイルdurationを記録
+    query_data_list = []
+    duration_list = []
     temp_dir = tempfile.mkdtemp()
 
     try:
-        # 各テキストパーツを音声合成
-        for i, part_text in enumerate(audio_parts):
-            print(f"[PRECUT SYNTH] Part {i}: Synthesizing '{part_text[:30]}...'")
+        for orig_idx, part_text in valid_parts:
+            # チャンク単位で辞書変換（split_subtitle_text側で保護済みなので
+            # チャンク内で辞書キーが必ず完結している）
+            converted_text = normalize_text_for_voicevox(part_text, pronunciation_dict) if pronunciation_dict else part_text
+            print(f"[PRECUT SYNTH] Chunk {orig_idx}: '{part_text[:20]}' -> '{converted_text[:20]}'")
 
-            # 音声クエリ生成のリトライロジック
+            # 音声クエリ生成
             query_data = None
-            for attempt in range(1, 4):  # 最大3回リトライ
+            for attempt in range(1, 4):
                 try:
                     query_url = f"{VOICEVOX_API_URL}/audio_query"
-                    query_params = {
-                        "text": part_text,  # 既に変換済み
-                        "speaker": speaker_id
-                    }
+                    query_params = {"text": converted_text, "speaker": speaker_id}
                     query_resp = requests.post(query_url, params=query_params, timeout=30)
                     if query_resp.status_code != 200:
                         raise RuntimeError(f"Query generation failed: {query_resp.status_code}")
 
                     query_data = query_resp.json()
 
-                    # ── チャンク末尾の無音長をチャンク種別に応じて調整 ──
-                    # チャンク個別合成ではVOICEVOXが末尾に無音パディングを自動付加するため、
-                    # そのまま結合すると字幕切り替わり時に不自然な「間」が生じる。
-                    # 句読点の種類で自然な間の長さを制御する。
+                    # ── チャンク末尾の無音長を句読点種別で制御 ──
                     stripped = part_text.rstrip()
                     last_char = stripped[-1] if stripped else ""
                     if last_char in ("。", "！", "？", "!", "?"):
-                        # 文末：自然な間を残す
-                        post_phoneme_length = 0.08
+                        post_phoneme_length = 0.08   # 文末：自然な間
                     elif last_char in ("、", "…", "・", ","):
-                        # 読点・中断：やや短め
-                        post_phoneme_length = 0.04
+                        post_phoneme_length = 0.04   # 読点：やや短め
                     else:
-                        # 文途中で切れたチャンク：ほぼ無音なし（繋がって聞こえるように）
-                        post_phoneme_length = 0.01
+                        post_phoneme_length = 0.01   # 文途中：ほぼ無音なし
                     query_data["postPhonemeLength"] = post_phoneme_length
-                    # 文中ポーズも少し締めてテンポを整える
                     query_data["pauseLengthScale"] = 0.8
-                    print(f"[PRECUT SYNTH] Part {i}: last_char='{last_char}' -> postPhonemeLength={post_phoneme_length}")
-
-                    break  # 成功
+                    print(f"[PRECUT SYNTH] Chunk {orig_idx}: last_char='{last_char}' -> postPhonemeLength={post_phoneme_length}")
+                    break
 
                 except Exception as e:
                     if attempt < 3 and is_retryable_error(e):
                         print(f"[PRECUT] Attempt {attempt} failed, retrying...")
                         backoff_sleep(attempt)
                     else:
-                        raise RuntimeError(f"Failed query generation for part {i}: {str(e)}")
+                        raise RuntimeError(f"Failed query generation for chunk {orig_idx}: {str(e)}")
 
-            # 音声合成のリトライロジック
+            # 音声合成
             synthesis_content = None
-            for attempt in range(1, 4):  # 最大3回リトライ
+            for attempt in range(1, 4):
                 try:
                     synthesis_url = f"{VOICEVOX_API_URL}/synthesis"
-                    synthesis_params = {"speaker": speaker_id}
                     synthesis_resp = requests.post(
                         synthesis_url,
-                        params=synthesis_params,
+                        params={"speaker": speaker_id},
                         json=query_data,
                         timeout=60,
                         headers={"Content-Type": "application/json"}
                     )
                     if synthesis_resp.status_code != 200:
                         raise RuntimeError(f"Synthesis failed: {synthesis_resp.status_code}")
-
                     synthesis_content = synthesis_resp.content
-                    break  # 成功
+                    break
 
                 except Exception as e:
                     if attempt < 3 and is_retryable_error(e):
                         print(f"[PRECUT] Synthesis attempt {attempt} failed, retrying...")
                         backoff_sleep(attempt)
                     else:
-                        raise RuntimeError(f"Failed synthesis for part {i}: {str(e)}")
+                        raise RuntimeError(f"Failed synthesis for chunk {orig_idx}: {str(e)}")
 
-            # 一時音声ファイルとして保存
-            temp_audio_path = os.path.join(temp_dir, f"temp_audio_{i}.wav")
+            # 一時ファイルに保存して実durationを取得
+            temp_audio_path = os.path.join(temp_dir, f"temp_audio_{orig_idx}.wav")
             with open(temp_audio_path, "wb") as out_f:
                 out_f.write(synthesis_content)
 
-            # 【重要】実ファイルのdurationを取得
             clip = AudioFileClip(temp_audio_path)
             file_duration = clip.duration
-
             audio_clips.append(clip)
             query_data_list.append(query_data)
-            duration_list.append(file_duration)  # 実ファイルdurationを記録
+            duration_list.append(file_duration)
 
-            print(f"[PRECUT SYNTH] Part {i}: OK (file_duration={file_duration:.3f}s)")
+            print(f"[PRECUT SYNTH] Chunk {orig_idx}: OK (duration={file_duration:.3f}s)")
 
         if not audio_clips:
             raise RuntimeError("No audio clips were generated")
 
-        # すべての音声クリップを結合
+        # 全チャンクを結合して1ファイルに
         print(f"[PRECUT SYNTH] Concatenating {len(audio_clips)} clips...")
         final_audio = concatenate_audioclips(audio_clips)
         final_audio.write_audiofile(out_path, codec="pcm_s16le", fps=44100)
 
-        # クリップを解放
         for clip in audio_clips:
             clip.close()
         final_audio.close()
 
-        print(f"[PRECUT SYNTH] Output: {out_path}")
-        print(f"[PRECUT SYNTH] Returning {len(query_data_list)} items with file durations: {[f'{d:.3f}s' for d in duration_list]}")
+        # 元のtext_partsのうち有効なもののみ返す（duration_listと1対1対応）
+        valid_text_parts = [t for t in text_parts if t.strip()]
+        print(f"[PRECUT SYNTH] Output: {out_path}, chunks={len(valid_text_parts)}, durations={[f'{d:.3f}s' for d in duration_list]}")
 
-        return out_path, query_data_list, valid_parts, duration_list
+        return out_path, query_data_list, valid_text_parts, duration_list
 
     finally:
-        # 一時ファイルを削除
         import shutil
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -4669,8 +4675,11 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 audio_path = os.path.join(tmpdir, f"audio_{i}.wav")
 
                 # テキストを字幕チャンク単位で分割
+                # pronunciation_dictを渡すことで辞書キー（例: MacBook Neo）が
+                # チャンク境界で切断されるのを防ぐ
                 print(f"[REORDER] Part {i} ({part_name}): Splitting text into subtitle chunks...")
-                subtitle_text_parts = split_subtitle_text(text, max_chars=26, part_type=part.get("part"))
+                pron_dict = (script_data or {}).get("pronunciation_dict", {})
+                subtitle_text_parts = split_subtitle_text(text, max_chars=26, part_type=part.get("part"), pronunciation_dict=pron_dict)
 
                 if not subtitle_text_parts:
                     raise RuntimeError(f"Failed to split text for part {i}")
@@ -4678,10 +4687,8 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 print(f"[REORDER] Part {i}: Split into {len(subtitle_text_parts)} chunks")
 
                 # 分割済みテキストを音声合成
-                # pronunciation_dictはsynthesize_precut_speech_voicevox内で
-                # 音声クエリ生成時のみ適用し、字幕テキストには適用しない
-                pron_dict = (script_data or {}).get("pronunciation_dict", {})
-
+                # pron_dictはすでに上のsplit_subtitle_text呼び出しで使用済み
+                # synthesize_precut_speech_voicevox内でも各チャンクに適用する
                 print(f"[REORDER] Part {i}: Synthesizing {len(subtitle_text_parts)} chunks...")
                 audio_file, query_data_list, text_parts_from_synthesis, duration_list = synthesize_precut_speech_voicevox(
                     subtitle_text_parts, speaker_id, audio_path, pronunciation_dict=pron_dict
