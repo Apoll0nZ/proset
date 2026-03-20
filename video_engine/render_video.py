@@ -4522,6 +4522,27 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
                         raise RuntimeError(f"Query generation failed: {query_resp.status_code}")
 
                     query_data = query_resp.json()
+
+                    # ── チャンク末尾の無音長をチャンク種別に応じて調整 ──
+                    # チャンク個別合成ではVOICEVOXが末尾に無音パディングを自動付加するため、
+                    # そのまま結合すると字幕切り替わり時に不自然な「間」が生じる。
+                    # 句読点の種類で自然な間の長さを制御する。
+                    stripped = part_text.rstrip()
+                    last_char = stripped[-1] if stripped else ""
+                    if last_char in ("。", "！", "？", "!", "?"):
+                        # 文末：自然な間を残す
+                        post_phoneme_length = 0.08
+                    elif last_char in ("、", "…", "・", ","):
+                        # 読点・中断：やや短め
+                        post_phoneme_length = 0.04
+                    else:
+                        # 文途中で切れたチャンク：ほぼ無音なし（繋がって聞こえるように）
+                        post_phoneme_length = 0.01
+                    query_data["postPhonemeLength"] = post_phoneme_length
+                    # 文中ポーズも少し締めてテンポを整える
+                    query_data["pauseLengthScale"] = 0.8
+                    print(f"[PRECUT SYNTH] Part {i}: last_char='{last_char}' -> postPhonemeLength={post_phoneme_length}")
+
                     break  # 成功
 
                 except Exception as e:
