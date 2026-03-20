@@ -1558,21 +1558,72 @@ DDB_TABLE_NAME = os.environ.get("MY_DDB_TABLE_NAME", "VideoHistory")
 YOUTUBE_AUTH_JSON = os.environ.get("YOUTUBE_AUTH_JSON", "")
 VOICEVOX_API_URL = os.environ.get("VOICEVOX_API_URL", "http://localhost:50021")
 
+def _fetch_pronunciation_from_gemini(words: list) -> dict:
+    """未登録の英単語リストをGeminiに渡してカタカナ読みを一括取得する"""
+    if not words:
+        return {}
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return {}
+    try:
+        import requests as _req
+        word_list = "\n".join(f"- {w}" for w in words)
+        prompt = (
+            "以下の英語表記をVOICEVOX音声合成向けの自然なカタカナ読みに変換してください。\n"
+            "JSONオブジェクトのみ返してください。キーは原文、値はカタカナ読みです。\n"
+            "例: {\"Ada Lovelace\": \"エイダ ラブレス\", \"Pro\": \"プロ\"}\n\n"
+            f"{word_list}"
+        )
+        url = (
+            f"https://generativelanguage.googleapis.com/v1/models/"
+            f"gemini-2.5-flash-lite:generateContent?key={api_key}"
+        )
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.0, "max_output_tokens": 512,
+                                 "response_mime_type": "application/json"},
+        }
+        resp = _req.post(url, json=payload, timeout=(5, 20))
+        if resp.status_code == 200:
+            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            result = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(result, dict):
+                print(f"[PRONUNCIATION] Gemini補完: {result}")
+                return result
+    except Exception as e:
+        print(f"[PRONUNCIATION] Gemini補完失敗: {e}")
+    return {}
+
+
 def normalize_text_for_voicevox(
     text: str,
     pronunciation_dict: dict = None,
 ) -> str:
     """
     VOICEVOX音声合成前にテキストの読み仮名を正規化する。
-    台本JSONのpronunciation_dictをそのまま適用。
-    長いキーから順に置換することで部分一致による誤置換を防ぐ。
-    （例: "Apple" が "Apple Maps" より先に置換されるのを防ぐ）
+    1. pronunciation_dictを長いキー優先で適用
+    2. 残ったアルファベット語をGeminiで補完
     字幕には影響しない（音声合成用テキストにのみ使用）。
     """
-    # キーを長さの降順でソートして置換（長いキーを優先）
+    import re as _re
+
+    # 長いキーから順に置換（複合語の誤置換を防ぐ）
     sorted_items = sorted((pronunciation_dict or {}).items(), key=lambda x: len(x[0]), reverse=True)
     for surface, pronunciation in sorted_items:
         text = text.replace(surface, pronunciation)
+
+    # 辞書適用後に残ったアルファベット語を検出
+    remaining = _re.findall(r'[A-Za-z][A-Za-z0-9 \-\.]*[A-Za-z0-9]|[A-Za-z]', text)
+    # 短すぎる単語・数字のみは除外
+    remaining = list({w for w in remaining if len(w) >= 2 and not w.isdigit()})
+
+    if remaining:
+        print(f"[PRONUNCIATION] 未変換のアルファベット語: {remaining}")
+        補完結果 = _fetch_pronunciation_from_gemini(remaining)
+        # 補完結果も長いキー優先で適用
+        for surface, pronunciation in sorted(補完結果.items(), key=lambda x: len(x[0]), reverse=True):
+            text = text.replace(surface, pronunciation)
+
     return text
 
 BACKGROUND_IMAGE_PATH = os.environ.get(
@@ -4585,9 +4636,23 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 print(f"[REORDER] Part {i}: Split into {len(subtitle_text_parts)} chunks")
 
                 # 分割済みテキストを音声合成
+                # ★pronunciation_dictを分割前のテキスト全体に先に適用してから各チャンクを渡す
+                # （分割境界で複合語が切れると置換できないため）
+                pron_dict = (script_data or {}).get("pronunciation_dict", {})
+                if pron_dict:
+                    # 全体テキストに先に置換を適用
+                    text_for_synthesis = normalize_text_for_voicevox(text, pron_dict)
+                    # 置換済みテキストを再分割
+                    subtitle_text_parts_for_audio = split_subtitle_text(text_for_synthesis, max_chars=26, part_type=part.get("part"))
+                    # 音声合成時はpronunciation_dictを渡さない（適用済みのため）
+                    audio_pron_dict = {}
+                else:
+                    subtitle_text_parts_for_audio = subtitle_text_parts
+                    audio_pron_dict = {}
+
                 print(f"[REORDER] Part {i}: Synthesizing {len(subtitle_text_parts)} chunks...")
                 audio_file, query_data_list, text_parts_from_synthesis, duration_list = synthesize_precut_speech_voicevox(
-                    subtitle_text_parts, speaker_id, audio_path, pronunciation_dict=(script_data or {}).get("pronunciation_dict", {})
+                    subtitle_text_parts_for_audio, speaker_id, audio_path, pronunciation_dict=audio_pron_dict
                 )
 
                 if os.path.exists(audio_path):
