@@ -5681,112 +5681,82 @@ def check_video_quality(video_path="video.mp4", min_size_mb=1, min_brightness=10
 
 def fetch_amazon_product_url(keyword: str) -> str:
     """
-    Amazon PA-APIでキーワード検索し、上位商品のアソシエイトタグ付きURLを返す。
+    Amazon Creators API（OAuth2）でキーワード検索し、上位商品のアソシエイトタグ付きURLを返す。
     失敗時は検索結果URLにフォールバック。
     """
     import urllib.parse
-    import hmac
-    import hashlib
-    import datetime
     import json
 
-    access_key = os.environ.get("AMAZON_ACCESS_KEY", "")
-    secret_key = os.environ.get("AMAZON_SECRET_KEY", "")
+    client_id = os.environ.get("AMAZON_ACCESS_KEY", "")
+    client_secret = os.environ.get("AMAZON_SECRET_KEY", "")
     associate_tag = os.environ.get("AMAZON_ASSOCIATE_TAG", "")
 
     fallback_url = f"https://www.amazon.co.jp/s?k={urllib.parse.quote(keyword)}"
 
-    if not access_key or not secret_key or not associate_tag:
-        print("[AMAZON] PA-API credentials not found, using search URL fallback")
+    if not client_id or not client_secret or not associate_tag:
+        print("[AMAZON] Creators API credentials not found, using search URL fallback")
         return fallback_url
 
     try:
-        host = "webservices.amazon.co.jp"
-        region = "us-east-1"
-        service = "ProductAdvertisingAPI"
-        path = "/paapi5/searchitems"
-        endpoint = f"https://{host}{path}"
-        target = "com.amazon.paapi5.v1.ProductAdvertisingAPIv1.SearchItems"
-        content_type = "application/json; charset=utf-8"
-
-        payload = {
-            "Keywords": keyword,
-            "Marketplace": "www.amazon.co.jp",
-            "PartnerTag": associate_tag,
-            "PartnerType": "Associates",
-            "Resources": ["ItemInfo.Title"],
-            "SearchIndex": "All",
-            "ItemCount": 1,
-        }
-        payload_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-
-        now = datetime.datetime.now(datetime.timezone.utc)
-        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-        date_stamp = now.strftime("%Y%m%d")
-
-        signed_headers = "content-encoding;content-type;host;x-amz-date;x-amz-target"
-        canonical_headers = (
-            f"content-encoding:amz-1.0\n"
-            f"content-type:{content_type}\n"
-            f"host:{host}\n"
-            f"x-amz-date:{amz_date}\n"
-            f"x-amz-target:{target}\n"
-        )
-
-        payload_hash = hashlib.sha256(payload_bytes).hexdigest()
-        canonical_request = "\n".join([
-            "POST", path, "", canonical_headers, signed_headers, payload_hash,
-        ])
-
-        credential_scope = f"{date_stamp}/{region}/{service}/aws4_request"
-        string_to_sign = "\n".join([
-            "AWS4-HMAC-SHA256", amz_date, credential_scope,
-            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
-        ])
-
-        def _sign(key: bytes, msg: str) -> bytes:
-            return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
-
-        signing_key = _sign(_sign(_sign(_sign(
-            f"AWS4{secret_key}".encode("utf-8"), date_stamp), region), service), "aws4_request")
-        signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
-
-        authorization = (
-            f"AWS4-HMAC-SHA256 Credential={access_key}/{credential_scope}, "
-            f"SignedHeaders={signed_headers}, Signature={signature}"
-        )
-        headers = {
-            "content-encoding": "amz-1.0",
-            "content-type": content_type,
-            "host": host,
-            "x-amz-date": amz_date,
-            "x-amz-target": target,
-            "Authorization": authorization,
-        }
-
         import requests as _req
-        response = _req.post(endpoint, headers=headers, data=payload_bytes, timeout=10)
 
-        if response.status_code != 200:
-            print(f"[AMAZON] PA-API error: {response.status_code} {response.text[:300]}")
+        # Step1: OAuth2トークン取得（Login with Amazon）
+        token_resp = _req.post(
+            "https://api.amazon.co.jp/auth/o2/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "advertising::audiences",
+            },
+            timeout=10,
+        )
+        if token_resp.status_code != 200:
+            print(f"[AMAZON] Token error: {token_resp.status_code} {token_resp.text[:200]}")
             return fallback_url
 
-        result = response.json()
-        items = result.get("SearchResult", {}).get("Items", [])
+        access_token = token_resp.json().get("access_token", "")
+        if not access_token:
+            print("[AMAZON] No access_token in response")
+            return fallback_url
+
+        print(f"[AMAZON] Token acquired successfully")
+
+        # Step2: Creators API SearchItems
+        search_url = "https://creatorsapi.amazon.co.jp/catalog/v1/items/search"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "x-amzn-associates-tag": associate_tag,
+        }
+        payload = {
+            "keywords": keyword,
+            "marketplace": "www.amazon.co.jp",
+            "resources": ["itemInfo.title"],
+            "itemCount": 1,
+        }
+        search_resp = _req.post(search_url, headers=headers, json=payload, timeout=10)
+
+        if search_resp.status_code != 200:
+            print(f"[AMAZON] Creators API error: {search_resp.status_code} {search_resp.text[:300]}")
+            return fallback_url
+
+        result = search_resp.json()
+        items = result.get("searchResult", {}).get("items", [])
         if not items:
-            print(f"[AMAZON] PA-API: no items found for '{keyword}'")
+            print(f"[AMAZON] Creators API: no items found for '{keyword}'")
             return fallback_url
 
-        asin = items[0].get("ASIN", "")
+        asin = items[0].get("asin", "")
         if not asin:
             return fallback_url
 
         product_url = f"https://www.amazon.co.jp/dp/{asin}?tag={associate_tag}"
-        print(f"[AMAZON] PA-API success: ASIN={asin}, URL={product_url}")
+        print(f"[AMAZON] Creators API success: ASIN={asin}, URL={product_url}")
         return product_url
 
     except Exception as e:
-        print(f"[AMAZON] PA-API exception: {e}")
+        print(f"[AMAZON] Creators API exception: {e}")
         return fallback_url
 
 
