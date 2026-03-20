@@ -4477,6 +4477,27 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
     if not valid_parts:
         raise RuntimeError("有効なテキストパーツがありません")
 
+    # pronunciation_dictを全文ベースで適用して音声用チャンクを生成
+    # （チャンク単位の適用だと分割境界で複合語が切れる問題を回避）
+    if pronunciation_dict:
+        full_text = "".join(valid_parts)
+        full_text_converted = normalize_text_for_voicevox(full_text, pronunciation_dict)
+        # 変換後テキストを同じチャンク数に再分割
+        # 各チャンクの文字数比率を保持して分割
+        total_orig = len(full_text)
+        audio_parts = []
+        pos = 0
+        for i, chunk in enumerate(valid_parts):
+            ratio = len(chunk) / total_orig if total_orig > 0 else 1 / len(valid_parts)
+            chunk_len = round(len(full_text_converted) * ratio)
+            if i == len(valid_parts) - 1:
+                audio_parts.append(full_text_converted[pos:])
+            else:
+                audio_parts.append(full_text_converted[pos:pos + chunk_len])
+                pos += chunk_len
+    else:
+        audio_parts = valid_parts
+
     audio_clips = []
     query_data_list = []  # 1対1対応を保証
     duration_list = []    # 実ファイルdurationを記録
@@ -4484,7 +4505,7 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
 
     try:
         # 各テキストパーツを音声合成
-        for i, part_text in enumerate(valid_parts):
+        for i, part_text in enumerate(audio_parts):
             print(f"[PRECUT SYNTH] Part {i}: Synthesizing '{part_text[:30]}...'")
 
             # 音声クエリ生成のリトライロジック
@@ -4493,7 +4514,7 @@ def synthesize_precut_speech_voicevox(text_parts: List[str], speaker_id: int, ou
                 try:
                     query_url = f"{VOICEVOX_API_URL}/audio_query"
                     query_params = {
-                        "text": normalize_text_for_voicevox(part_text, pronunciation_dict),
+                        "text": part_text,  # 既に変換済み
                         "speaker": speaker_id
                     }
                     query_resp = requests.post(query_url, params=query_params, timeout=30)
@@ -4636,23 +4657,13 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                 print(f"[REORDER] Part {i}: Split into {len(subtitle_text_parts)} chunks")
 
                 # 分割済みテキストを音声合成
-                # ★pronunciation_dictを分割前のテキスト全体に先に適用してから各チャンクを渡す
-                # （分割境界で複合語が切れると置換できないため）
+                # pronunciation_dictはsynthesize_precut_speech_voicevox内で
+                # 音声クエリ生成時のみ適用し、字幕テキストには適用しない
                 pron_dict = (script_data or {}).get("pronunciation_dict", {})
-                if pron_dict:
-                    # 全体テキストに先に置換を適用
-                    text_for_synthesis = normalize_text_for_voicevox(text, pron_dict)
-                    # 置換済みテキストを再分割
-                    subtitle_text_parts_for_audio = split_subtitle_text(text_for_synthesis, max_chars=26, part_type=part.get("part"))
-                    # 音声合成時はpronunciation_dictを渡さない（適用済みのため）
-                    audio_pron_dict = {}
-                else:
-                    subtitle_text_parts_for_audio = subtitle_text_parts
-                    audio_pron_dict = {}
 
                 print(f"[REORDER] Part {i}: Synthesizing {len(subtitle_text_parts)} chunks...")
                 audio_file, query_data_list, text_parts_from_synthesis, duration_list = synthesize_precut_speech_voicevox(
-                    subtitle_text_parts_for_audio, speaker_id, audio_path, pronunciation_dict=audio_pron_dict
+                    subtitle_text_parts, speaker_id, audio_path, pronunciation_dict=pron_dict
                 )
 
                 if os.path.exists(audio_path):
@@ -4664,8 +4675,7 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                     generated_audio_files.append(audio_path)
                     part_durations.append(actual_duration)
                     query_data_list_all[i] = query_data_list
-                    # 字幕には元テキスト（カタカナ置換前）のchunksを使用
-                    # text_parts_from_synthesisはカタカナ置換済みのため字幕には不適
+                    # 字幕は元テキストのchunks（subtitle_text_parts）を使用
                     text_parts_list_all[i] = subtitle_text_parts
                     duration_list_all[i] = duration_list
                     
