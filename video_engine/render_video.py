@@ -4664,7 +4664,9 @@ def synthesize_multiple_speeches(script_parts: List[Dict[str, Any]], tmpdir: str
                     generated_audio_files.append(audio_path)
                     part_durations.append(actual_duration)
                     query_data_list_all[i] = query_data_list
-                    text_parts_list_all[i] = text_parts_from_synthesis
+                    # 字幕には元テキスト（カタカナ置換前）のchunksを使用
+                    # text_parts_from_synthesisはカタカナ置換済みのため字幕には不適
+                    text_parts_list_all[i] = subtitle_text_parts
                     duration_list_all[i] = duration_list
                     
                     print(f"[REORDER] Part {i} ({part_name}): SUCCESS duration={actual_duration:.2f}s, chunks={len(text_parts_from_synthesis)}")
