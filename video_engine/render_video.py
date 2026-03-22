@@ -3803,7 +3803,14 @@ def normalize_reaction_script_parts(script_parts: List[Dict[str, Any]]) -> List[
 
         # 空行を除いた行単位で分割（writerが改行列挙で返したケースを吸収）
         normalized_text = text.replace("\\n", "\n")
+        # 改行で分割を試みる
         lines = [line.strip() for line in re.split(r"\n+", normalized_text) if line.strip()]
+        # 改行で分割できなかった場合は「」区切りで分割
+        if len(lines) <= 1:
+            import re as _re
+            bracket_lines = _re.findall(r'「[^」]+」', normalized_text)
+            if len(bracket_lines) > 1:
+                lines = bracket_lines
         if len(lines) <= 1:
             # 単一行でも speaker_id=2（固定値）や未指定ならランダム付与
             speaker_id = part.get("speaker_id")
