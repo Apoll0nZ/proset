@@ -1558,41 +1558,51 @@ DDB_TABLE_NAME = os.environ.get("MY_DDB_TABLE_NAME", "VideoHistory")
 YOUTUBE_AUTH_JSON = os.environ.get("YOUTUBE_AUTH_JSON", "")
 VOICEVOX_API_URL = os.environ.get("VOICEVOX_API_URL", "http://localhost:50021")
 
+# Gemini補完結果のセッションキャッシュ（同一単語の重複API呼び出しを防ぐ）
+_pronunciation_cache: dict = {}
+
 def _fetch_pronunciation_from_gemini(words: list) -> dict:
-    """未登録の英単語リストをGeminiに渡してカタカナ読みを一括取得する"""
+    """未登録の英単語リストをGeminiに渡してカタカナ読みを一括取得する（キャッシュ付き）"""
+    global _pronunciation_cache
     if not words:
         return {}
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        return {}
-    try:
-        import requests as _req
-        word_list = "\n".join(f"- {w}" for w in words)
-        prompt = (
-            "以下の英語表記をVOICEVOX音声合成向けの自然なカタカナ読みに変換してください。\n"
-            "JSONオブジェクトのみ返してください。キーは原文、値はカタカナ読みです。\n"
-            "例: {\"Ada Lovelace\": \"エイダ ラブレス\", \"Pro\": \"プロ\"}\n\n"
-            f"{word_list}"
-        )
-        url = (
-            f"https://generativelanguage.googleapis.com/v1/models/"
-            f"gemini-2.5-flash-lite:generateContent?key={api_key}"
-        )
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.0, "max_output_tokens": 512,
-                                 "response_mime_type": "application/json"},
-        }
-        resp = _req.post(url, json=payload, timeout=(5, 20))
-        if resp.status_code == 200:
-            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-            result = json.loads(raw) if isinstance(raw, str) else raw
-            if isinstance(result, dict):
-                print(f"[PRONUNCIATION] Gemini補完: {result}")
-                return result
-    except Exception as e:
-        print(f"[PRONUNCIATION] Gemini補完失敗: {e}")
-    return {}
+
+    # キャッシュ済みの単語は除外してAPI呼び出しを節約
+    uncached = [w for w in words if w not in _pronunciation_cache]
+
+    if uncached:
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            return {w: _pronunciation_cache[w] for w in words if w in _pronunciation_cache}
+        try:
+            import requests as _req
+            word_list = "\n".join(f"- {w}" for w in uncached)
+            prompt = (
+                "以下の英語表記をVOICEVOX音声合成向けの自然なカタカナ読みに変換してください。\n"
+                "JSONオブジェクトのみ返してください。キーは原文、値はカタカナ読みです。\n"
+                "例: {\"Ada Lovelace\": \"エイダ ラブレス\", \"Pro\": \"プロ\"}\n\n"
+                f"{word_list}"
+            )
+            url = (
+                f"https://generativelanguage.googleapis.com/v1/models/"
+                f"gemini-2.5-flash-lite:generateContent?key={api_key}"
+            )
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.0, "max_output_tokens": 512,
+                                     "response_mime_type": "application/json"},
+            }
+            resp = _req.post(url, json=payload, timeout=(5, 20))
+            if resp.status_code == 200:
+                raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                result = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(result, dict):
+                    print(f"[PRONUNCIATION] Gemini補完: {result}")
+                    _pronunciation_cache.update(result)
+        except Exception as e:
+            print(f"[PRONUNCIATION] Gemini補完失敗: {e}")
+
+    return {w: _pronunciation_cache[w] for w in words if w in _pronunciation_cache}
 
 
 def normalize_text_for_voicevox(
@@ -1607,10 +1617,10 @@ def normalize_text_for_voicevox(
     """
     import re as _re
 
-    # 長いキーから順に置換（複合語の誤置換を防ぐ）
+    # 長いキーから順に置換（複合語の誤置換を防ぐ・大文字小文字を無視）
     sorted_items = sorted((pronunciation_dict or {}).items(), key=lambda x: len(x[0]), reverse=True)
     for surface, pronunciation in sorted_items:
-        text = text.replace(surface, pronunciation)
+        text = _re.sub(_re.escape(surface), pronunciation, text, flags=_re.IGNORECASE)
 
     # 辞書適用後に残ったアルファベット語を検出
     remaining = _re.findall(r'[A-Za-z][A-Za-z0-9 \-\.]*[A-Za-z0-9]|[A-Za-z]', text)
@@ -1620,9 +1630,9 @@ def normalize_text_for_voicevox(
     if remaining:
         print(f"[PRONUNCIATION] 未変換のアルファベット語: {remaining}")
         補完結果 = _fetch_pronunciation_from_gemini(remaining)
-        # 補完結果も長いキー優先で適用
+        # 補完結果も長いキー優先で適用（大文字小文字を無視）
         for surface, pronunciation in sorted(補完結果.items(), key=lambda x: len(x[0]), reverse=True):
-            text = text.replace(surface, pronunciation)
+            text = _re.sub(_re.escape(surface), pronunciation, text, flags=_re.IGNORECASE)
 
     return text
 
