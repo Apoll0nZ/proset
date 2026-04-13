@@ -728,7 +728,7 @@ def build_unified_timeline(script_parts: List[Dict], part_durations: List[float]
 
         # modulation 音声を「明示的に」追加
         if modulation_video_clip and getattr(modulation_video_clip, 'audio', None):
-            mod_audio = modulation_video_clip.audio.with_start(modulation_start_time)
+            mod_audio = modulation_video_clip.audio.with_volume_scaled(0.5).with_start(modulation_start_time)
             audio_elements.append(mod_audio)
             print(f"[TIMELINE] Added modulation audio at {modulation_start_time:.2f}s")
 
