@@ -453,7 +453,12 @@ def get_article_images(
                     print(f"[THUMBNAIL] Search failed for keyword '{keyword}': {e}")
 
             if not all_candidates:
-                simple_keywords = [kw.split()[0] for kw in keywords[:2] if kw.split()]
+                retry_keywords = (
+                    preferred_keywords
+                    or [kw for kw, _ in search_plan]
+                    or [w for w in (topic_summary or "").split() if w]
+                )
+                simple_keywords = [kw.split()[0] for kw in retry_keywords[:2] if kw.split()]
                 print(f"[THUMBNAIL] No candidates found, retrying with simplified keywords: {simple_keywords}")
                 for keyword in simple_keywords:
                     try:
@@ -581,7 +586,7 @@ def get_article_images(
             except Exception as e:
                 print(f"[DEBUG] Failed to load fallback video image: {e}")
     
-    if require_images and (img1 is None or img2 is None):
+    if require_images and img1 is None:
         raise RuntimeError("Failed to obtain required thumbnail images")
 
     # IT系汎用背景素材（チップ風）をフォールバックに使用
