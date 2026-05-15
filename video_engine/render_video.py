@@ -31,6 +31,18 @@ def get_used_image_urls_count() -> int:
     """使用済み画像URLの数を取得"""
     return len(_used_image_urls)
 
+def is_bing_thumbnail_url(image_url: str) -> bool:
+    """Bing検索結果ページ上の小さなサムネイルURLかどうかを判定する"""
+    if not image_url:
+        return False
+    url_lower = image_url.lower()
+    return (
+        "th.bing.com/th" in url_lower
+        or ("tse" in url_lower and "mm.bing.net" in url_lower)
+        or "pid=inlineblock" in url_lower
+        or "pid=1.7" in url_lower
+    )
+
 # GitHub Actions (Linux) 環境向けに ImageMagick を完全に無効化
 if os.name != 'nt':
     os.environ["IMAGEMAGICK_BINARY"] = ""  # 空文字列で無効化
@@ -2222,20 +2234,40 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                         try {
                                             const data = JSON.parse(metadata);
                                             
-                                            // 高解像度画像URLを抽出
-                                            if (data.murl) {
-                                                const imageUrl = data.murl;
-                                                
-                                                // 画像サイズ情報も取得（あれば）
-                                                const width = data.t ? data.t.w || 0 : 0;
-                                                const height = data.t ? data.t.h || 0 : 0;
-                                                
+                                            // 高解像度画像URLを抽出。murlがサムネイル化されるケースに備え、
+                                            // Bingメタデータ内の候補を優先順に確認する。
+                                            const candidates = [
+                                                data.murl,
+                                                data.imgurl,
+                                                data.mediaurl,
+                                                data.contentUrl,
+                                                data.imageUrl,
+                                                data.turl
+                                            ].filter(Boolean);
+
+                                            let imageUrl = '';
+                                            for (const candidate of candidates) {
+                                                const candidateLower = String(candidate).toLowerCase();
+                                                if (
+                                                    candidateLower.startsWith('http') &&
+                                                    !candidateLower.includes('th.bing.com/th') &&
+                                                    !candidateLower.includes('pid=inlineblock') &&
+                                                    !candidateLower.includes('pid=1.7')
+                                                ) {
+                                                    imageUrl = candidate;
+                                                    break;
+                                                }
+                                            }
+
+                                            if (imageUrl) {
                                                 images.push({
                                                     src: imageUrl,
-                                                    alt: data.t ? data.t || '' : '',
+                                                    thumbnail_src: data.turl || '',
+                                                    page_url: data.purl || data.surl || '',
+                                                    alt: data.t || data.desc || '',
                                                     method: 'bing_json_metadata',
-                                                    width: width,
-                                                    height: height,
+                                                    width: data.imgWidth || data.w || 0,
+                                                    height: data.imgHeight || data.h || 0,
                                                     metadata: data
                                                 });
                                             }
@@ -2263,6 +2295,9 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                         !src.includes('logo') &&
                                         !src.includes('icon') &&
                                         !src.includes('placeholder') &&
+                                        !src.includes('pid=InlineBlock') &&
+                                        !src.includes('pid=1.7') &&
+                                        !src.includes('th.bing.com/th') &&
                                         src.length > 50) {
                                         
                                         // 重複チェック
@@ -2301,6 +2336,10 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                             height = img_data.get('height', 0)
                             
                             if original_url:
+                                if is_bing_thumbnail_url(original_url):
+                                    print(f"[DEBUG] Skipping Bing thumbnail URL: {original_url[:80]}...")
+                                    continue
+
                                 # フィルタリング：有効な画像拡張子とサイズチェック
                                 valid_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
                                 has_valid_extension = any(original_url.lower().endswith(ext) for ext in valid_extensions)
@@ -2335,7 +2374,10 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                         images.append({
                                             'url': original_url,
                                             'title': alt,
-                                            'is_google_thumbnail': False
+                                            'is_google_thumbnail': False,
+                                            'source_page_url': img_data.get('page_url', ''),
+                                            'thumbnail_url': img_data.get('thumbnail_src', ''),
+                                            'method': method
                                         })
                                         add_used_image_url(original_url)
                                     else:
@@ -2840,11 +2882,16 @@ JSON: {{"selected_indices": [適切な番号,適切な番号,...], "reason": "�
                 import json
                 import re
                 
-                # ```json```コードブロックを除去
-                cleaned_response = re.sub(r'```json\s*', '', raw_response)
-                cleaned_response = re.sub(r'```\s*$', '', cleaned_response)
-                cleaned_response = re.sub(r'^JSON:\s*', '', cleaned_response)  # 追加
-                cleaned_response = cleaned_response.strip()
+                # ```json```コードブロックが説明文の後ろに出るケースもあるため、
+                # まずコードブロック内JSONを抜き出し、なければ最初のJSONオブジェクトを探す。
+                fenced_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
+                if fenced_match:
+                    cleaned_response = fenced_match.group(1).strip()
+                else:
+                    cleaned_response = re.sub(r'^JSON:\s*', '', raw_response.strip())
+                    object_match = re.search(r'\{.*\}', cleaned_response, re.DOTALL)
+                    if object_match:
+                        cleaned_response = object_match.group(0).strip()
                 
                 result = json.loads(cleaned_response)
                 selected_indices = result.get('selected_indices', [])
@@ -3608,6 +3655,10 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
         try:
             if not image_url or image_url.lower().endswith(".svg"):
                 print(f"[DEBUG] Skipping unsupported image URL: {image_url}")
+                return None
+
+            if is_bing_thumbnail_url(image_url):
+                print(f"[REJECT] Blocked Bing thumbnail URL before download: {image_url}")
                 return None
 
             # gstaticドメインを入り口で拒否（より厳格に）
@@ -6111,13 +6162,19 @@ async def main() -> None:
                 if isinstance(thumbnail_data.get("main_text"), str):
                     thumbnail_data["main_text"] = thumbnail_data["main_text"].replace("\\n", "\n")
 
+                thumbnail_fallback_paths = [
+                    item.get("path")
+                    for item in _latest_image_schedule
+                    if item.get("path") and os.path.exists(item.get("path"))
+                ]
+
                 create_thumbnail(
                     title=title,
                     topic_summary=topic_summary,
                     thumbnail_data=thumbnail_data,
                     output_path=thumbnail_path,
                     meta=meta,
-                    used_image_paths=list(_used_image_paths),
+                    used_image_paths=thumbnail_fallback_paths,
                     require_images=True,
                     max_image_retries=3,
                     preferred_keywords=thumbnail_keywords[:3],
