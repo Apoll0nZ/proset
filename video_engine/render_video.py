@@ -3967,30 +3967,39 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> List[str]:
                     else:
                         normal_images.append(image_info)
                 
-                # 戦略的選択：安全ドメインを優先
-                filtered_images = []
-                if len(safe_images) >= 3:
+                # 戦略的選択：安全ドメインを優先、Geminiが全拒否したら通常ドメインにフォールバック
+                safe_first = len(safe_images) >= 3
+                if safe_first:
                     filtered_images = safe_images
-                    print(f"[IMAGE STRATEGY] Using only safe domains ({len(safe_images)} images)")
-                # 安全な画像が少ない場合は通常ドメインも含める
+                    print(f"[IMAGE STRATEGY] Trying safe domains first ({len(safe_images)} images)")
                 elif len(safe_images) + len(normal_images) >= 3:
                     filtered_images = safe_images + normal_images
-                
+                    safe_first = False
+                else:
+                    filtered_images = safe_images + normal_images
+                    safe_first = False
+
                 if not filtered_images:
                     print(f"[IMAGE SEARCH] No unblocked images for keyword '{keyword}'")
                     continue
-                
+
                 # Geminiで一括評価（評価対象を調整）
                 print(f"[IMAGE EVAL] Starting Gemini evaluation for {min(30, len(filtered_images))} images")
                 print(f"[IMAGE EVAL] GEMINI_API_KEY check: {'✓ Present' if os.environ.get('GEMINI_API_KEY') else '✗ Missing'}")
                 script_text = script_data.get("content", {}).get("topic_summary", "")
                 print(f"[IMAGE EVAL] Script text length: {len(script_text)} chars")
                 print(f"[IMAGE EVAL] Keyword: '{keyword}'")
-                
+
                 suitable_images = evaluate_images_batch_with_gemini_improved(filtered_images[:30], keyword, script_text)  # 改善版を使用
-                
+
                 print(f"[IMAGE EVAL] Gemini evaluation completed. Result: {len(suitable_images)} suitable images")
-                
+
+                # safe domainが全滅した場合、通常ドメインをGeminiで評価しなおす
+                if not suitable_images and safe_first and normal_images:
+                    print(f"[IMAGE STRATEGY] Safe domains all rejected by Gemini, trying normal domains ({len(normal_images)} images)")
+                    suitable_images = evaluate_images_batch_with_gemini_improved(normal_images[:30], keyword, script_text)
+                    print(f"[IMAGE EVAL] Normal domain evaluation completed. Result: {len(suitable_images)} suitable images")
+
                 if not suitable_images:
                     print(f"[IMAGE EVAL] No suitable images approved by Gemini for '{keyword}'")
                     continue  # 次のキーワードを試行
