@@ -9,6 +9,8 @@ import shutil
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse
 import random
 import google.genai as genai
 
@@ -39,9 +41,110 @@ def is_bing_thumbnail_url(image_url: str) -> bool:
     return (
         "th.bing.com/th" in url_lower
         or ("tse" in url_lower and "mm.bing.net" in url_lower)
+        or "r.bing.com/rp/" in url_lower
+        or "bing.com/rp/" in url_lower
+        or "mm.bing.net/th/" in url_lower
         or "pid=inlineblock" in url_lower
         or "pid=1.7" in url_lower
     )
+
+class SourcePageImageParser(HTMLParser):
+    """掲載元ページからOGPや本文画像候補を抽出する軽量HTMLパーサー"""
+
+    def __init__(self):
+        super().__init__()
+        self.meta_images = []
+        self.link_images = []
+        self.img_candidates = []
+
+    def handle_starttag(self, tag, attrs):
+        attr = {name.lower(): value for name, value in attrs if name and value}
+        tag = tag.lower()
+
+        if tag == "meta":
+            key = (attr.get("property") or attr.get("name") or "").lower()
+            content = attr.get("content")
+            if content and key in {
+                "og:image",
+                "og:image:url",
+                "og:image:secure_url",
+                "twitter:image",
+                "twitter:image:src",
+            }:
+                self.meta_images.append(content)
+            return
+
+        if tag == "link":
+            rel = (attr.get("rel") or "").lower()
+            href = attr.get("href")
+            if href and any(token in rel for token in ["image_src", "preload"]):
+                as_type = (attr.get("as") or "").lower()
+                if "image_src" in rel or as_type == "image":
+                    self.link_images.append(href)
+            return
+
+        if tag != "img":
+            return
+
+        sources = []
+        srcset = attr.get("srcset") or attr.get("data-srcset")
+        if srcset:
+            sources.extend(parse_srcset_urls(srcset))
+
+        for key in ["src", "data-src", "data-original", "data-lazy-src", "data-image"]:
+            value = attr.get(key)
+            if value:
+                sources.append(value)
+
+        alt = attr.get("alt") or attr.get("title") or ""
+        width = parse_int(attr.get("width"))
+        height = parse_int(attr.get("height"))
+
+        for src in sources:
+            self.img_candidates.append({
+                "url": src,
+                "title": alt,
+                "width": width,
+                "height": height,
+            })
+
+
+def parse_int(value) -> int:
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return 0
+
+
+def parse_srcset_urls(srcset: str) -> List[str]:
+    """srcsetからURL部分だけを抽出する"""
+    urls = []
+    for item in srcset.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        url = item.split()[0].strip()
+        if url:
+            urls.append(url)
+    return urls
+
+
+def is_probably_page_image_url(image_url: str) -> bool:
+    if not image_url:
+        return False
+    url_lower = image_url.lower().strip()
+    if (
+        url_lower.startswith("data:")
+        or url_lower.startswith("blob:")
+        or url_lower.endswith(".svg")
+        or is_bing_thumbnail_url(url_lower)
+        or "gstatic.com" in url_lower
+        or "encrypted-tbn" in url_lower
+    ):
+        return False
+    if any(token in url_lower for token in ["sprite", "spacer", "favicon", "logo", "icon", "avatar", "placeholder"]):
+        return False
+    return url_lower.startswith("http://") or url_lower.startswith("https://")
 
 # GitHub Actions (Linux) 環境向けに ImageMagick を完全に無効化
 if os.name != 'nt':
@@ -2152,6 +2255,28 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
     import time
     import json
     import hashlib
+    from urllib.parse import quote_plus, urlparse
+
+    def has_image_extension_or_known_image_host(image_url: str) -> bool:
+        parsed = urlparse(image_url)
+        path_lower = parsed.path.lower()
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
+        if any(path_lower.endswith(ext) for ext in valid_extensions):
+            return True
+
+        allowed_hosts = [
+            'apple.com',
+            'images.apple.com',
+            'store.storeimages.cdn-apple.com',
+            'cdn.',
+            'cloudfront',
+            'kxcdn',
+            'msn.com',
+            'wordpress.com',
+            'wp.com',
+        ]
+        url_lower = image_url.lower()
+        return any(host in url_lower for host in allowed_hosts)
     
     # グローバルキャッシュ（同一セッション内で再利用）
     global _image_search_cache
@@ -2187,19 +2312,39 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                 # シンプルなブラウザ設定
                 browser = await p.chromium.launch(
                     headless=True,
-                    args=[]
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--no-sandbox',
+                    ]
                 )
-                context = await browser.new_context()
+                context = await browser.new_context(
+                    viewport={'width': 1366, 'height': 768},
+                    locale='ja-JP',
+                    user_agent=(
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                        'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        'Chrome/125.0.0.0 Safari/537.36'
+                    ),
+                )
                 page = await context.new_page()
                 
                 # Bing画像検索URL
-                search_url = f"https://www.bing.com/images/search?q={search_keyword}"
+                encoded_query = quote_plus(search_keyword)
+                search_url = (
+                    f"https://www.bing.com/images/search?q={encoded_query}"
+                    "&qft=+filterui:imagesize-medium&form=IRFLTR"
+                )
                 print(f"[DEBUG] Navigating to: {search_url}")
-                await page.goto(search_url, timeout=30000)
+                await page.goto(search_url, wait_until='domcontentloaded', timeout=30000)
                 
                 # ページ読み込み完了を待機
-                await page.wait_for_load_state('networkidle', timeout=15000)
-                await page.wait_for_timeout(3000)  # 画像読み込み待機
+                try:
+                    await page.wait_for_selector('a.iusc[m], a.iusc[data-m], a[m], div[m]', timeout=15000)
+                except Exception as selector_error:
+                    print(f"[DEBUG] Bing image selector wait failed: {selector_error}")
+                for _ in range(3):
+                    await page.mouse.wheel(0, 1200)
+                    await page.wait_for_timeout(700)
                 
                 # ブロック検出
                 page_title = await page.title()
@@ -2221,28 +2366,27 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                             const images = [];
                             
                             // Bingの画像リンク要素を検索
-                            const imageLinks = document.querySelectorAll('a.iusc, a[m], div[m]');
+                            const imageLinks = document.querySelectorAll('a.iusc[m], a.iusc[data-m], a[m], div[m]');
                             
                             console.log(`Found ${imageLinks.length} image elements with metadata`);
                             
                             for (const link of imageLinks) {
                                 try {
                                     // m属性からJSONメタデータを取得
-                                    const metadata = link.getAttribute('m');
+                                    const metadata = link.getAttribute('m') || link.getAttribute('data-m');
                                     
                                     if (metadata) {
                                         try {
                                             const data = JSON.parse(metadata);
                                             
-                                            // 高解像度画像URLを抽出。murlがサムネイル化されるケースに備え、
-                                            // Bingメタデータ内の候補を優先順に確認する。
+                                            // 高解像度の原画像URLだけを抽出する。
+                                            // turlはBingサムネイルで、UI部品や小画像が混ざりやすいため候補にしない。
                                             const candidates = [
                                                 data.murl,
                                                 data.imgurl,
                                                 data.mediaurl,
                                                 data.contentUrl,
-                                                data.imageUrl,
-                                                data.turl
+                                                data.imageUrl
                                             ].filter(Boolean);
 
                                             let imageUrl = '';
@@ -2251,6 +2395,9 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                                 if (
                                                     candidateLower.startsWith('http') &&
                                                     !candidateLower.includes('th.bing.com/th') &&
+                                                    !candidateLower.includes('r.bing.com/rp/') &&
+                                                    !candidateLower.includes('bing.com/rp/') &&
+                                                    !candidateLower.includes('mm.bing.net/th/') &&
                                                     !candidateLower.includes('pid=inlineblock') &&
                                                     !candidateLower.includes('pid=1.7')
                                                 ) {
@@ -2281,7 +2428,7 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                 }
                             }
                             
-                            // 代替方法：通常のimg要素もチェック
+                            // 代替方法：通常のimg要素もチェック。ただしBing/ブラウザUI由来の画像は採用しない。
                             const allImgs = document.querySelectorAll('img[src*="http"]');
                             console.log(`Found ${allImgs.length} total img elements as fallback`);
                             
@@ -2289,15 +2436,18 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                 try {
                                     const src = img.src;
                                     
-                                    // Bingの画像URLパターンをチェック
+                                    const srcLower = String(src).toLowerCase();
                                     if (src && src.startsWith('http') && 
-                                        (src.includes('bing.net') || src.includes('bing.com')) &&
-                                        !src.includes('logo') &&
-                                        !src.includes('icon') &&
-                                        !src.includes('placeholder') &&
-                                        !src.includes('pid=InlineBlock') &&
-                                        !src.includes('pid=1.7') &&
-                                        !src.includes('th.bing.com/th') &&
+                                        !srcLower.includes('bing.com') &&
+                                        !srcLower.includes('bing.net') &&
+                                        !srcLower.includes('logo') &&
+                                        !srcLower.includes('icon') &&
+                                        !srcLower.includes('placeholder') &&
+                                        !srcLower.includes('pid=inlineblock') &&
+                                        !srcLower.includes('pid=1.7') &&
+                                        !srcLower.includes('th.bing.com/th') &&
+                                        !srcLower.includes('r.bing.com/rp/') &&
+                                        !srcLower.includes('mm.bing.net/th/') &&
                                         src.length > 50) {
                                         
                                         // 重複チェック
@@ -2340,24 +2490,7 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
                                     print(f"[DEBUG] Skipping Bing thumbnail URL: {original_url[:80]}...")
                                     continue
 
-                                # フィルタリング：有効な画像拡張子とサイズチェック
-                                valid_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
-                                has_valid_extension = any(original_url.lower().endswith(ext) for ext in valid_extensions)
-                                
-                                # URLパターンでもチェック（拡張子がない場合）
-                                if not has_valid_extension:
-                                    # Bingの画像URLパターンをチェック
-                                    if ('bing.net' in original_url or 'bing.com' in original_url) and len(original_url) > 30:
-                                        has_valid_extension = True
-                                    # その他の画像ホスティングサービスも許可
-                                    elif any(domain in original_url for domain in ['thepowerofplaybook.com', 'msn.com', 'wordpress.com', 'cloudfront.com']):
-                                        has_valid_extension = True
-                                    # Apple公式サイトも許可
-                                    elif 'apple.com' in original_url:
-                                        has_valid_extension = True
-                                    # 主要なCDNも許可
-                                    elif any(cdn in original_url for cdn in ['cdn.', 'cloudfront', 'kxcdn']):
-                                        has_valid_extension = True
+                                has_valid_extension = has_image_extension_or_known_image_host(original_url)
                                 
                                 if has_valid_extension:
                                     # 人物画像とYouTube風サムネイルを除外
@@ -2435,6 +2568,119 @@ async def search_images_with_playwright(keyword: str, max_results: int = 10) -> 
     # 全試行失敗もキャッシュに保存
     _image_search_cache[cache_key] = []
     return []
+
+
+def extract_source_page_image_candidates(
+    image_infos: List[Dict[str, str]],
+    keyword: str,
+    max_pages: int = 4,
+    max_candidates: int = 12,
+) -> List[Dict[str, str]]:
+    """Bingの掲載元ページ(purl)からOGP/srcset/imgの本画像候補を補充する"""
+    candidates = []
+    seen_pages = set()
+    seen_urls = set()
+
+    headers = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/125.0.0.0 Safari/537.36'
+        ),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+    }
+
+    source_pages = []
+    for info in image_infos:
+        page_url = info.get('source_page_url') or ''
+        if not page_url.startswith(('http://', 'https://')):
+            continue
+        if page_url in seen_pages:
+            continue
+        if is_blocked_domain(page_url):
+            print(f"[SOURCE PAGE] Skipping blocked source page: {page_url}")
+            continue
+        seen_pages.add(page_url)
+        source_pages.append((page_url, info.get('title', '')))
+        if len(source_pages) >= max_pages:
+            break
+
+    if not source_pages:
+        return []
+
+    print(f"[SOURCE PAGE] Extracting original image candidates from {len(source_pages)} pages for '{keyword}'")
+
+    for page_url, page_title in source_pages:
+        if len(candidates) >= max_candidates:
+            break
+        try:
+            print(f"[SOURCE PAGE] Fetching: {page_url}")
+            response = requests.get(page_url, headers=headers, timeout=12, allow_redirects=True)
+            content_type = response.headers.get('Content-Type', '').lower()
+            if response.status_code >= 400:
+                print(f"[SOURCE PAGE] Skipping HTTP {response.status_code}: {page_url}")
+                continue
+            if 'text/html' not in content_type and 'application/xhtml' not in content_type and not content_type.startswith('text/'):
+                print(f"[SOURCE PAGE] Skipping non-HTML content ({content_type}): {page_url}")
+                continue
+
+            parser = SourcePageImageParser()
+            parser.feed(response.text[:1_500_000])
+
+            raw_items = []
+            for url in parser.meta_images:
+                raw_items.append({'url': url, 'title': page_title or keyword, 'method': 'source_page_meta', 'score': 300})
+            for url in parser.link_images:
+                raw_items.append({'url': url, 'title': page_title or keyword, 'method': 'source_page_link', 'score': 220})
+            for item in parser.img_candidates:
+                width = item.get('width', 0) or 0
+                height = item.get('height', 0) or 0
+                area_score = min((width * height) // 1000, 200) if width and height else 0
+                raw_items.append({
+                    'url': item.get('url', ''),
+                    'title': item.get('title') or page_title or keyword,
+                    'method': 'source_page_img',
+                    'score': 100 + area_score,
+                    'width': width,
+                    'height': height,
+                })
+
+            raw_items.sort(key=lambda item: item.get('score', 0), reverse=True)
+
+            for item in raw_items:
+                if len(candidates) >= max_candidates:
+                    break
+                resolved_url = urljoin(response.url, item.get('url', '').strip())
+                if resolved_url in seen_urls or is_duplicate_image_url(resolved_url):
+                    continue
+                if not is_probably_page_image_url(resolved_url):
+                    continue
+                if is_blocked_domain(resolved_url):
+                    continue
+
+                parsed = urlparse(resolved_url)
+                if not parsed.netloc:
+                    continue
+
+                seen_urls.add(resolved_url)
+                add_used_image_url(resolved_url)
+                candidates.append({
+                    'url': resolved_url,
+                    'title': item.get('title') or page_title or keyword,
+                    'is_google_thumbnail': False,
+                    'source_page_url': page_url,
+                    'thumbnail_url': '',
+                    'method': item.get('method', 'source_page'),
+                })
+                print(f"[SOURCE PAGE] Candidate: {resolved_url[:120]}...")
+
+        except Exception as e:
+            print(f"[SOURCE PAGE] Failed to extract from {page_url}: {type(e).__name__}: {e}")
+            continue
+
+    print(f"[SOURCE PAGE] Added {len(candidates)} source-page image candidates for '{keyword}'")
+    return candidates
 
 
 def get_youtube_credentials_from_env():
@@ -3952,7 +4198,39 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> List[str]:
                 
                 total_blocked += pre_blocked_count
                 print(f"[PRE-FILTER] Filtered {pre_blocked_count} high-risk images, {len(pre_filtered_images)} remaining")
-                
+
+                # Bingのmurl候補だけで不足しやすいため、掲載元ページ(purl)から本画像候補を補充する
+                if len(pre_filtered_images) < 12:
+                    source_candidates = extract_source_page_image_candidates(
+                        pre_filtered_images if pre_filtered_images else images,
+                        keyword,
+                        max_pages=4,
+                        max_candidates=12,
+                    )
+                    if source_candidates:
+                        source_accepted_count = 0
+                        source_blocked_count = 0
+                        existing_urls = {img.get('url') for img in pre_filtered_images}
+                        for source_image in source_candidates:
+                            if source_image.get('url') in existing_urls:
+                                continue
+                            source_filter_result = pre_filter_image_metadata(source_image)
+                            if not source_filter_result['suitable']:
+                                source_blocked_count += 1
+                                print(f"[SOURCE PAGE] BLOCK: {source_image.get('title', 'N/A')} ({source_filter_result['reason']})")
+                            else:
+                                pre_filtered_images.append(source_image)
+                                existing_urls.add(source_image.get('url'))
+                                source_accepted_count += 1
+
+                        total_images_found += len(source_candidates)
+                        total_blocked += source_blocked_count
+                        print(
+                            f"[SOURCE PAGE] Accepted {source_accepted_count}/"
+                            f"{len(source_candidates)} source-page candidates; "
+                            f"{len(pre_filtered_images)} total candidates now"
+                        )
+
                 if not pre_filtered_images:
                     print(f"[IMAGE SEARCH] No unblocked images for keyword '{keyword}'")
                     continue
