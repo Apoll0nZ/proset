@@ -3888,7 +3888,7 @@ def is_safe_domain(image_url: str) -> bool:
     return False
 
 
-def download_image_from_url(image_url: str, filename: str = None) -> str:
+def download_image_from_url(image_url: str, filename: str = None, relaxed: bool = False) -> str:
     """URLから画像をダウンロードしてtempフォルダに保存し、S3にもアップロード（リトライ付き・ゾンビ画像対策）"""
     
     import time
@@ -3896,6 +3896,10 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
     
     max_retries = 3
     retry_delay = 1  # 秒
+    min_bytes = 20 * 1024 if relaxed else 50 * 1024
+    min_width = 320 if relaxed else 640
+    min_height = 240 if relaxed else 480
+    validation_mode = "relaxed" if relaxed else "strict"
     
     for attempt in range(max_retries):
         try:
@@ -3929,7 +3933,7 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
             
             local_path = os.path.join(LOCAL_TEMP_DIR, filename)
             
-            print(f"[DEBUG] Downloading image from URL: {image_url} (attempt {attempt + 1}/{max_retries})")
+            print(f"[DEBUG] Downloading image from URL: {image_url} (attempt {attempt + 1}/{max_retries}, mode={validation_mode})")
             
             # User-Agentを設定してブロック回避
             headers = {
@@ -3947,8 +3951,8 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
             content_size = len(response.content)
             print(f"[DEBUG] Downloaded content size: {content_size} bytes")
             
-            if content_size < 50 * 1024:
-                print(f"[REJECT] Byte size too small: {content_size} bytes < 50KB. URL: {image_url}")
+            if content_size < min_bytes:
+                print(f"[REJECT] Byte size too small: {content_size} bytes < {min_bytes // 1024}KB ({validation_mode}). URL: {image_url}")
                 return None  # ここで即座に抜ける（ファイルを作成しない）
             
             # 画像をローカルに保存（バリデーション後）
@@ -3979,23 +3983,23 @@ def download_image_from_url(image_url: str, filename: str = None) -> str:
                     print(f"[DEBUG] Image validation: size={file_size}B, resolution={width}x{height}, format={img.format}")
                     
                     # 除外条件チェック
-                    if file_size < 50 * 1024:  # 50KB未満
-                        print(f"[REJECT] Image too small: {file_size}B < 50KB")
+                    if file_size < min_bytes:
+                        print(f"[REJECT] Image too small: {file_size}B < {min_bytes}B ({validation_mode})")
                         # 失敗した場合は痕跡（ファイル）を残さない
                         if os.path.exists(local_path):
                             os.remove(local_path)
                             print(f"[DEBUG] Removed invalid file: {local_path}")
                         return None
                     
-                    if width < 640 or height < 480:  # 解像度が640x480未満
-                        print(f"[REJECT] Resolution too low: {width}x{height} < 640x480")
+                    if width < min_width or height < min_height:
+                        print(f"[REJECT] Resolution too low: {width}x{height} < {min_width}x{min_height} ({validation_mode})")
                         # 失敗した場合は痕跡（ファイル）を残さない
                         if os.path.exists(local_path):
                             os.remove(local_path)
                             print(f"[DEBUG] Removed invalid file: {local_path}")
                         return None
                     
-                    print(f"[PASS] Image validation passed: {width}x{height}, {file_size}B")
+                    print(f"[PASS] Image validation passed ({validation_mode}): {width}x{height}, {file_size}B")
                     
                     # 物理的フィルタリングを実行
                     print(f"[FILTER] Running physical image analysis...")
@@ -4167,7 +4171,9 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> List[str]:
         download_failures = 0
         images_per_keyword = 5  # 各キーワードあたりの上限枚数
         max_total_images = 15  # 合計上限枚数
+        relaxed_retry_threshold = 8
         found_suitable_images = []
+        relaxed_retry_candidates = []
         
         for i, keyword in enumerate(keywords):
             print(f"[IMAGE SEARCH] === Keyword {i+1}/{len(keywords)}: '{keyword}' ===")
@@ -4316,6 +4322,8 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> List[str]:
                             break
                     else:
                         download_failures += 1
+                        if selected_image.get('url'):
+                            relaxed_retry_candidates.append(selected_image)
                         print(f"[IMAGE DOWNLOAD] Failed to download image {j+1}, trying next suitable image")
                         continue
                 
@@ -4325,12 +4333,45 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> List[str]:
                 if len(found_suitable_images) >= max_total_images:
                     print(f"[IMAGE SUCCESS] Reached total limit of {max_total_images} images across all keywords")
                     break
-                
+
             except Exception as e:
                 print(f"[IMAGE ERROR] Error processing keyword '{keyword}': {type(e).__name__}: {e}")
                 import traceback
                 print(f"[IMAGE ERROR] Traceback: {traceback.format_exc()}")
                 continue
+
+        if len(found_suitable_images) <= relaxed_retry_threshold and relaxed_retry_candidates:
+            print(
+                f"[IMAGE RELAXED] Only {len(found_suitable_images)} images collected "
+                f"(threshold={relaxed_retry_threshold}); retrying {len(relaxed_retry_candidates)} failed candidates with relaxed validation"
+            )
+            seen_success_urls = {img['url'] for img in found_suitable_images}
+            seen_retry_urls = set()
+
+            for j, candidate in enumerate(relaxed_retry_candidates):
+                if len(found_suitable_images) >= max_total_images:
+                    print(f"[IMAGE RELAXED] Reached total limit of {max_total_images} images")
+                    break
+
+                candidate_url = candidate.get('url')
+                if not candidate_url or candidate_url in seen_success_urls or candidate_url in seen_retry_urls:
+                    continue
+                seen_retry_urls.add(candidate_url)
+
+                print(f"[IMAGE RELAXED] Attempting relaxed download {j+1}/{len(relaxed_retry_candidates)}: {candidate.get('title', 'N/A')}")
+                image_path = download_image_from_url(candidate_url, relaxed=True)
+
+                if image_path:
+                    print(f"[IMAGE RELAXED] Successfully downloaded with relaxed validation: {candidate.get('title', 'N/A')}")
+                    found_suitable_images.append({
+                        'path': image_path,
+                        'title': candidate.get('title', 'N/A'),
+                        'url': candidate_url
+                    })
+                    seen_success_urls.add(candidate_url)
+                else:
+                    download_failures += 1
+                    print(f"[IMAGE RELAXED] Relaxed download failed: {candidate.get('title', 'N/A')}")
         
         # 規定枚数に達したか確認
         if found_suitable_images:
