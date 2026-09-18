@@ -6385,25 +6385,15 @@ async def main() -> None:
             amazon_line = f"{amazon_product_url} ・{amazon_keyword}"
             insert_marker = "おすすめ商品はこちらからご購入いただけます："
             if insert_marker in description:
-                # iPhone 18 Proを関連商品リンクの先頭に固定表示
-                preferred_product_line = "https://amzn.to/4riNqgx ・iPhone 18 Pro"
                 description = description.replace(
                     insert_marker,
-                    insert_marker + "\n" + preferred_product_line + "\n" + amazon_line
+                    insert_marker + "\n" + amazon_line
                 )
                 print(f"[DESCRIPTION] Amazon商品リンクを挿入: {amazon_line}")
             else:
                 print(f"[DESCRIPTION] 挿入マーカーが見つからないためスキップ")
         else:
             print("[DESCRIPTION] amazon_keyword が空のため挿入スキップ")
-            insert_marker = "おすすめ商品はこちらからご購入いただけます："
-            if insert_marker in description:
-                preferred_product_line = "https://amzn.to/4riNqgx ・iPhone 18 Pro"
-                description = description.replace(
-                    insert_marker,
-                    insert_marker + "\n" + preferred_product_line
-                )
-                print(f"[DESCRIPTION] 固定Amazon商品リンクを挿入: {preferred_product_line}")
 
         # tags を概要欄末尾に追加（(tagsフィールド〜) プレースホルダーがあれば置換、なければ末尾に追加）
         tags_text = data.get("tags", "").strip()
