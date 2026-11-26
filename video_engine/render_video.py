@@ -12,7 +12,40 @@ from typing import Any, Dict, List
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 import random
-import google.genai as genai
+import requests
+
+
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
+
+
+def _deepseek_chat(messages: list, *, json_mode: bool = False, timeout=(10, 120)) -> str:
+    """DeepSeek Chat Completions APIの共通呼び出し。"""
+    if not DEEPSEEK_API_KEY:
+        raise RuntimeError("DEEPSEEK_API_KEY not found in environment")
+
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": messages,
+        "thinking": {"type": "disabled"},
+        "stream": False,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    response = requests.post(
+        f"{DEEPSEEK_BASE_URL}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data["choices"][0]["message"]["content"] or ""
 
 # グローバル変数：使用済み画像URLを記録して重複を回避
 _used_image_urls = set()
@@ -1673,11 +1706,11 @@ DDB_TABLE_NAME = os.environ.get("MY_DDB_TABLE_NAME", "VideoHistory")
 YOUTUBE_AUTH_JSON = os.environ.get("YOUTUBE_AUTH_JSON", "")
 VOICEVOX_API_URL = os.environ.get("VOICEVOX_API_URL", "http://localhost:50021")
 
-# Gemini補完結果のセッションキャッシュ（同一単語の重複API呼び出しを防ぐ）
+# DeepSeek補完結果のセッションキャッシュ（同一単語の重複API呼び出しを防ぐ）
 _pronunciation_cache: dict = {}
 
-def _fetch_pronunciation_from_gemini(words: list) -> dict:
-    """未登録の英単語リストをGeminiに渡してカタカナ読みを一括取得する（キャッシュ付き）"""
+def _fetch_pronunciation_from_deepseek(words: list) -> dict:
+    """未登録の英単語リストをDeepSeekに渡してカタカナ読みを一括取得する（キャッシュ付き）"""
     global _pronunciation_cache
     if not words:
         return {}
@@ -1686,11 +1719,9 @@ def _fetch_pronunciation_from_gemini(words: list) -> dict:
     uncached = [w for w in words if w not in _pronunciation_cache]
 
     if uncached:
-        api_key = os.environ.get("GEMINI_API_KEY", "")
-        if not api_key:
+        if not DEEPSEEK_API_KEY:
             return {w: _pronunciation_cache[w] for w in words if w in _pronunciation_cache}
         try:
-            import requests as _req
             word_list = "\n".join(f"- {w}" for w in uncached)
             prompt = (
                 "以下の英語表記をVOICEVOX音声合成向けの自然なカタカナ読みに変換してください。\n"
@@ -1698,24 +1729,13 @@ def _fetch_pronunciation_from_gemini(words: list) -> dict:
                 "例: {\"Ada Lovelace\": \"エイダ ラブレス\", \"Pro\": \"プロ\"}\n\n"
                 f"{word_list}"
             )
-            url = (
-                f"https://generativelanguage.googleapis.com/v1/models/"
-                f"gemini-2.5-flash-lite:generateContent?key={api_key}"
-            )
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.0, "max_output_tokens": 512,
-                                     "response_mime_type": "application/json"},
-            }
-            resp = _req.post(url, json=payload, timeout=(5, 20))
-            if resp.status_code == 200:
-                raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                result = json.loads(raw) if isinstance(raw, str) else raw
-                if isinstance(result, dict):
-                    print(f"[PRONUNCIATION] Gemini補完: {result}")
-                    _pronunciation_cache.update(result)
+            raw = _deepseek_chat([{"role": "user", "content": prompt}], json_mode=True, timeout=(5, 30))
+            result = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(result, dict):
+                print(f"[PRONUNCIATION] DeepSeek補完: {result}")
+                _pronunciation_cache.update(result)
         except Exception as e:
-            print(f"[PRONUNCIATION] Gemini補完失敗: {e}")
+            print(f"[PRONUNCIATION] DeepSeek補完失敗: {e}")
 
     return {w: _pronunciation_cache[w] for w in words if w in _pronunciation_cache}
 
@@ -1744,7 +1764,7 @@ def normalize_text_for_voicevox(
 
     if remaining:
         print(f"[PRONUNCIATION] 未変換のアルファベット語: {remaining}")
-        補完結果 = _fetch_pronunciation_from_gemini(remaining)
+        補完結果 = _fetch_pronunciation_from_deepseek(remaining)
         # 補完結果も長いキー優先で適用（大文字小文字を無視）
         for surface, pronunciation in sorted(補完結果.items(), key=lambda x: len(x[0]), reverse=True):
             text = _re.sub(_re.escape(surface), pronunciation, text, flags=_re.IGNORECASE)
@@ -2806,7 +2826,7 @@ def extract_image_keywords_list(script_data: Dict[str, Any]) -> List[str]:
         
         # LLMからキーワードを生成して優先使用
         print("[DEBUG] Generating keywords with LLM for image search...")
-        llm_keywords = generate_keywords_with_gemini(all_text)
+        llm_keywords = generate_keywords_with_deepseek(all_text)
         
         if llm_keywords and isinstance(llm_keywords, list) and len(llm_keywords) > 0:
             # LLMキーワードはそのまま維持（ロゴキーワードはLLMが調整）
@@ -2870,7 +2890,7 @@ def extract_image_keywords_from_script(script_data: Dict[str, Any]) -> str:
         
         # LLMからキーワードを生成して優先使用
         print("[DEBUG] Generating keywords with LLM for image search...")
-        llm_keywords = generate_keywords_with_gemini(all_text)
+        llm_keywords = generate_keywords_with_deepseek(all_text)
         
         if llm_keywords and isinstance(llm_keywords, list) and len(llm_keywords) > 0:
             # LLMキーワードリストの最初の要素を文字列として使用
@@ -2961,11 +2981,10 @@ def validate_and_clean_keywords(keywords: str, fallback_text: str) -> List[str]:
     return result[:5]  # 最大5つ
 
 
-def generate_keywords_with_gemini(text: str, max_keywords: int = 5) -> List[str]:
-    """Geminiでセグメントごとのキーワードを生成（失敗時はフォールバック）。"""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("[ERROR] GEMINI_API_KEY not found in environment")
+def generate_keywords_with_deepseek(text: str, max_keywords: int = 5) -> List[str]:
+    """DeepSeekでセグメントごとのキーワードを生成（失敗時はフォールバック）。"""
+    if not DEEPSEEK_API_KEY:
+        print("[ERROR] DEEPSEEK_API_KEY not found in environment")
         return []
 
     try:
@@ -2973,18 +2992,10 @@ def generate_keywords_with_gemini(text: str, max_keywords: int = 5) -> List[str]
         prompt_template = load_keyword_prompt()
         prompt = prompt_template.format(segment_text=text)
         
-        print(f"[DEBUG] Gemini API を呼び出します（セグメント内容の冒頭20文字: {text[:20]}...）")
+        print(f"[DEBUG] DeepSeek API を呼び出します（セグメント内容の冒頭20文字: {text[:20]}...）")
+        raw_response = _deepseek_chat([{"role": "user", "content": prompt}])
         
-        # 最新の Google Gen AI ライブラリを使用
-        client = genai.Client(api_key=api_key)
-        
-        response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
-            contents=prompt
-        )
-        raw_response = response.text
-        
-        print(f"[DEBUG] Gemini API からの生の返答: {raw_response}")
+        print(f"[DEBUG] DeepSeek API からの生の返答: {raw_response}")
         
         # 生の返答をそのまま使用（洗浄処理を削除）
         # カンマ区切りで分割してリスト化
@@ -2997,30 +3008,29 @@ def generate_keywords_with_gemini(text: str, max_keywords: int = 5) -> List[str]
             return [str(raw_response)] if raw_response else []
         
     except Exception as e:
-        print(f"[ERROR] Gemini API call failed: {e}")
+        print(f"[ERROR] DeepSeek API call failed: {e}")
         print(f"[ERROR] Exception type: {type(e).__name__}")
         return [text[:10]]  # フォールバック
 
 
 def get_segment_keywords(part_text: str, title: str, topic_summary: str) -> List[str]:
-    keywords = generate_keywords_with_gemini(part_text)
+    keywords = generate_keywords_with_deepseek(part_text)
     if not keywords:
         raise RuntimeError(f"Failed to generate keywords for segment: {part_text[:50]}...")
     return keywords
 
 
 
-def evaluate_images_batch_with_gemini_improved(
+def evaluate_images_batch_with_deepseek(
     images_list: List[Dict],
     keyword: str,
     script_text: str,
     target_product: str = "",
     strict_mode: bool = False,
 ) -> List[Dict]:
-    """Geminiで複数の画像を分割評価（負荷軽減版：10枚ずつ評価）"""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("[ERROR] GEMINI_API_KEY not found for batch image evaluation")
+    """DeepSeekで複数の画像を分割評価（負荷軽減版：10枚ずつ評価）"""
+    if not DEEPSEEK_API_KEY:
+        print("[ERROR] DEEPSEEK_API_KEY not found for batch image evaluation")
         return []
     
     print(f"[DEBUG] Starting split batch evaluation: {len(images_list)} images (10 images per batch)")
@@ -3111,17 +3121,16 @@ JSON: {{"selected_indices": [適切な番号,適切な番号,...], "reason": "�
 不明確: {{"selected_indices": [], "reason": "判断が困難なため不採用"}}
 """
         
-        print(f"[DEBUG] Gemini API を呼び出します（バッチ{batch_number}/{total_batches}）")
+        print(f"[DEBUG] DeepSeek API を呼び出します（バッチ{batch_number}/{total_batches}）")
         
         try:
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model='gemini-2.5-flash-lite',
-                contents=prompt
-            )
-            
-            raw_response = response.text.strip()
-            print(f"[DEBUG] Gemini response (batch {batch_number}): {raw_response}")
+            content = [{"type": "text", "text": prompt}]
+            for image_info in batch_images:
+                image_url = image_info.get("url", "")
+                if image_url:
+                    content.append({"type": "image_url", "image_url": {"url": image_url, "detail": "low"}})
+            raw_response = _deepseek_chat([{"role": "user", "content": content}], json_mode=True).strip()
+            print(f"[DEBUG] DeepSeek response (batch {batch_number}): {raw_response}")
             
             # JSONレスポンスを解析（コードブロックを除去）
             try:
@@ -3160,18 +3169,17 @@ JSON: {{"selected_indices": [適切な番号,適切な番号,...], "reason": "�
                 continue
                 
         except Exception as e:
-            print(f"[ERROR] Gemini API call failed in batch {batch_number}: {e}")
+            print(f"[ERROR] DeepSeek API call failed in batch {batch_number}: {e}")
             continue
     
     print(f"[SUCCESS] Total suitable images from all batches: {len(all_suitable_images)}")
     return all_suitable_images
 
 
-def evaluate_image_with_gemini(image_info: Dict, keyword: str, script_text: str) -> Dict:
-    """Geminiで画像の適切性を評価（URLから直接分析）"""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("[ERROR] GEMINI_API_KEY not found for image evaluation")
+def evaluate_image_with_deepseek(image_info: Dict, keyword: str, script_text: str) -> Dict:
+    """DeepSeekで画像の適切性を評価（URLから直接分析）"""
+    if not DEEPSEEK_API_KEY:
+        print("[ERROR] DEEPSEEK_API_KEY not found for image evaluation")
         return {"suitable": False, "reason": "API key not found"}
     
     try:
@@ -3180,7 +3188,7 @@ def evaluate_image_with_gemini(image_info: Dict, keyword: str, script_text: str)
         if not image_url:
             return {"suitable": False, "reason": "No image URL provided"}
         
-        print(f"[DEBUG] Evaluating image URL with Gemini: {image_url}")
+        print(f"[DEBUG] Evaluating image URL with DeepSeek: {image_url}")
         
         # 画像評価プロンプト
         prompt = f"""
@@ -3277,54 +3285,13 @@ IT・ガジェット解説動画にこの画像が適しているか評価して
 不明確: {{"suitable": false, "reason": "判断が困難なため不採用"}}
 """
         
-        print(f"[DEBUG] Evaluating image with Gemini: {image_info.get('title', 'N/A')}")
-        
-        client = genai.Client(api_key=api_key)
-        
-        # Geminiにテキストと画像URLを渡す
-        from google.genai import types
-        import urllib.parse
-        
-        # URLから画像形式を検出
-        def get_mime_type_from_url(url: str) -> str:
-            """URLから画像のMIMEタイプを推測"""
-            path = urllib.parse.urlparse(url).path.lower()
-            if path.endswith(('.jpg', '.jpeg')):
-                return "image/jpeg"
-            elif path.endswith('.png'):
-                return "image/png"
-            elif path.endswith('.gif'):
-                return "image/gif"
-            elif path.endswith('.webp'):
-                return "image/webp"
-            elif path.endswith('.bmp'):
-                return "image/bmp"
-            else:
-                # 不明な形式はNoneを返す
-                return None
-        
-        mime_type = get_mime_type_from_url(image_url)
-        if not mime_type:
-            print(f"[DEBUG] Unsupported image format, skipping: {image_url}")
-            return {"suitable": False, "reason": "Unsupported image format"}
-        
-        print(f"[DEBUG] Detected MIME type: {mime_type}")
-        
-        contents = [
-            types.Part.from_uri(
-                file_uri=image_url,
-                mime_type=mime_type
-            ),
-            prompt
+        print(f"[DEBUG] Evaluating image with DeepSeek: {image_info.get('title', 'N/A')}")
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": image_url, "detail": "low"}},
         ]
-        
-        response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
-            contents=contents
-        )
-        
-        raw_response = response.text.strip()
-        print(f"[DEBUG] Gemini evaluation: {raw_response}")
+        raw_response = _deepseek_chat([{"role": "user", "content": content}], json_mode=True).strip()
+        print(f"[DEBUG] DeepSeek evaluation: {raw_response}")
         
         # JSONレスポンスを解析
         try:
@@ -4269,19 +4236,19 @@ async def get_ai_selected_image(script_data: Dict[str, Any]) -> List[str]:
 
                 # Geminiで一括評価（評価対象を調整）
                 print(f"[IMAGE EVAL] Starting Gemini evaluation for {min(30, len(filtered_images))} images")
-                print(f"[IMAGE EVAL] GEMINI_API_KEY check: {'✓ Present' if os.environ.get('GEMINI_API_KEY') else '✗ Missing'}")
+                print(f"[IMAGE EVAL] DEEPSEEK_API_KEY check: {'✓ Present' if DEEPSEEK_API_KEY else '✗ Missing'}")
                 script_text = script_data.get("content", {}).get("topic_summary", "")
                 print(f"[IMAGE EVAL] Script text length: {len(script_text)} chars")
                 print(f"[IMAGE EVAL] Keyword: '{keyword}'")
 
-                suitable_images = evaluate_images_batch_with_gemini_improved(filtered_images[:30], keyword, script_text)  # 改善版を使用
+                suitable_images = evaluate_images_batch_with_deepseek(filtered_images[:30], keyword, script_text)  # 改善版を使用
 
                 print(f"[IMAGE EVAL] Gemini evaluation completed. Result: {len(suitable_images)} suitable images")
 
                 # safe domainが全滅した場合、通常ドメインをGeminiで評価しなおす
                 if not suitable_images and safe_first and normal_images:
                     print(f"[IMAGE STRATEGY] Safe domains all rejected by Gemini, trying normal domains ({len(normal_images)} images)")
-                    suitable_images = evaluate_images_batch_with_gemini_improved(normal_images[:30], keyword, script_text)
+                    suitable_images = evaluate_images_batch_with_deepseek(normal_images[:30], keyword, script_text)
                     print(f"[IMAGE EVAL] Normal domain evaluation completed. Result: {len(suitable_images)} suitable images")
 
                 if not suitable_images:

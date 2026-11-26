@@ -1,6 +1,5 @@
 moviepy==2.2.1
 google-api-python-client==2.151.0
-google-genai
 boto3==1.35.49
 Pillow==11.3.0
 requests==2.32.3

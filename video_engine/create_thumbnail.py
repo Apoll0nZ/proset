@@ -69,12 +69,12 @@ def resolve_thumbnail_font(env_key: str) -> str:
 FONT_PATH_MAIN = resolve_thumbnail_font("THUMBNAIL_FONT_MAIN")
 FONT_PATH_SUB = resolve_thumbnail_font("THUMBNAIL_FONT_SUB")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash-lite")
-GEMINI_API_VERSION = os.environ.get("GEMINI_API_VERSION", "v1")
-THUMBNAIL_GEMINI_TEXT_FILTER = os.environ.get("THUMBNAIL_GEMINI_TEXT_FILTER", "1").lower() not in ("0", "false", "off")
-THUMBNAIL_GEMINI_MAX_CANDIDATES = max(2, int(os.environ.get("THUMBNAIL_GEMINI_MAX_CANDIDATES", "8")))
-THUMBNAIL_GEMINI_RANDOM_POOL = max(2, int(os.environ.get("THUMBNAIL_GEMINI_RANDOM_POOL", "8")))
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
+THUMBNAIL_DEEPSEEK_TEXT_FILTER = os.environ.get("THUMBNAIL_DEEPSEEK_TEXT_FILTER", "1").lower() not in ("0", "false", "off")
+THUMBNAIL_DEEPSEEK_MAX_CANDIDATES = max(2, int(os.environ.get("THUMBNAIL_DEEPSEEK_MAX_CANDIDATES", "8")))
+THUMBNAIL_DEEPSEEK_RANDOM_POOL = max(2, int(os.environ.get("THUMBNAIL_DEEPSEEK_RANDOM_POOL", "8")))
 
 
 def _get_mime_type_from_path(image_path: str) -> Optional[str]:
@@ -92,10 +92,10 @@ def _get_mime_type_from_path(image_path: str) -> Optional[str]:
     return None
 
 
-def _analyze_image_text_density_with_gemini(image_path: str) -> Optional[Dict[str, Any]]:
-    if not THUMBNAIL_GEMINI_TEXT_FILTER:
+def _analyze_image_text_density_with_deepseek(image_path: str) -> Optional[Dict[str, Any]]:
+    if not THUMBNAIL_DEEPSEEK_TEXT_FILTER:
         return None
-    if not GEMINI_API_KEY:
+    if not DEEPSEEK_API_KEY:
         return None
     if not os.path.exists(image_path):
         return None
@@ -108,13 +108,10 @@ def _analyze_image_text_density_with_gemini(image_path: str) -> Optional[Dict[st
         with open(image_path, "rb") as f:
             image_b64 = base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
-        print(f"[THUMBNAIL] Failed to read image for Gemini text check: {image_path} ({e})")
+        print(f"[THUMBNAIL] Failed to read image for DeepSeek text check: {image_path} ({e})")
         return None
 
-    url = (
-        f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/"
-        f"{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
-    )
+    url = f"{DEEPSEEK_BASE_URL}/chat/completions"
     prompt = (
         "この画像がYouTubeサムネ背景に向くか判定してください。"
         "製品の実機写真・公式プレス画像・製品レンダリングが最適です。"
@@ -127,40 +124,34 @@ def _analyze_image_text_density_with_gemini(image_path: str) -> Optional[Dict[st
         "{\"text_ratio\": 0-100の整数, \"text_heavy\": true/false, \"keep\": true/false}"
     )
     payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": mime_type, "data": image_b64}},
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.0,
-            "max_output_tokens": 120,
-            "response_mime_type": "application/json",
-        },
+        "model": DEEPSEEK_MODEL,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}", "detail": "low"}},
+        ]}],
+        "thinking": {"type": "disabled"},
+        "response_format": {"type": "json_object"},
+        "stream": False,
     }
 
     max_retries = 2
     for attempt in range(max_retries):
         try:
-            response = requests.post(url, json=payload, timeout=(5, 20))
+            response = requests.post(url, headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}, json=payload, timeout=(5, 30))
             if response.status_code in (429, 503):
                 if attempt < max_retries - 1:
                     time.sleep(1.2)
                     continue
                 return None
             if response.status_code != 200:
-                print(f"[THUMBNAIL] Gemini text check failed: {response.status_code}")
+                print(f"[THUMBNAIL] DeepSeek text check failed: {response.status_code}")
                 return None
 
             data = response.json()
-            candidates = data.get("candidates", [])
-            if not candidates:
+            choices = data.get("choices", [])
+            if not choices:
                 return None
-            parts = candidates[0].get("content", {}).get("parts", [])
-            raw_text = "\n".join(p.get("text", "") for p in parts if p.get("text")).strip()
+            raw_text = choices[0].get("message", {}).get("content", "").strip()
             if not raw_text:
                 return None
 
@@ -183,7 +174,7 @@ def _analyze_image_text_density_with_gemini(image_path: str) -> Optional[Dict[st
                 "keep": keep,
             }
         except Exception as e:
-            print(f"[THUMBNAIL] Gemini text check error: {e}")
+            print(f"[THUMBNAIL] DeepSeek text check error: {e}")
             if attempt < max_retries - 1:
                 time.sleep(1.0)
             else:
@@ -208,12 +199,12 @@ def _select_thumbnail_image_paths(candidate_paths: List[str], count: int = 2) ->
 
     # 先に軽量なヒューリスティックで候補を絞り、Gemini評価コストを抑える
     ranked_by_basic = sorted(unique_paths, key=lambda p: calculate_image_score(p), reverse=True)
-    gemini_targets = ranked_by_basic[: min(len(ranked_by_basic), THUMBNAIL_GEMINI_MAX_CANDIDATES)]
+    deepseek_targets = ranked_by_basic[: min(len(ranked_by_basic), THUMBNAIL_DEEPSEEK_MAX_CANDIDATES)]
 
     scored: List[Tuple[str, float, bool, int]] = []
-    for path in gemini_targets:
+    for path in deepseek_targets:
         base_score = float(calculate_image_score(path))
-        analysis = _analyze_image_text_density_with_gemini(path)
+        analysis = _analyze_image_text_density_with_deepseek(path)
         if analysis:
             text_ratio = int(analysis.get("text_ratio", 50))
             text_heavy = bool(analysis.get("text_heavy", text_ratio >= 35))
@@ -228,7 +219,7 @@ def _select_thumbnail_image_paths(candidate_paths: List[str], count: int = 2) ->
     scored.sort(key=lambda x: (x[2], -x[1], x[3]))
 
     # 上位候補からランダムに選び、毎回同じ組み合わせになりにくくする
-    pool_size = min(len(scored), max(count, max(THUMBNAIL_GEMINI_RANDOM_POOL, 6)))
+    pool_size = min(len(scored), max(count, max(THUMBNAIL_DEEPSEEK_RANDOM_POOL, 6)))
     top_pool = [path for path, _, _, _ in scored[:pool_size]]
     selected = random.sample(top_pool, count) if len(top_pool) >= count else top_pool[:]
     if len(selected) < count:
@@ -497,7 +488,7 @@ def get_article_images(
                         continue
 
                     # Gemini文字密度チェック（テキスト写り込み・他サイトサムネイルを除外）
-                    analysis = _analyze_image_text_density_with_gemini(path)
+                    analysis = _analyze_image_text_density_with_deepseek(path)
                     if analysis is not None:
                         if not analysis.get("keep", True):
                             print(f"[THUMBNAIL] Rejected (text-heavy): {os.path.basename(path)} "
@@ -506,8 +497,8 @@ def get_article_images(
                         print(f"[THUMBNAIL] Accepted: {os.path.basename(path)} "
                               f"text_ratio={analysis.get('text_ratio')}%")
                     else:
-                        # GEMINI_API_KEY なし or API失敗 → 無条件で通す
-                        print(f"[THUMBNAIL] Accepted (no Gemini check): {os.path.basename(path)}")
+                        # DEEPSEEK_API_KEY なし or API失敗 → 無条件で通す
+                        print(f"[THUMBNAIL] Accepted (no DeepSeek check): {os.path.basename(path)}")
 
                     loaded = Image.open(path).convert("RGBA")
                     clean_images.append(loaded)

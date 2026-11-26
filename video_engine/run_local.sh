@@ -3,7 +3,8 @@
 echo "=== ローカル実行スクリプト ==="
 
 # 必要な環境変数の設定
-export GEMINI_API_KEY="${GEMINI_API_KEY:-}"
+export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
+export DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-flash}"
 export YOUTUBE_CLIENT_ID="${YOUTUBE_CLIENT_ID:-}"
 export YOUTUBE_CLIENT_SECRETS_JSON="${YOUTUBE_CLIENT_SECRETS_JSON:-}"
 export YOUTUBE_TOKEN_JSON="${YOUTUBE_TOKEN_JSON:-}"
@@ -24,14 +25,15 @@ export VIDEO_HEIGHT="${VIDEO_HEIGHT:-1080}"
 export FPS="${FPS:-30}"
 
 # 必須環境変数のチェック
-if [ -z "$GEMINI_API_KEY" ]; then
-    echo "❌ GEMINI_API_KEYが設定されていません"
-    echo "export GEMINI_API_KEY=your_api_key"
+if [ -z "$DEEPSEEK_API_KEY" ]; then
+    echo "❌ DEEPSEEK_API_KEYが設定されていません"
+    echo "export DEEPSEEK_API_KEY=your_api_key"
     exit 1
 fi
 
 echo "✅ 環境変数の設定完了"
-echo "GEMINI_API_KEY: ${GEMINI_API_KEY:0:10}..."
+echo "DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:0:10}..."
+echo "DEEPSEEK_MODEL: $DEEPSEEK_MODEL"
 echo "VOICEVOX_API_URL: $VOICEVOX_API_URL"
 echo "S3_BUCKET: $S3_BUCKET"
 
